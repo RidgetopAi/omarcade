@@ -1,0 +1,16 @@
+[package]
+name = "omarcade-breakout"
+description = "Breakout, the first Omarcade title."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# omarcade-core and nothing else. winit and softbuffer are deliberately
+# absent: a game cannot import what it does not depend on, which makes
+# the rendering seam a fact about the build rather than a convention we
+# have to remember to follow.
+[dependencies]
+omarcade-core = { path = "../../core" }

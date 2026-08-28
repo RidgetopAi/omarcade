@@ -1,8 +1,6 @@
 [workspace]
 resolver = "3"
-# `games/*` is added back when the first game crate lands (file 5).
-# A glob that expands to nothing is a hard error, not a silent skip.
-members = ["core"]
+members = ["core", "games/*"]
 
 # Shared metadata. Members inherit with `version.workspace = true` etc.,
 # so a release bump happens in exactly one place.

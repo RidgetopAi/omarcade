@@ -160,6 +160,8 @@ pub trait Game {
     fn render(&mut self, canvas: &mut Canvas<'_>);
 }
 
+pub mod winit_soft;
+
 /// A platform that can host a [`Game`].
 ///
 /// Intentionally one method. Everything else a backend does — creating a

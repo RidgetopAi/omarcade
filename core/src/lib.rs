@@ -4,8 +4,10 @@
 //! written against. A game depends on this crate and on nothing
 //! platform-specific.
 //!
-//! `theme` lands in file 4.
+//! [`theme`] reads the live Omarchy palette.
 
 pub mod backend;
+pub mod theme;
 
 pub use backend::{Backend, Canvas, Color, Game, InputEvent, Key};
+pub use theme::Theme;

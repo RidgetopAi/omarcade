@@ -1,0 +1,16 @@
+[package]
+name = "omarcade-core"
+description = "Shared engine for the Omarcade suite: rendering seam, input, theme."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# core owns the platform deps so games never have to.
+[dependencies]
+winit.workspace = true
+softbuffer.workspace = true
+toml.workspace = true
+serde.workspace = true

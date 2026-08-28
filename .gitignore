@@ -1,0 +1,14 @@
+# Rust build output — hundreds of MB, never commit.
+/target
+**/*.rs.bk
+
+# Cargo.lock IS committed: this workspace ships binaries, and a locked
+# dep set is what makes a user's `omarchy plugin add` build reproducible.
+# (Library-only crates would exclude it; we are not one.)
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

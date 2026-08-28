@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+# `games/*` is added back when the first game crate lands (file 5).
+# A glob that expands to nothing is a hard error, not a silent skip.
+members = ["core"]
+
+# Shared metadata. Members inherit with `version.workspace = true` etc.,
+# so a release bump happens in exactly one place.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/RidgetopAi/omarcade"
+authors = ["Brian Ridgetopai"]
+
+# Versions are pinned HERE and nowhere else. Members write
+# `winit.workspace = true`. This is what keeps game 3 from silently
+# drifting onto a different winit than core.
+#
+# Note which crates are absent by design: no game package depends on
+# winit or softbuffer. They cannot import what they do not list.
+[workspace.dependencies]
+winit = "0.30.13"
+softbuffer = "0.4.8"
+toml = "1.1.4"
+serde = { version = "1.0.229", features = ["derive"] }
+
+# Games are latency-sensitive; an unoptimized dep tree drops frames even
+# in a debug build. Optimize dependencies, keep our own crates debuggable.
+[profile.dev.package."*"]
+opt-level = 2

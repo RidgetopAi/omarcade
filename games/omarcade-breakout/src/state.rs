@@ -20,10 +20,13 @@ pub const PADDLE_W: f32 = 120.0;
 pub const PADDLE_H: f32 = 16.0;
 /// How far above the bottom edge the paddle sits.
 pub const PADDLE_Y: f32 = FIELD_H - 60.0;
-pub const PADDLE_SPEED: f32 = 700.0;
+/// Level-1 pace. Comfortably faster than the ball so the paddle can
+/// always get under it, without feeling twitchy.
+pub const PADDLE_SPEED: f32 = 600.0;
 
 pub const BALL_RADIUS: f32 = 8.0;
-pub const BALL_SPEED: f32 = 420.0;
+/// Level-1 pace. Later levels are expected to raise this.
+pub const BALL_SPEED: f32 = 340.0;
 
 pub const BRICK_COLS: usize = 10;
 pub const BRICK_ROWS: usize = 6;

@@ -56,7 +56,7 @@ fn main() {
     }
 
     println!();
-    let per_tick = 420.0 * FIXED_DT;
+    let per_tick = state::BALL_SPEED * FIXED_DT;
     println!("nominal per-tick movement: {per_tick:.2} units vs 28-unit brick height");
     if failures == 0 { println!("PASS: no tunnelling at any tested speed or frame time"); }
     else { println!("FAIL: {failures} tunnelling cases"); std::process::exit(1); }

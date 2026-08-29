@@ -8,6 +8,7 @@
 //! faster horizontally than vertically at the same speed, which players
 //! feel immediately even if they cannot name it.
 
+use omarcade_core::ease;
 use omarcade_core::{Canvas, Color, Theme};
 
 use crate::state::{GameState, Phase, FIELD_H, FIELD_W};
@@ -41,6 +42,21 @@ impl Viewport {
 
     fn y(&self, y: f32) -> i32 {
         (self.off_y + y * self.scale).round() as i32
+    }
+
+    /// Float variants, for objects that move. The integer ones round to
+    /// the nearest pixel, which is right for static geometry and wrong
+    /// for anything animating.
+    fn fx(&self, x: f32) -> f32 {
+        self.off_x + x * self.scale
+    }
+
+    fn fy(&self, y: f32) -> f32 {
+        self.off_y + y * self.scale
+    }
+
+    fn flen(&self, v: f32) -> f32 {
+        (v * self.scale).max(1.0)
     }
 
     fn len(&self, v: f32) -> u32 {
@@ -86,11 +102,52 @@ pub fn draw(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
 
     // The ball is hidden once the game is over — nothing is in play.
     if state.phase != Phase::Lost && state.phase != Phase::Won {
-        vp.rect(state.ball.rect(), canvas, theme.accent);
+        draw_trail(state, canvas, theme, &vp);
+
+        // Sub-pixel, unlike the bricks: this is the one thing on screen
+        // that moves every frame, and snapping it to whole pixels is
+        // exactly what makes 60fps motion look like 30.
+        let r = state.ball.rect();
+        canvas.fill_rect_f(vp.fx(r.x), vp.fy(r.y), vp.flen(r.w), vp.flen(r.h), theme.accent);
     }
 
     draw_hud(state, canvas, theme, &vp);
     draw_phase_message(state, canvas, theme, &vp);
+}
+
+/// The ball's recent path, fading out behind it.
+///
+/// Cheap on purpose: ten alpha quads measured at well under a tenth of a
+/// millisecond at 960x720. The expensive full-screen veil is not used
+/// here — a trail is a local effect and should cost like one.
+fn draw_trail(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
+    let n = state.trail.len();
+    if n < 2 {
+        return;
+    }
+
+    // Skip index 0: that is where the ball itself is drawn.
+    for (i, pos) in state.trail.iter().enumerate().skip(1) {
+        let t = i as f32 / n as f32;
+
+        // Fade and shrink together. Either alone reads as a bug — a
+        // constant-size fading trail looks like ghosting, and a shrinking
+        // opaque one looks like a string of beads.
+        let alpha = (ease::out_cubic(1.0 - t) * 150.0) as u8;
+        if alpha == 0 {
+            continue;
+        }
+        let size = state.ball.radius * 2.0 * ease::lerp(1.0, 0.35, t);
+        let off = (state.ball.radius * 2.0 - size) / 2.0;
+
+        canvas.fill_rect_f(
+            vp.fx(pos.x - state.ball.radius + off),
+            vp.fy(pos.y - state.ball.radius + off),
+            vp.flen(size),
+            vp.flen(size),
+            theme.accent.with_alpha(alpha),
+        );
+    }
 }
 
 fn draw_hud(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {

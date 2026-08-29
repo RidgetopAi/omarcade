@@ -38,6 +38,10 @@ pub const BRICK_TOP: f32 = 90.0;
 
 pub const STARTING_LIVES: u32 = 3;
 
+/// How many past ball positions the trail keeps. Long enough to read as
+/// motion, short enough that a slow ball does not smear.
+pub const TRAIL_LEN: usize = 10;
+
 /// Where the game is in its lifecycle.
 ///
 /// Explicit states rather than a scatter of booleans: "is the ball
@@ -115,6 +119,13 @@ pub struct GameState {
     /// the simulation never sets it, so the headless harnesses see 0 and
     /// stay deterministic.
     pub best: u32,
+    /// Recent ball positions, newest first, for the motion trail.
+    ///
+    /// Presentation state living in the world model on purpose: physics
+    /// is the only thing that knows where the ball has actually been, and
+    /// sampling it in `render` would tie the trail to frame rate instead
+    /// of to the fixed timestep.
+    pub trail: Vec<Vec2>,
 }
 
 impl GameState {
@@ -140,6 +151,7 @@ impl GameState {
             score: 0,
             phase: Phase::Ready,
             best: 0,
+            trail: Vec::with_capacity(TRAIL_LEN),
         };
         state.rest_ball_on_paddle();
         state

@@ -77,12 +77,24 @@ fn main() {
     let theme = Theme::load();
     let mut s = GameState::new();
 
+    // These scenes drive step_fixed directly, which is the simulation and
+    // nothing else. The trail is sampled once per FRAME by physics::step,
+    // so a scene built this way has an empty one. Advance a few frames'
+    // worth to populate it, exactly as the running game would.
+    fn fill_trail(s: &mut state::GameState) {
+        let mut acc = physics::Accumulator::new();
+        for _ in 0..state::TRAIL_LEN {
+            physics::step(s, &mut acc, 1.0 / 60.0);
+        }
+    }
+
     // Build the requested situation directly — no need to play to it.
     match scene.as_str() {
         "ready" => {}
         "playing" => {
             s.launch();
             for _ in 0..1500 { physics::step_fixed(&mut s); }
+            fill_trail(&mut s);
         }
         "midgame" => {
             s.launch();
@@ -92,6 +104,7 @@ fn main() {
                 physics::step_fixed(&mut s);
                 if s.phase == state::Phase::Ready { s.launch(); }
             }
+            fill_trail(&mut s);
         }
         "won" => { for b in &mut s.bricks { b.alive = false; } s.phase = state::Phase::Won; s.score = 600; s.best = 600; }
         "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.score = 250; s.best = 980; }

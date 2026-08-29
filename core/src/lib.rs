@@ -7,6 +7,7 @@
 //! [`theme`] reads the live Omarchy palette.
 
 pub mod backend;
+pub mod ease;
 pub mod scores;
 pub mod theme;
 

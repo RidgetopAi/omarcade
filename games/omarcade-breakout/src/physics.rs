@@ -14,7 +14,7 @@
 //!    the way it came. Only the deepest collision is resolved per tick.
 
 use crate::geom::{Axis, Vec2};
-use crate::state::{GameState, Phase, BALL_SPEED, PADDLE_SPEED};
+use crate::state::{GameState, Phase, BALL_SPEED, PADDLE_SPEED, TRAIL_LEN};
 
 /// Simulation rate. High enough that per-tick movement (~1.75 units at
 /// ball speed) is far smaller than the thinnest brick, which is what
@@ -81,6 +81,25 @@ pub fn step(state: &mut GameState, accumulator: &mut Accumulator, dt: f32) {
     for _ in 0..steps {
         step_fixed(state);
     }
+    if steps > 0 {
+        record_trail(state);
+    }
+}
+
+/// Sample the ball's position for the motion trail.
+///
+/// Once per frame, not once per fixed tick: the simulation runs at 240Hz
+/// and a trail sampled there would be four times denser than intended,
+/// and would change length with frame rate. Called only when time
+/// actually advanced, so a paused or stalled frame does not stack ten
+/// copies of the same point.
+fn record_trail(state: &mut GameState) {
+    if state.phase != Phase::Playing {
+        state.trail.clear();
+        return;
+    }
+    state.trail.insert(0, state.ball.pos);
+    state.trail.truncate(TRAIL_LEN);
 }
 
 /// One fixed tick.

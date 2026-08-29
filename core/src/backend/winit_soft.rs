@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -116,9 +116,10 @@ impl super::Backend for WinitBackend {
         // Poll this process would peg a core doing nothing.
         event_loop.set_control_flow(match self.idle {
             Idle::Wait => ControlFlow::Wait,
-            // The first frame is due immediately; after that each frame
-            // schedules the next one.
-            Idle::Animate { .. } => ControlFlow::Poll,
+            // First frame due immediately; each painted frame then
+            // schedules the next. Never Poll — Poll spins the loop as
+            // fast as the CPU allows.
+            Idle::Animate { .. } => ControlFlow::WaitUntil(Instant::now()),
         });
 
         let mut app = App {
@@ -307,12 +308,24 @@ impl<G: Game> ApplicationHandler for App<G> {
         }
     }
 
-    /// Under `Animate` the timer expiring is what drives the next frame;
-    /// ask for it here. Under `Wait` this does nothing, which is exactly
-    /// why `Wait` costs nothing at idle.
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let (Idle::Animate { .. }, Some(window)) = (self.cfg.idle, self.window.as_ref()) {
-            window.request_redraw();
+    /// Fires when the `WaitUntil` deadline expires (or any event
+    /// arrives). Requesting a redraw HERE, rather than on every loop
+    /// iteration, is what keeps `Animate` at its target rate.
+    ///
+    /// Requesting unconditionally is a busy loop wearing a disguise: the
+    /// redraw is queued instantly, so the loop never actually waits on
+    /// the deadline it just set, and the process pegs a core at ~100%.
+    /// Measured, not theorised — the first version of this did exactly
+    /// that.
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        let due = matches!(
+            cause,
+            StartCause::ResumeTimeReached { .. } | StartCause::Init
+        );
+        if due && matches!(self.cfg.idle, Idle::Animate { .. }) {
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
         }
     }
 }

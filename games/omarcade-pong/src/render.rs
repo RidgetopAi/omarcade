@@ -156,8 +156,13 @@ fn draw_net(canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
 /// 60fps. Sampled once per frame by `physics::step`, never per fixed
 /// tick, so its length does not change with frame rate.
 fn draw_trail(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
-    let n = state.trail.len() as f32;
-    for (i, p) in state.trail.iter().enumerate() {
+    // Skip the newest sample: physics records the ball's CURRENT
+    // position, so trail[0] sits exactly under the ball. Drawing it
+    // costs a blend for a quad nothing can see and slightly muddies the
+    // leading edge, where the ball should be at its most solid.
+    let trail = state.trail.iter().skip(1);
+    let n = state.trail.len().saturating_sub(1) as f32;
+    for (i, p) in trail.enumerate() {
         // Newest is nearly solid, oldest nearly gone.
         let t = 1.0 - (i as f32 / n.max(1.0));
         let alpha = (ease::out_quad(t) * 110.0) as u8;
@@ -207,8 +212,21 @@ fn draw_rally(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Vi
     }
     let scale = vp.text_scale(2.0);
     let s = format!("RALLY {}", state.rally);
+    // Below the net's last dash rather than centred on it — the net
+    // runs down the middle of the field, so a centred label sits
+    // directly on top of it and both become unreadable.
     let x = vp.x(FIELD_W / 2.0) - (text_width(&s, scale) / 2) as i32;
-    text(canvas, &s, x, vp.y(FIELD_H - 40.0), scale, theme.muted);
+    let y = vp.y(FIELD_H - 26.0);
+    // A short backing bar in the field colour, so the label reads even
+    // where it overlaps the net.
+    canvas.fill_rect(
+        x - (4.0 * vp.scale) as i32,
+        y - (3.0 * vp.scale) as i32,
+        text_width(&s, scale) + (8.0 * vp.scale) as u32,
+        (GLYPH_H as u32 * scale) + (6.0 * vp.scale) as u32,
+        theme.background,
+    );
+    text(canvas, &s, x, y, scale, theme.muted);
 }
 
 /// The difficulty select.

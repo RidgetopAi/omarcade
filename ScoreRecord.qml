@@ -56,8 +56,29 @@ Item {
     return out
   }
 
-  // Difficulty labels this game has scores for, in table order.
-  readonly property var difficulties: Object.keys(bestByDifficulty)
+  // Difficulty labels this game has scores for.
+  //
+  // Ordered easy-to-hard where the names are ones we recognise, then
+  // anything else alphabetically. Object.keys alone returns insertion
+  // order, which is best-score order — so a good hard run would list
+  // before a poor easy one and the row would read as ranked rather
+  // than as a scale.
+  readonly property var difficultyOrder: ["easy", "normal", "hard"]
+
+  readonly property var difficulties: {
+    var keys = Object.keys(bestByDifficulty)
+    var known = []
+    var rest = []
+    for (var i = 0; i < keys.length; i++) {
+      if (difficultyOrder.indexOf(keys[i]) >= 0) known.push(keys[i])
+      else rest.push(keys[i])
+    }
+    known.sort(function (a, b) {
+      return difficultyOrder.indexOf(a) - difficultyOrder.indexOf(b)
+    })
+    rest.sort()
+    return known.concat(rest)
+  }
 
   // True when this game has more than one tier, so the cabinet knows
   // whether a difficulty label is worth showing at all.

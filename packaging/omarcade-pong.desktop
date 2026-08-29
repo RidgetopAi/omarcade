@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Omarcade Pong
+GenericName=Arcade Game
+Comment=First to eleven against an opponent that plays like it means it.
+Exec=@BINDIR@/omarcade-pong
+Icon=omarcade
+Terminal=false
+Categories=Game;ArcadeGame;
+Keywords=arcade;pong;retro;omarcade;game;
+StartupNotify=true
+StartupWMClass=omarcade

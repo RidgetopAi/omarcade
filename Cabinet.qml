@@ -211,9 +211,22 @@ Item {
                 return (r && r.record && r.record.name) ? r.record.name : root.prettify(modelData)
               }
 
+              // A single-tier game reads "BEST 4200"; a tiered one lists
+              // each difficulty, because an easy run and a hard run are
+              // different games and collapsing them into one number
+              // would quietly show whichever tier inflates it most.
               meta: {
                 var r = root.recordFor(index)
-                return (r && r.best > 0) ? "BEST " + r.best : "not played yet"
+                if (!r || r.best <= 0) return "not played yet"
+                if (!r.isTiered) return "BEST " + r.best
+
+                var parts = []
+                var by = r.bestByDifficulty
+                for (var i = 0; i < r.difficulties.length; i++) {
+                  var d = r.difficulties[i]
+                  parts.push(d.toUpperCase() + " " + by[d])
+                }
+                return parts.join("   ")
               }
 
               detail: modelData

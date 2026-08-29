@@ -13,7 +13,7 @@ BINDIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 APPDIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONDIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
-GAMES=(omarcade-breakout)
+GAMES=(omarcade-breakout omarcade-pong)
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 say() { printf '  %s\n' "$*"; }
@@ -23,7 +23,11 @@ if [[ ${1:-} == --uninstall ]]; then
   for game in "${GAMES[@]}"; do
     rm -f "$BINDIR/$game" && say "removed $BINDIR/$game"
   done
-  rm -f "$APPDIR/omarcade.desktop" && say "removed $APPDIR/omarcade.desktop"
+  for game in "${GAMES[@]}"; do
+    rm -f "$APPDIR/$game.desktop" && say "removed $APPDIR/$game.desktop"
+  done
+  # The pre-suite entry, from when Breakout was the only title.
+  rm -f "$APPDIR/omarcade.desktop"
   rm -f "$ICONDIR/omarcade.svg"    && say "removed $ICONDIR/omarcade.svg"
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$APPDIR" || true
   echo "Done. (Hyprland rules in ~/.config/hypr/omarcade.lua were left alone.)"
@@ -52,11 +56,20 @@ for game in "${GAMES[@]}"; do
   say "$BINDIR/$game"
 done
 
-# @BINDIR@ is a placeholder because .desktop Exec= needs an absolute path
-# and does not expand ~ or $HOME.
-sed "s|@BINDIR@|$BINDIR|g" "$REPO_ROOT/packaging/omarcade.desktop" > "$APPDIR/omarcade.desktop"
-chmod 644 "$APPDIR/omarcade.desktop"
-say "$APPDIR/omarcade.desktop"
+# One launcher entry per game. @BINDIR@ is a placeholder because
+# .desktop Exec= needs an absolute path and expands neither ~ nor $HOME.
+for game in "${GAMES[@]}"; do
+  src="$REPO_ROOT/packaging/$game.desktop"
+  [[ -f $src ]] || die "no launcher entry for $game: $src"
+  sed "s|@BINDIR@|$BINDIR|g" "$src" > "$APPDIR/$game.desktop"
+  chmod 644 "$APPDIR/$game.desktop"
+  say "$APPDIR/$game.desktop"
+done
+
+# Session 3 installed a single 'omarcade.desktop' back when Breakout was
+# the only title. Left behind it becomes a duplicate Breakout entry in
+# the app menu, so an upgrade clears it.
+rm -f "$APPDIR/omarcade.desktop"
 
 install -m 644 "$REPO_ROOT/packaging/omarcade.svg" "$ICONDIR/omarcade.svg"
 say "$ICONDIR/omarcade.svg"
@@ -65,7 +78,7 @@ command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q
 command -v gtk-update-icon-cache   >/dev/null 2>&1 && gtk-update-icon-cache -qtf "${ICONDIR%/scalable/apps}" 2>/dev/null || true
 
 echo
-echo "Installed. Launch from your app menu, or run: ${GAMES[0]}"
+echo "Installed ${#GAMES[@]} games. Launch from your app menu, or run: ${GAMES[*]}"
 case ":$PATH:" in
   *":$BINDIR:"*) ;;
   *) echo "NOTE: $BINDIR is not on your PATH; the app-menu entry still works." ;;

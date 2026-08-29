@@ -13,7 +13,7 @@
 //!    reflecting off both flips the velocity twice and sends it back
 //!    the way it came. Only the deepest collision is resolved per tick.
 
-use crate::geom::{Axis, Rect, Vec2};
+use crate::geom::{Axis, Vec2};
 use crate::state::{GameState, Phase, BALL_SPEED, PADDLE_SPEED};
 
 /// Simulation rate. High enough that per-tick movement (~1.75 units at

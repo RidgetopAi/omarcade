@@ -2,6 +2,10 @@
 //! Possible because Canvas wraps any &mut [u32].
 #[path = "../src/geom.rs"]
 mod geom;
+#[path = "../src/physics.rs"]
+mod physics;
+#[path = "../src/render.rs"]
+mod render;
 #[path = "../src/state.rs"]
 mod state;
 
@@ -65,33 +69,42 @@ fn write_png(path: &str, w: u32, h: u32, px: &[u32]) -> std::io::Result<()> {
 }
 
 fn main() {
-    let out = std::env::args().nth(1).unwrap_or_else(|| "/tmp/frame.png".into());
-    let (w, h) = (FIELD_W as u32, FIELD_H as u32);
+    let scene = std::env::args().nth(1).unwrap_or_else(|| "ready".into());
+    let out = std::env::args().nth(2).unwrap_or_else(|| "/tmp/frame.png".into());
+    let w: u32 = std::env::args().nth(3).and_then(|v| v.parse().ok()).unwrap_or(FIELD_W as u32);
+    let h: u32 = std::env::args().nth(4).and_then(|v| v.parse().ok()).unwrap_or(FIELD_H as u32);
+
     let theme = Theme::load();
-    let s = GameState::new();
+    let mut s = GameState::new();
+
+    // Build the requested situation directly — no need to play to it.
+    match scene.as_str() {
+        "ready" => {}
+        "playing" => {
+            s.launch();
+            for _ in 0..1500 { physics::step_fixed(&mut s); }
+        }
+        "midgame" => {
+            s.launch();
+            for _ in 0..40_000 {
+                let t = s.ball.pos.x; let c = s.paddle.center_x();
+                s.paddle.dir = if (t - c).abs() < 4.0 { 0.0 } else if t > c { 1.0 } else { -1.0 };
+                physics::step_fixed(&mut s);
+                if s.phase == state::Phase::Ready { s.launch(); }
+            }
+        }
+        "won" => { for b in &mut s.bricks { b.alive = false; } s.phase = state::Phase::Won; s.score = 600; }
+        "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.score = 250; }
+        other => { eprintln!("unknown scene {other}"); std::process::exit(2); }
+    }
 
     let mut buf = vec![0u32; (w * h) as usize];
-    let mut c = Canvas::new(&mut buf, w, h);
-
-    // Provisional rendering, inline: render.rs is file 4.
-    c.clear(theme.background);
-    let palette = [theme.red, theme.orange, theme.yellow, theme.green, theme.cyan, theme.blue];
-    for b in &s.bricks {
-        if !b.alive { continue; }
-        c.fill_rect(b.rect.x as i32, b.rect.y as i32, b.rect.w as u32, b.rect.h as u32,
-                    palette[b.color_index % palette.len()]);
+    {
+        let mut c = Canvas::new(&mut buf, w, h);
+        render::draw(&s, &mut c, &theme);
     }
-    let p = s.paddle.rect();
-    c.fill_rect(p.x as i32, p.y as i32, p.w as u32, p.h as u32, theme.foreground);
-    let ball = s.ball.rect();
-    c.fill_rect(ball.x as i32, ball.y as i32, ball.w as u32, ball.h as u32, theme.accent);
-    // field border, so we can see the play area bounds
-    c.fill_rect(0, 0, w, 2, theme.muted);
-    c.fill_rect(0, (h - 2) as i32, w, 2, theme.muted);
-    c.fill_rect(0, 0, 2, h, theme.muted);
-    c.fill_rect((w - 2) as i32, 0, 2, h, theme.muted);
-
     write_png(&out, w, h, &buf).expect("write png");
-    println!("wrote {out} ({w}x{h}), {} bricks", s.bricks_remaining());
+    println!("{out}: scene={scene} {w}x{h} phase={:?} bricks={} score={} lives={}",
+        s.phase, s.bricks_remaining(), s.score, s.lives);
     let _ = Color::BLACK;
 }

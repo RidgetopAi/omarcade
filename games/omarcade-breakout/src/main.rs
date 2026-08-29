@@ -1,20 +1,23 @@
 //! Breakout — the first Omarcade title.
 //!
-//! Session 1 is the chassis, not the game: this opens a window in the
-//! user's live theme colours and closes on Esc. The paddle, ball and
-//! bricks arrive in session 2.
+//! This file is only wiring: input to intent, time to the simulation,
+//! state to the renderer. The game lives in `state`/`physics`, the
+//! pixels in `render`.
 //!
-//! Worth noticing what this file does *not* import. There is no winit
-//! and no softbuffer here, and none in this crate's Cargo.toml either.
-//! Everything comes through `omarcade_core`'s seam, which is what makes
-//! the later layer-shell backend a drop-in rather than a rewrite.
+//! Note what is still absent, as in session 1: no winit, no softbuffer,
+//! not in this file and not in this crate's Cargo.toml. Everything
+//! crosses through `omarcade_core`'s seam.
 
 mod geom;
 mod physics;
+mod render;
 mod state;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::{Backend, Canvas, Game, InputEvent, Key, Theme};
+
+use physics::Accumulator;
+use state::{GameState, Phase};
 
 const TITLE: &str = "Omarcade Breakout";
 const WIDTH: u32 = 960;
@@ -22,79 +25,82 @@ const HEIGHT: u32 = 720;
 
 struct Breakout {
     theme: Theme,
-    /// Set once a resize is seen, so the test pattern can be drawn
-    /// relative to the real surface rather than the requested size.
-    size: (u32, u32),
+    state: GameState,
+    accumulator: Accumulator,
+    /// Both directions tracked independently, rather than a single
+    /// `dir` that the last key wins. Holding Left and tapping Right
+    /// would otherwise release the paddle when Right lifts, leaving it
+    /// stuck while Left is still physically held.
+    left_held: bool,
+    right_held: bool,
 }
 
 impl Breakout {
     fn new(theme: Theme) -> Self {
-        Breakout { theme, size: (WIDTH, HEIGHT) }
+        Breakout {
+            theme,
+            state: GameState::new(),
+            accumulator: Accumulator::new(),
+            left_held: false,
+            right_held: false,
+        }
+    }
+
+    /// Resolve held keys into a paddle direction. Both held cancels out,
+    /// which is what a player expects.
+    fn apply_direction(&mut self) {
+        self.state.paddle.dir = match (self.left_held, self.right_held) {
+            (true, false) => -1.0,
+            (false, true) => 1.0,
+            _ => 0.0,
+        };
     }
 }
 
 impl Game for Breakout {
     fn on_input(&mut self, event: InputEvent) -> bool {
         match event {
-            // Esc quits. Session 2 will want this to open a pause menu
-            // instead, which is exactly why the seam lets the game
-            // decide rather than the backend.
-            InputEvent::KeyDown(Key::Escape) => false,
+            InputEvent::KeyDown(Key::Escape) => return false,
 
-            InputEvent::Resized { width, height } => {
-                self.size = (width, height);
-                true
+            InputEvent::KeyDown(Key::Left) => self.left_held = true,
+            InputEvent::KeyUp(Key::Left) => self.left_held = false,
+            InputEvent::KeyDown(Key::Right) => self.right_held = true,
+            InputEvent::KeyUp(Key::Right) => self.right_held = false,
+
+            InputEvent::KeyDown(Key::Space) => self.state.launch(),
+
+            // Enter restarts, but only once the game has actually
+            // ended — otherwise a stray press wipes a game in progress.
+            InputEvent::KeyDown(Key::Enter) => {
+                if matches!(self.state.phase, Phase::Won | Phase::Lost) {
+                    self.state.restart();
+                }
             }
 
-            // The compositor is closing us; nothing to save yet.
-            InputEvent::CloseRequested => true,
-
-            _ => true,
+            _ => {}
         }
+
+        self.apply_direction();
+        true
     }
 
-    fn update(&mut self, _dt: f32) {
-        // Nothing moves yet. When it does, this is where it moves — and
-        // the backend switches from Idle::Wait to Idle::Animate.
+    fn update(&mut self, dt: f32) {
+        physics::step(&mut self.state, &mut self.accumulator, dt);
     }
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
-        let t = &self.theme;
-        canvas.clear(t.background);
-
-        let (w, h) = (canvas.width() as i32, canvas.height() as i32);
-
-        // A row of theme swatches. This is a check, not decoration: if
-        // these are the colours in colors.toml then the theme really is
-        // live, and if the last one is not cut off at the right edge
-        // then fill_rect is clipping correctly on a real surface.
-        let swatches = [t.red, t.orange, t.yellow, t.green, t.cyan, t.blue, t.magenta];
-        let sw = 96;
-        let sh = 96;
-        let total = sw * swatches.len() as i32;
-        let x0 = (w - total) / 2;
-        let y0 = (h - sh) / 2;
-
-        for (i, colour) in swatches.iter().enumerate() {
-            canvas.fill_rect(x0 + i as i32 * sw, y0, sw as u32, sh as u32, *colour);
-        }
-
-        // Foreground bar above the swatches, and an accent underline
-        // deliberately drawn wider than the window so it must clip.
-        canvas.fill_rect(x0, y0 - 48, total as u32, 16, t.foreground);
-        canvas.fill_rect(-40, y0 + sh + 32, (w + 200) as u32, 8, t.accent);
+        render::draw(&self.state, canvas, &self.theme);
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Read the palette once at startup. Reacting to a live theme change
-    // is a theme-set.d hook, and belongs with the marquee work.
     let theme = Theme::load();
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
-        // Nothing animates in session 1, so block until the compositor
-        // has something for us. This is the ~0% idle CPU requirement.
-        .idle(Idle::Wait)
+        // Session 1 shipped Idle::Wait, which costs nothing but never
+        // redraws on its own. There is a ball to move now, so the loop
+        // paces itself with WaitUntil — still never Poll.
+        .idle(Idle::Animate { fps: 60 })
         .run(Breakout::new(theme))?;
 
     Ok(())

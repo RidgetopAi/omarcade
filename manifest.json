@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ridgetopai.omarcade",
+  "name": "Omarcade",
+  "version": "0.1.0",
+  "author": "Brian Ridgetopai",
+  "description": "High scores from the Omarcade arcade suite, live in your bar",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "shell/Marquee.qml"
+  },
+  "barWidget": {
+    "displayName": "Omarcade",
+    "description": "Best score across every Omarcade game",
+    "category": "Games",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

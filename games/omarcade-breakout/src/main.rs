@@ -10,6 +10,7 @@
 //! the later layer-shell backend a drop-in rather than a rewrite.
 
 mod geom;
+mod state;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::{Backend, Canvas, Game, InputEvent, Key, Theme};

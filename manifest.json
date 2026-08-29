@@ -6,10 +6,12 @@
   "author": "Brian Ridgetopai",
   "description": "High scores from the Omarcade arcade suite, live in your bar",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "panel"
   ],
   "entryPoints": {
-    "barWidget": "shell/Marquee.qml"
+    "barWidget": "Marquee.qml",
+    "panel": "Cabinet.qml"
   },
   "barWidget": {
     "displayName": "Omarcade",

@@ -176,8 +176,11 @@ BarWidget {
     }
     onExited: if (root.bar) root.bar.hideTooltip(root)
 
-    // Re-scan on click, so someone who just finished a game does not wait
-    // out the timer to see it.
-    onClicked: root.rescan()
+    // Open the cabinet. Re-scan first, so someone who just finished a
+    // game does not wait out the timer to see it.
+    onClicked: {
+      root.rescan()
+      Quickshell.execDetached(["omarchy-shell", "shell", "toggle", root.moduleName, "{}"])
+    }
   }
 }

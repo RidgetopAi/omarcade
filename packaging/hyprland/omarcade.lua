@@ -30,3 +30,14 @@ o.window(OMARCADE, { tag = "-default-opacity", opacity = "1 1" })
 -- Hyprland's idle timer sees no pointer motion and would otherwise
 -- dim or lock during a long rally.
 o.window(OMARCADE, { idle_inhibit = "always" })
+
+-- The cabinet picker is a Quickshell FloatingWindow, so its class is
+-- org.quickshell like every other Omarchy panel -- matching on class
+-- would float all of them. Match the title instead, which is ours.
+local CABINET = { class = "^(org\\.quickshell)$", title = "^(Omarcade)$" }
+o.window(CABINET, { float = true, center = true, size = { 560, 420 } })
+
+-- Same opt-out the games need: Omarchy's default 0.985/0.96 makes the
+-- desktop bleed through the picker, which reads as a rendering fault
+-- rather than a style.
+o.window(CABINET, { tag = "-default-opacity", opacity = "1 1" })

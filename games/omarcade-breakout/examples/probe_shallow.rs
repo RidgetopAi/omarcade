@@ -1,7 +1,6 @@
 //! Force shallow-angle play: hit the ball with the paddle EDGE every
 //! time, which is what actually produces near-horizontal trajectories.
-#[path = "../src/geom.rs"]
-mod geom;
+use omarcade_core::geom;
 #[path = "../src/physics.rs"]
 mod physics;
 #[path = "../src/state.rs"]

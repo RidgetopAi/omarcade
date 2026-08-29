@@ -1,8 +1,7 @@
 //! Tunnelling: can the ball ever pass through a brick without breaking it?
 //! Fires the ball at a brick wall at escalating speeds and checks that a
 //! ball which ends up beyond a brick always destroyed something.
-#[path = "../src/geom.rs"]
-mod geom;
+use omarcade_core::geom;
 #[path = "../src/physics.rs"]
 mod physics;
 #[path = "../src/state.rs"]

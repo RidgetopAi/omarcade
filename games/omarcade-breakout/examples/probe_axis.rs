@@ -1,7 +1,6 @@
 //! Sweep a small rect around a brick from every direction and print the
 //! axis chosen. Reveals systematic errors that hand-picked tests hide.
-#[path = "../src/geom.rs"]
-mod geom;
+use omarcade_core::geom;
 use geom::{Axis, Rect, Vec2};
 
 fn main() {

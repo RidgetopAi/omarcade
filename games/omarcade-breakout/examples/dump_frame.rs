@@ -1,7 +1,6 @@
 //! Render a GameState to a PNG with no window, no compositor.
 //! Possible because Canvas wraps any &mut [u32].
-#[path = "../src/geom.rs"]
-mod geom;
+use omarcade_core::geom;
 #[path = "../src/physics.rs"]
 mod physics;
 #[path = "../src/render.rs"]

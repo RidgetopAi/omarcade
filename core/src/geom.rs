@@ -1,13 +1,19 @@
-//! Geometry for the play field.
+//! Geometry for a play field.
 //!
 //! Deliberately free of game concepts — no paddle, no ball, no bricks.
 //! Everything here is pure maths over `f32`, which is what lets it be
-//! tested exhaustively without constructing a game, and lets
+//! tested exhaustively without constructing a game, and lets a game's
 //! `physics.rs` stay about *rules* rather than arithmetic.
 //!
 //! All coordinates are **play-field** coordinates, not pixels. The
-//! window gets tiled to whatever size Hyprland likes; the game plays
+//! window gets tiled to whatever size Hyprland likes; a game plays
 //! identically regardless because scaling happens at render time.
+//!
+//! This started life inside the Breakout crate. Its own first line
+//! claimed it was free of game concepts, and that turned out to be
+//! true enough that the second title needed every word of it — so it
+//! moved here rather than being copied. Anything added below must keep
+//! that property: if it names a game, it belongs in that game.
 
 /// A 2D vector: a position, a velocity, or a displacement.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -158,9 +164,11 @@ impl Rect {
     /// reflects twice and comes back out the way it went in.
     pub fn collision_axis(&self, o: &Rect) -> Option<Axis> {
         let p = self.penetration(o)?;
-        // Ties resolve to Y: in Breakout the interesting collisions are
-        // vertical (paddle, brick underside) and a diagonal corner hit
-        // reads better bouncing back down than sideways.
+        // An exact tie means a perfect corner strike, where neither face
+        // was reached first and no answer is more correct than the other.
+        // It resolves to Y, which is only a tie-break — a game that cares
+        // which way a corner throws the ball should not be leaning on
+        // this, it should test the incoming direction itself.
         Some(if p.x < p.y { Axis::X } else { Axis::Y })
     }
 }

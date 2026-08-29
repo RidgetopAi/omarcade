@@ -1,6 +1,5 @@
 //! Trace clamp_angle step by step to see where vy is lost.
-#[path = "../src/geom.rs"]
-mod geom;
+use omarcade_core::geom;
 use geom::Vec2;
 
 const SPEED: f32 = 420.0;

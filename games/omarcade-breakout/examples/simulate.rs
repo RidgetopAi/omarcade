@@ -1,8 +1,7 @@
 //! Headless soak test: play the game for thousands of ticks with a
 //! perfect-tracking paddle and assert nothing pathological happens.
 //! No window, no compositor, deterministic.
-#[path = "../src/geom.rs"]
-mod geom;
+use omarcade_core::geom;
 #[path = "../src/physics.rs"]
 mod physics;
 #[path = "../src/state.rs"]

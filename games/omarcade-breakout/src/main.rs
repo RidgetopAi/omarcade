@@ -8,7 +8,11 @@
 //! not in this file and not in this crate's Cargo.toml. Everything
 //! crosses through `omarcade_core`'s seam.
 
-mod geom;
+/// Geometry now lives in the shared core: Pong needed every line of
+/// it, which is the test of whether a shared crate earns its keep.
+/// Re-exported under the old path so nothing else in the crate moved.
+use omarcade_core::geom;
+
 mod physics;
 mod render;
 mod state;

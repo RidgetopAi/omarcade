@@ -1,6 +1,5 @@
 //! Why did the brick collision not register?
-#[path = "../src/geom.rs"]
-mod geom;
+use omarcade_core::geom;
 #[path = "../src/state.rs"]
 mod state;
 use geom::{Rect, Vec2};

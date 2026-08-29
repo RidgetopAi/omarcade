@@ -328,11 +328,6 @@ impl GameState {
         }
     }
 
-    /// The play field as a rect.
-    pub fn field(&self) -> Rect {
-        Rect::new(0.0, 0.0, FIELD_W, FIELD_H)
-    }
-
     pub fn paddle(&self, side: Side) -> &Paddle {
         match side {
             Side::Left => &self.left,

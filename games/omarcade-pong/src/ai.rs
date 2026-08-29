@@ -138,9 +138,13 @@ impl Opponent {
         self.decisions = 0;
     }
 
-    /// Where it currently believes it should be. Exposed for the
-    /// probes, which measure whether it is committing to the wrong
-    /// place rather than merely arriving late.
+    /// Where it currently believes it should be.
+    ///
+    /// For the probes and tests, which measure whether it is committing
+    /// to the wrong PLACE rather than merely arriving late — the
+    /// distinction the whole design rests on. The game itself never
+    /// asks; it only sees the paddle move.
+    #[allow(dead_code)]
     pub fn target(&self) -> f32 {
         self.target_y
     }
@@ -427,7 +431,7 @@ mod tests {
                 predict_intercept(Vec2::new(80.0, 360.0), Vec2::new(300.0, vy), FACE, BALL_RADIUS, 8)
             {
                 assert!(
-                    hit >= BALL_RADIUS - 1e-3 && hit <= FIELD_H - BALL_RADIUS + 1e-3,
+                    (BALL_RADIUS - 1e-3..=FIELD_H - BALL_RADIUS + 1e-3).contains(&hit),
                     "vy {vy}: prediction {hit} is off the field"
                 );
             }

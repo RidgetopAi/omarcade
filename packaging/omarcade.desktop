@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Omarcade Breakout
+GenericName=Arcade Game
+Comment=Break every brick. A theme-reactive arcade game native to Omarchy.
+Exec=@BINDIR@/omarcade-breakout
+Icon=omarcade
+Terminal=false
+Categories=Game;ArcadeGame;
+Keywords=arcade;breakout;retro;omarcade;game;
+StartupNotify=true
+StartupWMClass=omarcade

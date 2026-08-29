@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Omarcade">
+  <title>Omarcade</title>
+  <!-- Cabinet plate. Opaque on purpose: launcher icons render against
+       unknown backgrounds, and a transparent glyph vanishes on light themes. -->
+  <rect width="128" height="128" rx="24" fill="#1e2326"/>
+
+  <!-- Brick wall: three rows, offset like real masonry. -->
+  <g>
+    <rect x="20" y="26" width="26" height="11" rx="2" fill="#e67e80"/>
+    <rect x="51" y="26" width="26" height="11" rx="2" fill="#e69875"/>
+    <rect x="82" y="26" width="26" height="11" rx="2" fill="#dbbc7f"/>
+
+    <rect x="20" y="42" width="26" height="11" rx="2" fill="#dbbc7f"/>
+    <rect x="51" y="42" width="26" height="11" rx="2" fill="#a7c080"/>
+    <rect x="82" y="42" width="26" height="11" rx="2" fill="#83c092"/>
+
+    <rect x="35" y="58" width="26" height="11" rx="2" fill="#7fbbb3"/>
+    <rect x="66" y="58" width="26" height="11" rx="2" fill="#d699b6"/>
+  </g>
+
+  <!-- Ball, mid-flight between wall and paddle. -->
+  <circle cx="76" cy="86" r="7" fill="#d3c6aa"/>
+
+  <!-- Paddle. -->
+  <rect x="38" y="103" width="52" height="10" rx="5" fill="#a7c080"/>
+</svg>

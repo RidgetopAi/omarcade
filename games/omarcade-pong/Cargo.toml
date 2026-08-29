@@ -1,0 +1,15 @@
+[package]
+name = "omarcade-pong"
+description = "Pong, the second Omarcade title."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# omarcade-core and nothing else, exactly as Breakout does. winit and
+# softbuffer stay absent so the rendering seam remains a fact about the
+# build rather than a convention.
+[dependencies]
+omarcade-core = { path = "../../core" }

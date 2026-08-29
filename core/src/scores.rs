@@ -28,6 +28,13 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// and cost nothing to carry.
 pub const KEEP: usize = 10;
 
+/// The default difficulty label, used by a game that has only one.
+///
+/// Breakout's existing records predate the field entirely and
+/// deserialize to this, so its history stays one comparable table
+/// rather than splitting into a labelled and an unlabelled half.
+pub const DEFAULT_DIFFICULTY: &str = "normal";
+
 /// One scoring run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -36,6 +43,39 @@ pub struct Entry {
     /// timestamp type so the file stays readable and the crate stays
     /// dependency-light; the marquee only ever displays it.
     pub at: String,
+    /// Which difficulty this run was played on.
+    ///
+    /// A free string rather than an enum: core has no business knowing
+    /// that Pong calls its tiers easy/normal/hard while some later game
+    /// counts levels. The marquee groups by whatever it finds.
+    ///
+    /// Scores from different difficulties are NOT comparable — an easy
+    /// run and a hard run are different games — so [`best_for`] is the
+    /// honest query and [`best`] is only meaningful for a single-tier
+    /// game.
+    ///
+    /// [`best_for`]: ScoreFile::best_for
+    /// [`best`]: ScoreFile::best
+    #[serde(default = "default_difficulty")]
+    pub difficulty: String,
+}
+
+fn default_difficulty() -> String {
+    DEFAULT_DIFFICULTY.to_string()
+}
+
+/// Which direction wins.
+///
+/// Nothing outside the game itself can know this: Breakout's score is
+/// points and bigger is better, but a game scored on time, on strokes,
+/// or on goals conceded ranks the other way. Before this existed the
+/// answer was hardcoded — `sort desc` + `truncate` would have thrown a
+/// lower-is-better game's BEST runs off the table at write time.
+///
+/// The game declares it; core and the marquee read it. That keeps
+/// ranking generic — adding a game never means editing the marquee.
+fn default_higher_is_better() -> bool {
+    true
 }
 
 /// One game's score file.
@@ -47,21 +87,39 @@ pub struct ScoreFile {
     pub id: String,
     /// Human label for the marquee: "Breakout".
     pub name: String,
-    /// Descending by score, capped at [`KEEP`].
+    /// Whether a bigger number is a better result. See
+    /// [`default_higher_is_better`] for why this is declared rather than
+    /// assumed. Absent in v1 records, which were all points-scored.
+    #[serde(default = "default_higher_is_better")]
+    pub higher_is_better: bool,
+    /// Best first, capped at [`KEEP`] — where "best" follows
+    /// [`higher_is_better`](Self::higher_is_better), not the raw number.
     pub entries: Vec<Entry>,
     pub updated_at: String,
 }
 
 impl ScoreFile {
-    /// A record with no scores yet.
+    /// A record with no scores yet, ranked higher-is-better.
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
             id: id.into(),
             name: name.into(),
+            higher_is_better: true,
             entries: Vec::new(),
             updated_at: now_rfc3339(),
         }
+    }
+
+    /// Declare that a smaller number is the better result — strokes,
+    /// seconds, goals conceded.
+    ///
+    /// Call this on the record BEFORE the first [`record`](Self::record):
+    /// it decides which entries survive the cap, so flipping it after a
+    /// table has been trimmed cannot recover what was already dropped.
+    pub fn lower_is_better(mut self) -> Self {
+        self.higher_is_better = false;
+        self
     }
 
     /// Load this game's record, or start a fresh one.
@@ -89,26 +147,105 @@ impl ScoreFile {
         }
     }
 
-    /// Add a score, keeping the table sorted and capped.
+    /// Load, then apply this game's ranking direction.
+    ///
+    /// The direction is a fact about the GAME, not about the file: a
+    /// stale record written before the game declared itself would
+    /// otherwise keep ranking the old way forever. The code is the
+    /// authority, the same way it already is for the display name.
+    pub fn load_or_new_ranked(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        higher_is_better: bool,
+    ) -> Self {
+        let mut f = Self::load_or_new(id, name);
+        if f.higher_is_better != higher_is_better {
+            f.higher_is_better = higher_is_better;
+            // The stored table was ordered by the other rule, so its
+            // order — and which entries the cap kept — no longer mean
+            // what they claim. Re-sort what survives.
+            f.sort_entries();
+        }
+        f
+    }
+
+    /// Is `score` a better result than `other` under this record's rule?
+    pub fn beats(&self, score: u32, other: u32) -> bool {
+        if self.higher_is_better { score > other } else { score < other }
+    }
+
+    /// Order entries best-first under this record's rule.
+    ///
+    /// `sort_by_key` is stable, so ties keep the older run first — it
+    /// got there first.
+    fn sort_entries(&mut self) {
+        if self.higher_is_better {
+            self.entries.sort_by_key(|e| std::cmp::Reverse(e.score));
+        } else {
+            self.entries.sort_by_key(|e| e.score);
+        }
+    }
+
+    /// Add a score at the default difficulty.
     ///
     /// Returns whether this is the new best — the caller may want to say so
     /// on the game-over screen.
     pub fn record(&mut self, score: u32) -> bool {
-        let is_best = self.entries.first().is_none_or(|e| score > e.score);
+        self.record_at(score, DEFAULT_DIFFICULTY)
+    }
 
-        self.entries.push(Entry { score, at: now_rfc3339() });
-        // Descending by score. sort_by_key is stable, so ties keep the older
-        // run first — it got there first.
-        self.entries.sort_by_key(|e| std::cmp::Reverse(e.score));
+    /// Add a score played at `difficulty`, keeping the table sorted and
+    /// capped.
+    ///
+    /// "Best" here means best on that same difficulty — an easy run does
+    /// not become the new best simply by outscoring every hard one.
+    pub fn record_at(&mut self, score: u32, difficulty: &str) -> bool {
+        let is_best = self
+            .best_for(difficulty)
+            .is_none_or(|b| self.beats(score, b));
+
+        self.entries.push(Entry {
+            score,
+            at: now_rfc3339(),
+            difficulty: difficulty.to_string(),
+        });
+        self.sort_entries();
         self.entries.truncate(KEEP);
         self.updated_at = now_rfc3339();
 
         is_best
     }
 
-    /// The current best, if any run has been recorded.
+    /// The current best across every difficulty.
+    ///
+    /// Only meaningful for a single-tier game. Anything with a
+    /// difficulty selector wants [`best_for`](Self::best_for): mixing
+    /// tiers compares runs that were never the same game.
     pub fn best(&self) -> Option<u32> {
         self.entries.first().map(|e| e.score)
+    }
+
+    /// The best run on one difficulty.
+    ///
+    /// Entries are already ordered best-first, so the first match wins
+    /// without re-ranking.
+    pub fn best_for(&self, difficulty: &str) -> Option<u32> {
+        self.entries
+            .iter()
+            .find(|e| e.difficulty == difficulty)
+            .map(|e| e.score)
+    }
+
+    /// Every difficulty this record holds a score for, best-first
+    /// within each, in the order they appear in the table.
+    pub fn difficulties(&self) -> Vec<&str> {
+        let mut seen: Vec<&str> = Vec::new();
+        for e in &self.entries {
+            if !seen.contains(&e.difficulty.as_str()) {
+                seen.push(&e.difficulty);
+            }
+        }
+        seen
     }
 
     /// Write atomically to the scores directory.
@@ -318,6 +455,128 @@ mod tests {
         // race other tests in this binary. Assert the shape instead.
         let dir = scores_dir().expect("HOME is set in a test environment");
         assert!(dir.ends_with("omarcade/scores"), "got {dir:?}");
+    }
+
+    // ------------------------------------------------------------------
+    // Ranking direction. Before this was declared, `sort desc + truncate`
+    // threw a lower-is-better game's BEST runs off the table at write
+    // time — data loss on disk, not just a display bug.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn lower_is_better_ranks_the_smallest_first() {
+        let mut f = ScoreFile::new("omarcade-test", "Test").lower_is_better();
+        for s in [50, 300, 150, 20, 200] {
+            f.record(s);
+        }
+        let scores: Vec<u32> = f.entries.iter().map(|e| e.score).collect();
+        assert_eq!(scores, vec![20, 50, 150, 200, 300]);
+        assert_eq!(f.best(), Some(20));
+    }
+
+    #[test]
+    fn lower_is_better_calls_a_smaller_score_the_new_best() {
+        let mut f = ScoreFile::new("omarcade-test", "Test").lower_is_better();
+        assert!(f.record(100), "the first run is always a best");
+        assert!(f.record(40), "40 beats 100 when lower wins");
+        assert!(!f.record(90), "90 does not beat 40");
+        assert_eq!(f.best(), Some(40));
+    }
+
+    #[test]
+    fn the_cap_keeps_the_best_runs_under_either_rule() {
+        // The regression this whole field exists for: the cap must drop
+        // the WORST entries, and "worst" depends on the direction.
+        let mut low = ScoreFile::new("omarcade-test", "Test").lower_is_better();
+        for s in 1..=(KEEP as u32 + 25) {
+            low.record(s);
+        }
+        assert_eq!(low.entries.len(), KEEP);
+        assert_eq!(low.best(), Some(1), "1 is the best possible run here");
+        assert_eq!(
+            low.entries.last().unwrap().score,
+            KEEP as u32,
+            "the cap must drop the LARGEST scores when lower is better"
+        );
+    }
+
+    #[test]
+    fn direction_survives_a_round_trip_and_defaults_to_higher() {
+        let f = ScoreFile::new("omarcade-test", "Test").lower_is_better();
+        let json = serde_json::to_string(&f).unwrap();
+        let back: ScoreFile = serde_json::from_str(&json).unwrap();
+        assert!(!back.higher_is_better);
+
+        // A v1 record predates the field entirely.
+        let v1 = r#"{"schema_version":1,"id":"x","name":"X",
+                     "entries":[],"updated_at":"2026-01-01T00:00:00Z"}"#;
+        let parsed: ScoreFile = serde_json::from_str(v1).unwrap();
+        assert!(parsed.higher_is_better, "v1 records were all points-scored");
+    }
+
+    // ------------------------------------------------------------------
+    // Difficulty
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn a_v1_entry_without_difficulty_still_loads() {
+        // Brian's existing Breakout scores look exactly like this. They
+        // must survive, or the marquee goes blank on upgrade.
+        let v1 = r#"{"schema_version":1,"id":"omarcade-breakout","name":"Breakout",
+                     "entries":[{"score":1234,"at":"2026-08-29T02:31:00Z"}],
+                     "updated_at":"2026-08-29T02:31:00Z"}"#;
+        let f: ScoreFile = serde_json::from_str(v1).unwrap();
+        assert_eq!(f.best(), Some(1234));
+        assert_eq!(f.entries[0].difficulty, DEFAULT_DIFFICULTY);
+        assert!(f.higher_is_better);
+    }
+
+    #[test]
+    fn best_is_tracked_per_difficulty() {
+        let mut f = ScoreFile::new("omarcade-pong", "Pong");
+        f.record_at(500, "easy");
+        f.record_at(300, "hard");
+
+        assert_eq!(f.best_for("easy"), Some(500));
+        assert_eq!(f.best_for("hard"), Some(300));
+        assert_eq!(f.best_for("nightmare"), None);
+    }
+
+    #[test]
+    fn a_big_easy_score_is_not_a_new_best_on_hard() {
+        let mut f = ScoreFile::new("omarcade-pong", "Pong");
+        f.record_at(300, "hard");
+        // Outscores every hard run, but it was a different game.
+        assert!(f.record_at(9000, "easy"), "still a best FOR EASY");
+        assert_eq!(f.best_for("hard"), Some(300), "hard's best is untouched");
+    }
+
+    #[test]
+    fn difficulties_are_listed_without_duplicates() {
+        let mut f = ScoreFile::new("omarcade-pong", "Pong");
+        f.record_at(10, "easy");
+        f.record_at(30, "hard");
+        f.record_at(20, "easy");
+        let mut d = f.difficulties();
+        d.sort_unstable();
+        assert_eq!(d, vec!["easy", "hard"]);
+    }
+
+    #[test]
+    fn load_or_new_ranked_lets_the_code_override_a_stale_file() {
+        // A record written before the game declared its direction.
+        let stale = r#"{"schema_version":1,"id":"x","name":"X",
+                        "higher_is_better":true,
+                        "entries":[{"score":9,"at":"t","difficulty":"normal"},
+                                   {"score":2,"at":"t","difficulty":"normal"}],
+                        "updated_at":"t"}"#;
+        let mut f: ScoreFile = serde_json::from_str(stale).unwrap();
+        assert_eq!(f.best(), Some(9));
+
+        // The game now says lower wins; the table must be re-ranked.
+        f.higher_is_better = false;
+        f.sort_entries();
+        assert_eq!(f.best(), Some(2));
     }
 
     #[test]

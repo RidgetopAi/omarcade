@@ -11,8 +11,10 @@ import qs.Ui
 // weekend; a cabinet marquee that knows about all of them is not.
 //
 // It owns no state of its own. Games write JSON into the scores
-// directory, this scans that directory and watches each file, and the
-// highest number wins. Adding a second game needs no change here.
+// directory, and this scans that directory and watches each file.
+// Adding a game needs no change here: ranking is declared in each
+// record rather than assumed by this widget, so a game where a LOWER
+// score wins is read correctly without a single line about that game.
 BarWidget {
   id: root
   moduleName: "ridgetopai.omarcade"
@@ -24,24 +26,45 @@ BarWidget {
   // Game ids discovered on disk, e.g. ["omarcade-breakout"].
   property var gameIds: []
 
-  // Highest score across every game, and which game holds it.
-  readonly property int bestScore: {
-    var top = 0
+  // The game whose record was written most recently.
+  //
+  // This used to be `max(best)` across every game, which was only ever
+  // coherent while every game scored the same way. It does not survive
+  // a second title: a game where LOWER wins (a time, goals conceded)
+  // can never hold a cross-game maximum, so it would be invisible in
+  // the bar forever — and comparing 11 points of Pong against 4,200 of
+  // Breakout was never a comparison in the first place.
+  //
+  // Most-recent is comparable by construction — one game, one rule —
+  // and in a bar it is the more useful fact anyway: it shows what you
+  // just played. The cabinet is where every game and difficulty is
+  // listed side by side.
+  readonly property var latestRecord: {
+    var newest = null
+    var newestAt = ""
     for (var i = 0; i < records.count; i++) {
       var r = records.itemAt(i)
-      if (r && r.best > top) top = r.best
+      if (!r || !r.record || r.best <= 0) continue
+      // RFC 3339 UTC to a fixed width, so a lexical compare IS a
+      // chronological one — no date parsing in the shell process.
+      var at = String(r.record.updated_at || "")
+      if (at > newestAt) { newestAt = at; newest = r }
     }
-    return top
+    return newest
   }
 
-  readonly property string bestGame: {
-    var top = 0
-    var name = ""
-    for (var i = 0; i < records.count; i++) {
-      var r = records.itemAt(i)
-      if (r && r.best > top) { top = r.best; name = r.label }
-    }
-    return name
+  readonly property int bestScore: latestRecord ? latestRecord.best : 0
+  readonly property string bestGame: latestRecord ? latestRecord.label : ""
+
+  // Which difficulty that best was set on, shown only when the game
+  // actually has tiers — a label reading "normal" on a single-tier
+  // game is noise.
+  readonly property string bestDifficulty: {
+    if (!latestRecord || !latestRecord.isTiered) return ""
+    var entries = latestRecord.record ? latestRecord.record.entries : null
+    if (!Array.isArray(entries) || entries.length === 0) return ""
+    var top = entries[0]
+    return top && top.difficulty !== undefined ? String(top.difficulty) : ""
   }
 
   readonly property string icon: setting("icon", "🕹")
@@ -170,9 +193,13 @@ BarWidget {
 
     onEntered: {
       if (!root.bar) return
-      root.bar.showTooltip(root, root.bestScore > 0
-        ? "Omarcade — best: " + root.bestScore + " (" + root.bestGame + ")"
-        : "Omarcade — no scores yet")
+      var tip = "Omarcade — no scores yet"
+      if (root.bestScore > 0) {
+        tip = root.bestGame + " — best: " + root.bestScore
+        if (root.bestDifficulty !== "")
+          tip += " (" + root.bestDifficulty + ")"
+      }
+      root.bar.showTooltip(root, tip)
     }
     onExited: if (root.bar) root.bar.hideTooltip(root)
 

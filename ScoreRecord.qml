@@ -18,12 +18,50 @@ Item {
   // Parsed contents, or null when the file is missing or unusable.
   property var record: null
 
+  // Which direction wins. The game declares it; this widget must never
+  // assume — a game scored on time or on goals conceded ranks the other
+  // way, and picking the biggest number there shows the WORST run.
+  // Absent in v1 records, which were all points-scored.
+  readonly property bool higherIsBetter:
+    !record || record.higher_is_better === undefined
+      ? true
+      : record.higher_is_better === true
+
+  // Entries are written best-first under the game's own rule, so the
+  // top row is the best without re-ranking here.
   readonly property int best: {
     if (!record || !Array.isArray(record.entries) || record.entries.length === 0)
       return 0
     var top = record.entries[0]
     return top && typeof top.score === "number" ? top.score : 0
   }
+
+  // Best per difficulty, as { difficulty: score }. An easy run and a
+  // hard run are different games, so they are never merged into one
+  // number — the cabinet shows them as separate rows.
+  readonly property var bestByDifficulty: {
+    var out = ({})
+    if (!record || !Array.isArray(record.entries))
+      return out
+    for (var i = 0; i < record.entries.length; i++) {
+      var e = record.entries[i]
+      if (!e || typeof e.score !== "number")
+        continue
+      // v1 entries predate the field.
+      var d = e.difficulty === undefined ? "normal" : String(e.difficulty)
+      // First match wins: already ordered best-first.
+      if (out[d] === undefined)
+        out[d] = e.score
+    }
+    return out
+  }
+
+  // Difficulty labels this game has scores for, in table order.
+  readonly property var difficulties: Object.keys(bestByDifficulty)
+
+  // True when this game has more than one tier, so the cabinet knows
+  // whether a difficulty label is worth showing at all.
+  readonly property bool isTiered: difficulties.length > 1
 
   readonly property string label: record && record.name ? String(record.name) : gameId
 

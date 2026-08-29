@@ -7,6 +7,7 @@
 //! [`theme`] reads the live Omarchy palette.
 
 pub mod backend;
+pub mod scores;
 pub mod theme;
 
 pub use backend::{Backend, Canvas, Color, Game, InputEvent, Key};

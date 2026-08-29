@@ -14,6 +14,7 @@ mod render;
 mod state;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
+use omarcade_core::scores::ScoreFile;
 use omarcade_core::{Backend, Canvas, Game, InputEvent, Key, Theme};
 
 use physics::Accumulator;
@@ -22,6 +23,11 @@ use state::{GameState, Phase};
 const TITLE: &str = "Omarcade Breakout";
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 720;
+
+/// Score-file id. Matches the binary name and the file the marquee reads,
+/// so it is public surface: renaming it orphans everyone's high scores.
+const GAME_ID: &str = "omarcade-breakout";
+const GAME_NAME: &str = "Breakout";
 
 struct Breakout {
     theme: Theme,
@@ -33,17 +39,43 @@ struct Breakout {
     /// stuck while Left is still physically held.
     left_held: bool,
     right_held: bool,
+    scores: ScoreFile,
+    /// Whether the current run's score has already been banked. `Phase`
+    /// stays Lost for every frame after the last life, so recording on
+    /// the phase alone would rewrite the file sixty times a second;
+    /// this makes it an edge, not a level.
+    recorded: bool,
 }
 
 impl Breakout {
     fn new(theme: Theme) -> Self {
+        let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
+        let mut state = GameState::new();
+        state.best = scores.best().unwrap_or(0);
+
         Breakout {
             theme,
-            state: GameState::new(),
+            state,
             accumulator: Accumulator::new(),
             left_held: false,
             right_held: false,
+            scores,
+            recorded: false,
         }
+    }
+
+    /// Bank the run's score the first time a game ends.
+    ///
+    /// Save failures are swallowed on purpose: a scoreboard that cannot be
+    /// written is not a reason to interrupt someone's game.
+    fn bank_score(&mut self) {
+        if self.recorded {
+            return;
+        }
+        self.recorded = true;
+        self.scores.record(self.state.score);
+        self.state.best = self.scores.best().unwrap_or(0);
+        let _ = self.scores.save();
     }
 
     /// Resolve held keys into a paddle direction. Both held cancels out,
@@ -74,6 +106,8 @@ impl Game for Breakout {
             InputEvent::KeyDown(Key::Enter) => {
                 if matches!(self.state.phase, Phase::Won | Phase::Lost) {
                     self.state.restart();
+                    // Arm the next run, or its score would never be banked.
+                    self.recorded = false;
                 }
             }
 
@@ -86,6 +120,10 @@ impl Game for Breakout {
 
     fn update(&mut self, dt: f32) {
         physics::step(&mut self.state, &mut self.accumulator, dt);
+
+        if matches!(self.state.phase, Phase::Won | Phase::Lost) {
+            self.bank_score();
+        }
     }
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {

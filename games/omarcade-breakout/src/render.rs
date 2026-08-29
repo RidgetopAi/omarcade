@@ -122,6 +122,31 @@ fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme,
     let x = vp.x(FIELD_W / 2.0) - (w / 2.0) as i32;
     let y = vp.y(FIELD_H / 2.0);
     text(canvas, msg, x, y, scale, color);
+
+    // The best score, under the verdict. Only once a game has ended and
+    // only if there is one — a first-ever run has nothing to beat, and an
+    // empty "BEST 0" would just be noise.
+    if state.best == 0 {
+        return;
+    }
+
+    let beaten = state.score >= state.best;
+    let line = if beaten {
+        format!("NEW BEST {}", state.best)
+    } else {
+        format!("BEST {}", state.best)
+    };
+
+    let small = (vp.scale * 2.0).max(1.0) as u32;
+    let lw = text_width(&line, small) as f32;
+    text(
+        canvas,
+        &line,
+        vp.x(FIELD_W / 2.0) - (lw / 2.0) as i32,
+        y + (scale * GLYPH_H * 2) as i32,
+        small,
+        if beaten { theme.yellow } else { theme.light_foreground },
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -152,22 +177,31 @@ fn glyph(c: char) -> Option<[u8; 7]> {
         '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
         '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
         'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
         'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
         'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
         'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
+        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
         'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
         'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
         'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
         'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
         'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
         'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
         'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
         'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
         'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
         'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
         'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
         'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
         'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
         '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
         ' ' => [0; 7],
         _ => return None,
@@ -206,7 +240,6 @@ pub fn text(canvas: &mut Canvas<'_>, s: &str, x: i32, y: i32, scale: u32, color:
             }
         }
     }
-    let _ = GLYPH_H;
 }
 
 #[cfg(test)]
@@ -297,10 +330,40 @@ mod tests {
     /// silently lose letters.
     #[test]
     fn all_hud_characters_have_glyphs() {
-        for s in ["SCORE 0123456789", "LIVES 3", "PRESS SPACE", "YOU WIN - ENTER", "GAME OVER - ENTER"] {
+        for s in [
+            "SCORE 0123456789",
+            "LIVES 3",
+            "PRESS SPACE",
+            "YOU WIN - ENTER",
+            "GAME OVER - ENTER",
+            "BEST 980",
+            "NEW BEST 600",
+        ] {
             for c in s.chars() {
                 assert!(glyph(c).is_some(), "no glyph for {c:?} in {s:?}");
             }
         }
+    }
+
+    /// The list above is written by hand, so it only covers strings someone
+    /// remembered to add — "BEST" shipped missing its B because of exactly
+    /// that. Requiring the whole printable set makes any future string safe
+    /// by construction instead of by vigilance.
+    #[test]
+    fn the_full_printable_set_has_glyphs() {
+        for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -".chars() {
+            assert!(glyph(c).is_some(), "no glyph for {c:?}");
+        }
+    }
+
+    /// A character with no glyph must not be silently skipped mid-word.
+    /// This pins the behaviour that hid the missing B: `text` advances the
+    /// cursor for unknown characters, so a gap appears rather than the
+    /// remaining letters sliding left as if nothing were wrong.
+    #[test]
+    fn an_unknown_character_still_occupies_its_cell() {
+        let scale = 1;
+        // '@' has no glyph; the string must still measure as 3 characters.
+        assert_eq!(text_width("A@B", scale), text_width("ABC", scale));
     }
 }

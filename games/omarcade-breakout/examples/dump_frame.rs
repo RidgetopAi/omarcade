@@ -93,8 +93,8 @@ fn main() {
                 if s.phase == state::Phase::Ready { s.launch(); }
             }
         }
-        "won" => { for b in &mut s.bricks { b.alive = false; } s.phase = state::Phase::Won; s.score = 600; }
-        "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.score = 250; }
+        "won" => { for b in &mut s.bricks { b.alive = false; } s.phase = state::Phase::Won; s.score = 600; s.best = 600; }
+        "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.score = 250; s.best = 980; }
         other => { eprintln!("unknown scene {other}"); std::process::exit(2); }
     }
 

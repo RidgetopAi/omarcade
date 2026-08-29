@@ -111,6 +111,10 @@ pub struct GameState {
     pub lives: u32,
     pub score: u32,
     pub phase: Phase,
+    /// Best score on record, shown on the end screen. Owned by the caller:
+    /// the simulation never sets it, so the headless harnesses see 0 and
+    /// stay deterministic.
+    pub best: u32,
 }
 
 impl GameState {
@@ -135,6 +139,7 @@ impl GameState {
             lives: STARTING_LIVES,
             score: 0,
             phase: Phase::Ready,
+            best: 0,
         };
         state.rest_ball_on_paddle();
         state
@@ -185,9 +190,12 @@ impl GameState {
         }
     }
 
-    /// Start over, keeping nothing.
+    /// Start over. Keeps only the best score, which outlives any one run.
     pub fn restart(&mut self) {
+        // Carry the best across: it belongs to the player, not the run.
+        let best = self.best;
         *self = GameState::new();
+        self.best = best;
     }
 }
 

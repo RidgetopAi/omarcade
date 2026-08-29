@@ -14,3 +14,4 @@ winit.workspace = true
 softbuffer.workspace = true
 toml.workspace = true
 serde.workspace = true
+serde_json.workspace = true

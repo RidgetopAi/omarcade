@@ -1,0 +1,13 @@
+[package]
+name = "omarcade-racer"
+description = "A pseudo-3D racer, the third Omarcade title."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# omarcade-core and nothing else, as with every other title.
+[dependencies]
+omarcade-core = { path = "../../core" }

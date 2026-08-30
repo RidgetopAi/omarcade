@@ -5,14 +5,17 @@
 //! platform-specific.
 //!
 //! [`geom`] is the shared vector and rectangle maths every title so
-//! far has needed, and [`theme`] reads the live Omarchy palette.
+//! far has needed, [`sprite`] turns authored pixel art into drawable
+//! pixels, and [`theme`] reads the live Omarchy palette.
 
 pub mod backend;
 pub mod ease;
 pub mod geom;
 pub mod scores;
+pub mod sprite;
 pub mod theme;
 
 pub use backend::{Backend, Canvas, Color, Game, InputEvent, Key};
 pub use geom::{Axis, Rect, Vec2};
+pub use sprite::Sprite;
 pub use theme::Theme;

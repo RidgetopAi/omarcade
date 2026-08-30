@@ -23,13 +23,15 @@ mod art;
 mod road;
 #[path = "../src/drive.rs"]
 mod drive;
+#[path = "../src/render.rs"]
+mod render;
 
 use std::io::Write;
 
 use art::Art;
-use omarcade_core::{Canvas, Color, Pose, Theme};
 use drive::{Drive, Tuning};
-use road::{Camera, Road, Segment};
+use omarcade_core::{Canvas, Pose, Theme};
+use road::Road;
 
 const W: u32 = 960;
 const H: u32 = 720;
@@ -49,7 +51,7 @@ fn main() {
         match scene {
             "sheet" => draw_sheet(&mut c, &art, &theme),
             "road" => draw_road(&mut c, &art, &theme, Road::straight(400)),
-            "curve" => draw_road(&mut c, &art, &theme, bendy_track()),
+            "curve" => draw_road(&mut c, &art, &theme, render::demo_track()),
             "lean" => draw_lean(&mut c, &art, &theme),
             "roll" => draw_roll(&mut c, &art, &theme),
             "drive" => draw_drive(&mut c, &art, &theme),
@@ -107,167 +109,41 @@ fn draw_sheet(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
 
 /// A track that bends, so a curve can actually be judged. A straight
 /// road looks identical whether curvature works or not.
-fn bendy_track() -> Road {
-    let mut segs = Vec::new();
-    // Only the first ~15 segments occupy real screen height; past that a
-    // band is under a pixel tall (measured). So the bend has to start
-    // close, or it renders into a sub-pixel sliver and looks straight.
-    segs.extend(std::iter::repeat_n(Segment::STRAIGHT, 4));
-    // Eased in and out, because a curve that starts at full strength
-    // reads as a kink. This is the shape a real track section has.
-    for i in 0..6 {
-        segs.push(Segment::curving(90.0 * (i as f32 / 6.0)));
-    }
-    segs.extend(std::iter::repeat_n(Segment::curving(90.0), 40));
-    for i in 0..6 {
-        segs.push(Segment::curving(90.0 * (1.0 - i as f32 / 6.0)));
-    }
-    // A lap, not a loop: at A's top speed 400 segments is a two-second
-    // lap. Sized for driving rather than for looking at.
-    segs.extend(std::iter::repeat_n(Segment::STRAIGHT, 3_944));
-    Road::new(segs, 200.0, 2200.0)
-}
-
 /// The cars on a real road, which is the only view that says whether
 /// they read at speed.
 ///
-/// Every coordinate here now comes from `road.rs` — this function decides
-/// only what colour things are. That is the point of the split: if the
-/// road looks wrong, the projection is wrong, and it is wrong somewhere
-/// that has tests.
+/// This is the game's own renderer at full-window size — not a second
+/// implementation. An earlier version kept its own copy here, which meant
+/// the still and the running game could drift apart while each looked
+/// correct on its own terms.
 fn draw_road(c: &mut Canvas<'_>, art: &Art, theme: &Theme, road: Road) {
-    let sky = theme.background.lerp(theme.blue, 0.30);
-    let grass_a = theme.background.lerp(theme.green, 0.40);
-    let grass_b = theme.background.lerp(theme.green, 0.28);
-    let road_a = theme.dark_background.lerp(theme.foreground, 0.15);
-    let road_b = theme.dark_background.lerp(theme.foreground, 0.11);
-    let rumble_a = theme.red.lerp(Color::WHITE, 0.15);
-    let rumble_b = theme.foreground.lerp(Color::WHITE, 0.4);
-    let line = theme.foreground.lerp(Color::WHITE, 0.5);
-
-    let camera = Camera::default();
-    // A little way in, so the eased curve is ahead of us in the `curve`
-    // scene rather than under the bumper.
-    let camera_z = 3_000.0;
-    let x_offset = 0.0;
-
-    // The horizon is where the projection puts it, not a constant. The
-    // sketch had its own HORIZON and the two could drift apart.
-    let horizon = H as f32 / 2.0;
-
-    for y in 0..horizon as u32 {
-        let t = y as f32 / horizon;
-        c.fill_rect(0, y as i32, W, 1, sky.lerp(theme.background, 1.0 - t * 0.7));
+    let tuning = Tuning::from_corner(&road, 1.5);
+    let mut car = Drive::new();
+    // Up to speed with a driver holding the line, a little way in, so the
+    // scene shows the bend rather than the start line.
+    let dt = 1.0 / 120.0;
+    for _ in 0..(6.0 / dt) as usize {
+        let correction = (-car.x * 3.0).clamp(-1.0, 1.0);
+        car.update(dt, 1.0, correction, &road, &tuning);
     }
-    // Grass fills everything below the horizon; road is painted over it.
-    c.fill_rect(0, horizon as i32, W, H - horizon as u32, grass_b);
+    car.z = road.segment_length() * 8.0;
 
-    let bands = road.visible(&camera, camera_z, x_offset, W as f32, H as f32);
-
-    // Painted far-to-near, and INTERPOLATED ACROSS EACH BAND rather than
-    // filled as one rect.
-    //
-    // Near the camera a single segment is ~180px tall (measured), so one
-    // rect per band is the "banded" approach the road bench warned about:
-    // cheapest, but the edges stair-step in slabs. Walking scanlines
-    // inside the band and lerping the edge across it is the classic
-    // scanline road, and the bench put it at 0.51ms — 3% of a frame.
-    for pair in bands.windows(2).rev() {
-        let (near, far) = (pair[0], pair[1]);
-        let y0 = far.y.max(horizon);
-        let y1 = near.y.min(H as f32);
-        if y1 <= y0 {
-            continue;
-        }
-
-        let span = near.y - far.y;
-        let mut y = y0;
-        while y < y1 {
-            let h = (1.0f32).min(y1 - y);
-            // Where in the band this scanline sits: 0 at the far edge,
-            // 1 at the near edge.
-            let t = if span > 0.001 { ((y - far.y) / span).clamp(0.0, 1.0) } else { 1.0 };
-            let cx = far.x + (near.x - far.x) * t;
-            let hw = far.half_width + (near.half_width - far.half_width) * t;
-            let dist = far.distance + (near.distance - far.distance) * t;
-
-            // Bands alternate by TRACK position, not by screen row — that
-            // is what makes them bunch toward the horizon like real ground
-            // instead of striping the screen evenly.
-            let seg = (dist + camera_z) / road.segment_length();
-            let phase = (seg as u32) % 2 == 0;
-
-            c.fill_rect_f(0.0, y, W as f32, h, if phase { grass_a } else { grass_b });
-            c.fill_rect_f(cx - hw, y, hw * 2.0, h, if phase { road_a } else { road_b });
-
-            // Rumble strips, as a fraction of the road — a ratio, so they
-            // stay proportionate at every distance.
-            let rumble = (hw * 0.13).max(0.7);
-            let rc = if phase { rumble_a } else { rumble_b };
-            c.fill_rect_f(cx - hw, y, rumble, h, rc);
-            c.fill_rect_f(cx + hw - rumble, y, rumble, h, rc);
-
-            if phase {
-                let lw = (hw * 0.035).max(0.5);
-                c.fill_rect_f(cx - lw / 2.0, y, lw, h, line);
-            }
-
-            // Distance haze, keyed off real distance rather than screen row.
-            let ht = (dist / 60_000.0).clamp(0.0, 1.0);
-            let a = (ht.powf(0.9) * 210.0) as u8;
-            if a > 2 {
-                c.fill_rect_f(0.0, y, W as f32, h, sky.with_alpha(a));
-            }
-            y += h;
-        }
-    }
-
-    // Roadside posts, placed at track positions so they stream past
-    // rather than sitting in an even ladder.
-    let first_post = ((camera_z / 2000.0).floor() + 1.0) * 2000.0;
-    for i in 0..30 {
-        let z = first_post + i as f32 * 2000.0;
-        let Some(p) = road.project(&camera, camera_z, x_offset, z, W as f32, H as f32)
-        else { continue };
-        if p.y <= horizon + 1.0 {
-            break;
-        }
-        // Scale follows the road, so a post is the same real size always.
-        let s = p.half_width / 105.0 * 1.5;
-        let haze = (p.distance / 60_000.0).clamp(0.0, 1.0) * 0.8;
-        for side in [-1.0f32, 1.0] {
-            let px = p.x + side * p.half_width * 1.28;
-            let w = art.post.width() as f32 * s;
-            let h = art.post.height() as f32 * s;
-            art.post.draw_tinted(c, px - w / 2.0, p.y - h, s, Some((sky, haze)));
-        }
-    }
-
-    // Rivals, placed by track position and lane, far-to-near so nearer
-    // cars occlude further ones.
-    let rivals: [(f32, f32); 4] = [
-        (camera_z + 26_000.0, -0.55),
-        (camera_z + 15_000.0, 0.50),
-        (camera_z + 8_000.0, -0.25),
-        (camera_z + 4_200.0, 0.42),
+    // Placed as a FRACTION of the visible road, not in segments. At a
+    // draw distance of 120 segments, "nine segments ahead" is still 7% of
+    // the way to the horizon — the cars rendered correctly and were three
+    // pixels tall. What matters is how far up the visible depth a car
+    // sits, so that is what is written.
+    let visible = road.draw_distance() as f32 * road.segment_length();
+    let rivals = [
+        (car.z + visible * 0.30, -0.45, 0usize),
+        (car.z + visible * 0.16, 0.40, 1),
+        (car.z + visible * 0.075, -0.25, 2),
+        (car.z + visible * 0.03, 0.42, 3),
     ];
-    for (i, (z, lane)) in rivals.iter().enumerate().rev() {
-        let Some(p) = road.project(&camera, camera_z, x_offset, *z, W as f32, H as f32)
-        else { continue };
-        // Sprite scale follows road width, so a car always covers the
-        // same fraction of the lane at any distance.
-        let s = p.half_width / 105.0;
-        let haze = (p.distance / 60_000.0).clamp(0.0, 1.0) * 0.8;
-        let rival = art.rival(i);
-        let w = rival.width() as f32 * s;
-        let h = rival.height() as f32 * s;
-        rival.draw_tinted(c, p.x + lane * p.half_width - w / 2.0, p.y - h, s,
-                          Some((sky, haze)));
-    }
 
-    // The player, where the camera actually sits: dead centre, at the
-    // bottom, at the scale the road has right under the bumper.
-    art.player.draw_ground(c, W as f32 / 2.0, 706.0, 7.0);
+    render::draw_road_into(
+        c, art, theme, &road, &tuning, &car, 0.0, &rivals, 0, 0, W, H,
+    );
 }
 
 /// The two speed tunings, side by side, as a filmstrip over time.
@@ -292,7 +168,7 @@ fn draw_drive(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
     let pw = W / PANELS as u32;
     let ph = H / 2;
 
-    let road = bendy_track();
+    let road = render::demo_track();
     let tunings = [
         ("A  corner 1.5s", Tuning::from_corner(&road, 1.5)),
         ("B  crossing 1.2s", Tuning::from_crossing(&road, 1.2)),
@@ -347,7 +223,9 @@ fn draw_drive(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
 
             let x0 = panel as u32 * pw;
             let y0 = row as u32 * ph;
-            draw_road_into(c, art, theme, &road, tuning, &car, x0, y0, pw, ph);
+            render::draw_road_into(
+                c, art, theme, &road, tuning, &car, 0.0, &[], x0, y0, pw, ph,
+            );
 
             // Bar length is ELAPSED TIME to reach this mark, scaled to the
             // slowest row, so a longer bar reads directly as "took longer".
@@ -375,119 +253,6 @@ fn draw_drive(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
         "\n  columns are the SAME PLACE on the track; bar length = time taken to get there"
     );
     println!("  top row A (red) · bottom row B (blue)");
-}
-
-/// `draw_road` for an arbitrary sub-rectangle, driven by a live car.
-///
-/// The full-screen scene is the special case of this; keeping one
-/// implementation is what stops the filmstrip and the real view drifting
-/// apart and showing different things.
-#[allow(clippy::too_many_arguments)]
-fn draw_road_into(
-    c: &mut Canvas<'_>,
-    art: &Art,
-    theme: &Theme,
-    road: &Road,
-    tuning: &Tuning,
-    car: &Drive,
-    ox: u32,
-    oy: u32,
-    w: u32,
-    h: u32,
-) {
-    let sky = theme.background.lerp(theme.blue, 0.30);
-    let grass_a = theme.background.lerp(theme.green, 0.40);
-    let grass_b = theme.background.lerp(theme.green, 0.28);
-    let road_a = theme.dark_background.lerp(theme.foreground, 0.15);
-    let road_b = theme.dark_background.lerp(theme.foreground, 0.11);
-    let rumble_a = theme.red.lerp(Color::WHITE, 0.15);
-    let rumble_b = theme.foreground.lerp(Color::WHITE, 0.4);
-    let line = theme.foreground.lerp(Color::WHITE, 0.5);
-
-    let camera = Camera::for_road(road, 0.85);
-    let fx = ox as f32;
-    let fy = oy as f32;
-    let fw = w as f32;
-    let fh = h as f32;
-    let horizon = fh / 2.0;
-
-    let x_offset = car.x_offset(road);
-
-    for y in 0..horizon as u32 {
-        let t = y as f32 / horizon;
-        c.fill_rect(ox as i32, (oy + y) as i32, w, 1, sky.lerp(theme.background, 1.0 - t * 0.7));
-    }
-    c.fill_rect(ox as i32, (oy + horizon as u32) as i32, w, h - horizon as u32, grass_b);
-
-    let bands = road.visible(&camera, car.z, x_offset, fw, fh);
-
-    for pair in bands.windows(2).rev() {
-        let (near, far) = (pair[0], pair[1]);
-        let y0 = far.y.max(horizon);
-        let y1 = near.y.min(fh);
-        if y1 <= y0 {
-            continue;
-        }
-        let span = near.y - far.y;
-        let mut y = y0;
-        while y < y1 {
-            let bh = (1.0f32).min(y1 - y);
-            let t = if span > 0.001 { ((y - far.y) / span).clamp(0.0, 1.0) } else { 1.0 };
-            let cx = fx + far.x + (near.x - far.x) * t;
-            let hw = far.half_width + (near.half_width - far.half_width) * t;
-            let dist = far.distance + (near.distance - far.distance) * t;
-
-            let seg = (dist + car.z) / road.segment_length();
-            let phase = (seg as u32) % 2 == 0;
-            let sy = fy + y;
-
-            c.fill_rect_f(fx, sy, fw, bh, if phase { grass_a } else { grass_b });
-            c.fill_rect_f(cx - hw, sy, hw * 2.0, bh, if phase { road_a } else { road_b });
-
-            let rumble = (hw * 0.13).max(0.7);
-            let rc = if phase { rumble_a } else { rumble_b };
-            c.fill_rect_f(cx - hw, sy, rumble, bh, rc);
-            c.fill_rect_f(cx + hw - rumble, sy, rumble, bh, rc);
-
-            if phase {
-                let lw = (hw * 0.035).max(0.5);
-                c.fill_rect_f(cx - lw / 2.0, sy, lw, bh, line);
-            }
-
-            let ht = (dist / 60_000.0).clamp(0.0, 1.0);
-            let a = (ht.powf(0.9) * 210.0) as u8;
-            if a > 2 {
-                c.fill_rect_f(fx, sy, fw, bh, sky.with_alpha(a));
-            }
-            y += bh;
-        }
-    }
-
-    // The player, leaning into whatever bend it is actually in.
-    //
-    // Scale follows the ROAD's width under the bumper, not the panel
-    // height. Tying it to height made the car swamp a narrow panel while
-    // the road (which comes from panel width) stayed thin — the two
-    // disagreed about how big the world was.
-    // Scale from the road at a FIXED distance ahead, never from
-    // `bands.first()`: the nearest band changes identity as the camera
-    // crosses a segment boundary — whole segment one frame, sliver the
-    // next — so anything sized from it pulses. A fixed probe distance is
-    // continuous, which is what a sprite scale has to be.
-    let pose = Pose::cornering(car.cornering(road, tuning));
-    let probe = road
-        .project(&camera, car.z, x_offset, car.z + road.segment_length(), fw, fh)
-        .map(|p| p.half_width)
-        .unwrap_or(fw * 0.4);
-    let scale = probe / 105.0 * 1.5;
-    art.player.draw_ground_posed(
-        c,
-        fx + fw / 2.0,
-        fy + fh * 0.98,
-        scale,
-        pose,
-        None,
-    );
 }
 
 fn write_png(path: &str, buf: &[u32], w: u32, h: u32) -> std::io::Result<()> {

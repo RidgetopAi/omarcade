@@ -12,10 +12,10 @@ fn main() {
     }
     // Mix amounts mirrored from games/omarcade-racer/src/render.rs.
     // If they drift, this probe lies — so keep them together.
-    let g_a = t.background.lerp(t.green, 0.62);
-    let g_b = t.background.lerp(t.green, 0.50);
-    let r_a = t.dark_background.lerp(t.foreground, 0.19);
-    let r_b = t.dark_background.lerp(t.foreground, 0.09);
+    let g_a = t.background.lerp(t.green, 0.68);
+    let g_b = t.background.lerp(t.green, 0.46);
+    let r_a = t.dark_background.lerp(t.foreground, 0.26);
+    let r_b = t.dark_background.lerp(t.foreground, 0.06);
     println!("\nderived:");
     for (n, c) in [("grass_a", g_a), ("grass_b", g_b), ("road_a", r_a), ("road_b", r_b)] {
         println!("  {n:<8} #{:02x}{:02x}{:02x}  lum {:>6.1}", c.r, c.g, c.b, lum(c));

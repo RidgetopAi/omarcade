@@ -82,10 +82,14 @@ pub fn draw_road_into(
     // is a large part of why the ground read as one wash rather than as
     // two surfaces. Mixing further both restores the hue and widens the
     // road-to-grass edge.
-    let grass_a = theme.background.lerp(theme.green, 0.62);
-    let grass_b = theme.background.lerp(theme.green, 0.50);
-    let road_a = theme.dark_background.lerp(theme.foreground, 0.19);
-    let road_b = theme.dark_background.lerp(theme.foreground, 0.09);
+    let grass_a = theme.background.lerp(theme.green, 0.68);
+    let grass_b = theme.background.lerp(theme.green, 0.46);
+    // Wider apart than the hard-band version could afford. A step of this
+    // size would have flashed; a gradient of it just reads as a stronger
+    // sense of ground going past, because the change per frame stays
+    // proportional to speed.
+    let road_a = theme.dark_background.lerp(theme.foreground, 0.26);
+    let road_b = theme.dark_background.lerp(theme.foreground, 0.06);
     let rumble_a = theme.red.lerp(Color::WHITE, 0.15);
     let rumble_b = theme.foreground.lerp(Color::WHITE, 0.4);
     let line = theme.foreground.lerp(Color::WHITE, 0.5);
@@ -129,56 +133,44 @@ pub fn draw_road_into(
             // road keeps the texture that reads as speed. Neither is a
             // raw divide by segment_length — that is what aliased.
             let z_here = dist + car.z;
-            let phase = road.band_index(z_here) % 2 == 0;
-            // The road's stripe is offset half a band from the grass, so
-            // the two boundaries never land on the same scanline. That
-            // offset is what breaks the full-width bar.
-            let road_phase = road.band_index(
-                z_here + road.segment_length() * Road::SEGMENTS_PER_BAND * 0.5,
-            ) % 2 == 0;
+
+            // Ground shade is a CONTINUOUS function of distance, not two
+            // flat shades toggling at a hard boundary.
+            //
+            // This is the fix for the whole surface appearing to flash.
+            // A band is 800 world units, and the nearest band alone covers
+            // ~270 screen rows — so at most one or two road bands are
+            // visible at a time. A pattern you can only see one period of
+            // cannot scroll; it can only toggle, and a single brief press
+            // of the throttle flipped the entire road between two shades.
+            // That reads as flashing, not as travel.
+            //
+            // The band could not simply be made finer: the Nyquist floor
+            // is 533 units at 30fps and the band is already 800.
+            //
+            // A cosine of distance has no step to jump across. The surface
+            // shades smoothly as it approaches, so the eye reads motion
+            // from a gradient sliding rather than from a boundary
+            // snapping — and there is no sharp edge left to alias into
+            // running backwards.
+            let cycle = road.segment_length() * Road::SEGMENTS_PER_BAND * 2.0;
+            let wave = (z_here / cycle * std::f32::consts::TAU).cos() * 0.5 + 0.5;
+            // The markings stay a hard alternation on purpose: they are
+            // thin high-contrast detail where a crisp edge is the point,
+            // and they are what carries the fine sense of speed.
             let mark = road.marking_index(z_here) % 2 == 0;
             let sy = fy + y;
 
-            // Grass, with a second much finer stripe laid over the band
-            // stripe.
-            //
-            // The band stripe alone leaves the near grass flat: at four
-            // segments per band the NEAREST band covers 270 screen rows
-            // (measured), so the bottom third of the screen is one solid
-            // colour and has no motion cue at all — which is most of why
-            // the ground read as a bad video feed rather than as ground.
-            //
-            // It cannot be fixed by a finer band. The Nyquist floor is a
-            // WORLD-space distance — speed/fps, about 533 units at 30fps —
-            // and it applies at every depth, so no distance-varying period
-            // escapes it near the camera where you move fastest relative
-            // to the pattern.
-            //
-            // KNOWN GAP, deliberately left: below about y=460 the grass
-            // is one flat colour — the nearest band alone covers ~270
-            // screen rows, so there is no grass stripe in the near field
-            // at all and the road carries the whole motion cue there.
-            //
-            // It is not fixable by a finer band: the Nyquist floor is a
-            // WORLD-space distance (speed/fps, ~533 units at 30fps) and
-            // applies at every depth, so no distance-varying period
-            // escapes it near the camera where you move fastest relative
-            // to the pattern. It needs near-field detail that is not a
-            // scrolling horizontal stripe — verge posts, tufts, texture
-            // broken along x.
-            //
-            // Two attempts at that failed the same way and are worth
-            // recording: both positioned the detail in SCREEN space (as a
-            // fraction of the verge width, then as a multiple of the road
-            // half-width). Both shrink with distance, so each band's
-            // detail landed at a different screen x and they smeared into
-            // long diagonal rays converging on the horizon. Anything meant
-            // to sit still in the world must be positioned in world units
-            // and projected — the same lesson as the road itself.
-            let grass = if phase { grass_a } else { grass_b };
+            // Grass and road are offset a quarter cycle from each other,
+            // so no single shade boundary ever runs across the full width
+            // of the screen — the rolling-scanline artefact.
+            let grass_wave =
+                ((z_here / cycle + 0.25) * std::f32::consts::TAU).cos() * 0.5 + 0.5;
+            let grass = grass_b.lerp(grass_a, grass_wave);
             c.fill_rect_f(fx, sy, fw, bh, grass);
 
-            c.fill_rect_f(cx - hw, sy, hw * 2.0, bh, if road_phase { road_a } else { road_b });
+            let surface = road_b.lerp(road_a, wave);
+            c.fill_rect_f(cx - hw, sy, hw * 2.0, bh, surface);
 
             let rumble = (hw * 0.13).max(0.7);
             let rc = if mark { rumble_a } else { rumble_b };

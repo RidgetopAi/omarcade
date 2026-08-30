@@ -890,6 +890,56 @@ mod tests {
         );
     }
 
+    /// Ground shading must be CONTINUOUS in distance, not stepped.
+    ///
+    /// THE BUG THIS EXISTS FOR: with two flat shades alternating at a hard
+    /// band boundary, crossing one changed the entire visible road surface
+    /// by the full contrast at once — 16.2 luminance — and it did that by
+    /// the same amount at 2% throttle as at 100%. Only the frequency
+    /// scaled with speed. The eye reads the SIZE of a change, so a bare
+    /// touch of the throttle looked like the road flashing rather than
+    /// moving, which is exactly how it was reported.
+    ///
+    /// Making the band finer could not fix it: the Nyquist floor is 533
+    /// world units at 30fps and a band is already 800. And near the camera
+    /// a single band covers ~270 screen rows, so at most one or two are
+    /// ever visible — a pattern you can see one period of cannot scroll,
+    /// only toggle.
+    ///
+    /// The renderer therefore shades the ground with a cosine of distance.
+    /// This test guards the property that makes that work: the change per
+    /// frame must be proportional to speed, and small at low speed.
+    #[test]
+    fn ground_shading_changes_in_proportion_to_speed() {
+        let road = Road::straight(400);
+        let cycle = road.segment_length() * Road::SEGMENTS_PER_BAND * 2.0;
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        let top_speed = visible / 1.5;
+        // Peak-to-peak of the shading, in luminance. Mirrors the palette
+        // in render.rs; if that widens, this is the budget it spends.
+        let amplitude = 32.0f32;
+
+        // Steepest slope of a cosine is pi * amplitude / cycle per unit.
+        let per_frame = |throttle: f32| {
+            let travel = top_speed * throttle / 60.0;
+            amplitude * std::f32::consts::PI * travel / cycle
+        };
+
+        // A crawl must be visually quiet — this is the reported symptom.
+        assert!(
+            per_frame(0.05) < 1.0,
+            "at 5% throttle the ground changes {:.2} lum per frame; \
+             that reads as flashing, not as crawling",
+            per_frame(0.05),
+        );
+        // ...and it must scale, or there is no sense of speed at all.
+        let ratio = per_frame(1.0) / per_frame(0.1);
+        assert!(
+            (ratio - 10.0).abs() < 0.01,
+            "ground change should scale linearly with speed, got {ratio:.2}x for 10x speed",
+        );
+    }
+
     /// The ground must not alias at any speed the car can reach.
     ///
     /// THE BUG THIS EXISTS FOR: at one segment per band the aliasing

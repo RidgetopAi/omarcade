@@ -89,8 +89,8 @@ Item {
     }
     found.sort()
 
-    // Only reassign when the set changed, or the Repeater rebuilds every
-    // ScoreRecord and drops its file watches.
+    // Only reassign when the set changed, or the Instantiator rebuilds
+    // every ScoreRecord and drops its file watches.
     if (JSON.stringify(found) !== JSON.stringify(root.games)) {
       root.games = found
       if (root.selected >= found.length) root.selected = 0
@@ -104,8 +104,22 @@ Item {
     return s.length ? s.charAt(0).toUpperCase() + s.slice(1) : id
   }
 
+  // Bumped every time the set of ScoreRecords changes, so the row
+  // bindings below have something to DEPEND on.
+  //
+  // recordFor() is a plain function call: QML cannot see through it to
+  // the Instantiator, so a binding that calls it is evaluated once and
+  // never again. Assigning root.games fires the visual Repeater BEFORE
+  // the Instantiator has built its objects — traced, and the order is
+  // exactly that — so every row computed "not played yet" against a
+  // null record and then froze that way forever, no matter what landed
+  // on disk afterwards. Touching this property is what re-runs them.
+  property int recordsRevision: 0
+
   function recordFor(index) {
-    var r = records.itemAt(index)
+    // objectAt, not itemAt: Instantiator hands back objects rather than
+    // visual items.
+    var r = records.objectAt(index)
     return r || null
   }
 
@@ -117,12 +131,30 @@ Item {
     requestClose()
   }
 
-  Repeater {
+  // Instantiator, NOT Repeater.
+  //
+  // A Repeater creates its delegates as CHILDREN OF A VISUAL PARENT, and
+  // this root Item has no size — the real UI lives in the FloatingWindow
+  // below. So the delegates were never instantiated, itemAt() returned
+  // null for every index, and every row read "not played yet" no matter
+  // what was on disk. The marquee's identical-looking Repeater works
+  // only because it sits inside a BarWidget that has real dimensions.
+  //
+  // Instantiator exists for exactly this: non-visual objects built from
+  // a model, with no visual parent required.
+  Instantiator {
     id: records
     model: root.games
+    // Both signals matter: count changes when the game list changes,
+    // and objectAdded fires as each record is actually built.
+    onCountChanged: root.recordsRevision++
+    onObjectAdded: root.recordsRevision++
     delegate: ScoreRecord {
       gameId: modelData
       path: root.scoresDir + "/" + modelData + ".json"
+      // A record's file loading is also a reason to re-evaluate: the
+      // object exists before its FileView has read anything.
+      onRecordChanged: root.recordsRevision++
     }
   }
 
@@ -207,6 +239,7 @@ Item {
               foreground: root.foreground
 
               title: {
+                root.recordsRevision // dependency: re-evaluate when records change
                 var r = root.recordFor(index)
                 return (r && r.record && r.record.name) ? r.record.name : root.prettify(modelData)
               }
@@ -216,6 +249,7 @@ Item {
               // different games and collapsing them into one number
               // would quietly show whichever tier inflates it most.
               meta: {
+                root.recordsRevision // dependency: re-evaluate when records change
                 var r = root.recordFor(index)
                 if (!r || r.best <= 0) return "not played yet"
                 if (!r.isTiered) return "BEST " + r.best

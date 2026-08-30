@@ -20,7 +20,7 @@
   h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .04em; }
   header p { margin: 0; color: var(--muted); font-size: 12px; }
   main {
-    display: grid; grid-template-columns: minmax(0,1fr) 320px;
+    display: grid; grid-template-columns: minmax(0,1fr) 340px;
     gap: 20px; padding: 20px; align-items: start;
   }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
@@ -31,6 +31,7 @@
   .panel h2 {
     font-size: 12px; margin: 0 0 12px; color: var(--muted);
     text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+    display: flex; justify-content: space-between; align-items: center;
   }
   #gridwrap { overflow: auto; }
   canvas { image-rendering: pixelated; display: block; cursor: crosshair; }
@@ -43,10 +44,15 @@
   }
   .sw:hover { border-color: var(--muted); }
   .sw.on { border-color: var(--accent); background: #2d3b33; }
+  .sw .gear {
+    opacity: .45; font-size: 11px; padding: 0 1px;
+  }
+  .sw .gear:hover { opacity: 1; color: var(--accent); }
   .chip {
     width: 14px; height: 14px; border-radius: 3px;
-    border: 1px solid rgba(255,255,255,.15);
+    border: 1px solid rgba(255,255,255,.15); flex: none;
   }
+  .chip.big { width: 22px; height: 22px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   button {
     font: inherit; font-size: 12px; padding: 7px 12px; cursor: pointer;
@@ -54,21 +60,54 @@
     border: 1px solid var(--edge); border-radius: 5px;
   }
   button:hover { border-color: var(--accent); color: var(--accent); }
+  button.ghost { border-style: dashed; color: var(--muted); }
   textarea {
     width: 100%; min-height: 300px; background: #10141f; color: var(--fg);
     border: 1px solid var(--edge); border-radius: 6px; padding: 10px;
     font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace;
     white-space: pre; overflow-wrap: normal; overflow-x: auto; resize: vertical;
   }
+  textarea.short { min-height: 90px; }
   .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
   .warn { color: var(--warn); }
+  .ok { color: var(--accent); }
   select, input[type=range] {
     font: inherit; font-size: 12px; background: #1e2326; color: var(--fg);
     border: 1px solid var(--edge); border-radius: 5px; padding: 5px 8px;
   }
+  input[type=text] {
+    font: inherit; font-size: 12px; background: #1e2326; color: var(--fg);
+    border: 1px solid var(--edge); border-radius: 5px; padding: 5px 8px;
+  }
+  input[type=color] {
+    background: #1e2326; border: 1px solid var(--edge); border-radius: 5px;
+    width: 44px; height: 28px; padding: 2px; cursor: pointer;
+  }
   kbd {
     background: #1e2326; border: 1px solid var(--edge); border-bottom-width: 2px;
     border-radius: 4px; padding: 1px 5px; font-size: 11px;
+  }
+
+  /* The recipe editor — one open at a time, inline under the swatches. */
+  .editor {
+    margin-top: 12px; padding: 12px; border: 1px solid var(--edge);
+    border-radius: 6px; background: #1e2326;
+  }
+  .editor .line {
+    display: grid; grid-template-columns: 72px 1fr; gap: 8px;
+    align-items: center; margin-bottom: 8px;
+  }
+  .editor .line > label { color: var(--muted); font-size: 12px; }
+  .editor .line select, .editor .line input[type=text] { width: 100%; }
+  .editor .amt { display: flex; align-items: center; gap: 8px; }
+  .editor .amt input[type=range] { flex: 1; padding: 0; }
+  .editor .amt b { width: 34px; text-align: right; font-weight: 600; }
+  .result {
+    display: flex; align-items: center; gap: 8px; margin: 10px 0 4px;
+  }
+  .result code {
+    font-size: 11px; color: var(--muted); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
   }
 </style>
 
@@ -110,9 +149,47 @@
     </div>
 
     <div class="panel" style="margin-top:16px">
-      <h2>Palette</h2>
+      <h2>Palette <span class="hint" style="margin:0">click paints &middot; &#9881; edits</span></h2>
       <div class="swatches" id="swatches"></div>
-      <p class="hint">Same letters <code>art.rs</code> uses.</p>
+      <div class="row">
+        <button id="addcolor" class="ghost">+ Add colour</button>
+      </div>
+      <div id="editor"></div>
+      <p class="hint">
+        Tones are <b>recipes</b>, not fixed hex &mdash; the same
+        <code>lerp</code> the game does, so they follow the theme.
+      </p>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Livery &amp; custom</h2>
+      <div class="swatches" id="livery"></div>
+      <div class="row">
+        <button id="addcustom" class="ghost">+ Add custom colour</button>
+      </div>
+      <p class="hint">
+        Fixed colours. A car's livery must <b>not</b> follow the theme &mdash;
+        a red car that turns green stops being an object.
+      </p>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Theme</h2>
+      <div class="swatches" id="themeswatches"></div>
+      <div class="row">
+        <button id="pastetheme">Paste colors.toml</button>
+        <button id="resettheme">Everforest</button>
+        <span class="hint" id="themestatus"></span>
+      </div>
+      <div id="themebox" style="display:none">
+        <textarea id="themein" class="short" spellcheck="false"
+          placeholder="cat ~/.local/state/omarchy/current/theme/colors.toml"></textarea>
+        <div class="row"><button id="applytheme">Apply</button></div>
+      </div>
+      <p class="hint">
+        Every derived tone re-resolves. Preview the car under any theme
+        before committing to it.
+      </p>
     </div>
 
     <div class="panel" style="margin-top:16px">
@@ -139,27 +216,260 @@
     <span class="hint" id="status"></span>
   </div>
   <p class="hint">
-    Paste an existing <code>&amp;[&amp;str]</code> block and hit <b>Load</b> to edit it,
-    or copy this back into <code>art.rs</code> when you like what you see.
+    The grid and its palette are emitted <b>together</b> &mdash; they are the
+    pair that has to stay in sync, and a grid carrying a letter the palette
+    does not know is a <code>Sprite::new</code> panic.
+    <b>Load</b> reads both back.
   </p>
 </div>
 
 <script>
-// The palette mirrors car_palette() in art.rs. Colours here are the
-// resolved Everforest values so the playground shows what the game shows.
-const PALETTE = [
-  ['.', 'transparent',  'erase'],
-  ['B', '#d64e3e',      'body'],
-  ['D', '#8a3a30',      'shadow'],
-  ['A', '#f0d678',      'accent'],
-  ['G', '#241c1c',      'cockpit'],
-  ['T', '#16191c',      'tyre'],
-  ['H', '#2b3136',      'tyre top'],
-  ['t', '#12151a',      'front tyre'],
-  ['h', '#1e2429',      'front top'],
-  ['L', '#ff5a46',      'brake light'],
-  ['W', '#a05348',      'wing'],
+// ---------------------------------------------------------------------
+// THE COLOUR MODEL
+//
+// A colour here is a RECIPE, not a frozen hex — because that is what
+// car_palette() in art.rs actually is. Almost every tone is DERIVED:
+//
+//     shadow    = body.lerp(theme.darker_background, 0.45)
+//     tyre_top  = tyre.lerp(theme.foreground, 0.14)
+//
+// Note the second one: it derives from ANOTHER DERIVED TONE, not from a
+// theme slot. That chaining is the good part of the design — it is why
+// the four tyre tones stay related to each other when the theme moves.
+// So a recipe's base may name a theme slot, a fixed colour, OR another
+// palette letter.
+//
+// A picker emitting raw hex would look right here and be wrong on every
+// theme but Everforest, silently. This one works in the same vocabulary
+// the Rust does, so what you pick translates back with no loss.
+//
+// The exception is LIVERY: `body` and `accent` are deliberately fixed.
+// A red car that turns green with the desktop stops being a
+// recognisable object.
+// ---------------------------------------------------------------------
+
+/// The theme slots a recipe can reach, in the order Theme declares them.
+const THEME_KEYS = [
+  'accent', 'selection', 'muted',
+  'background', 'dark_background', 'darker_background', 'lighter_background',
+  'foreground', 'dark_foreground', 'light_foreground',
+  'red', 'yellow', 'orange', 'green', 'cyan', 'blue', 'magenta',
 ];
+
+/// Theme::fallback() — Everforest Dark, the palette the game uses when
+/// no theme is readable. Seeding with the same values means the
+/// playground opens showing exactly what the game shows.
+const FALLBACK_THEME = {
+  accent: '#7fbbb3', selection: '#3d484d', muted: '#475258',
+  background: '#2d353b', dark_background: '#21272c',
+  darker_background: '#181d20', lighter_background: '#343f44',
+  foreground: '#d3c6aa', dark_foreground: '#4f585e', light_foreground: '#9da9a0',
+  red: '#e67e80', yellow: '#dbbc7f', orange: '#e09d7f',
+  green: '#a7c080', cyan: '#83c092', blue: '#7fbbb3', magenta: '#d699b6',
+};
+let THEME = {...FALLBACK_THEME};
+
+/// Fixed colours: the two livery entries Art::load() passes in, plus any
+/// custom colour you name. `flare` is the hot orange the brake light
+/// mixes toward — a literal in art.rs today, named here so one edit
+/// moves every tone that uses it.
+let FIXED = [
+  {key: 'body',   hex: '#d64e3e', livery: true},
+  {key: 'accent', hex: '#f0d678', livery: true},
+  {key: 'flare',  hex: '#ff5a46'},
+];
+
+/// The palette, as recipes — mirroring car_palette() line for line.
+/// Every derivation here is one the game actually performs.
+let PALETTE = [
+  {ch:'.', name:'erase'},
+  {ch:'B', name:'body',        base:'body'},
+  {ch:'D', name:'shadow',      base:'body', mix:'darker_background', amount:0.45},
+  {ch:'S', name:'lit surface', base:'body', mix:'foreground',        amount:0.22},
+  {ch:'A', name:'accent',      base:'accent'},
+  {ch:'G', name:'cockpit',     base:'darker_background', mix:'body',  amount:0.15},
+  {ch:'T', name:'tyre',        base:'darker_background', mix:'black', amount:0.35},
+  {ch:'H', name:'tyre top',    base:'@T', mix:'foreground',           amount:0.14},
+  {ch:'t', name:'front tyre',  base:'@T', mix:'darker_background',    amount:0.30},
+  {ch:'h', name:'front top',   base:'@H', mix:'darker_background',    amount:0.45},
+  {ch:'L', name:'brake light', base:'red', mix:'flare',               amount:0.50},
+  {ch:'W', name:'wing',        base:'@D', mix:'foreground',           amount:0.18},
+];
+
+// --- sources -------------------------------------------------------
+
+/// Everything a recipe may name. A leading '@' means "another palette
+/// letter" — that is what makes chains like tyre -> tyre_top possible.
+function sourceOptions() {
+  const fixed = FIXED.map(f => [f.key, f.key]);
+  const theme = THEME_KEYS.map(k => [k, 'theme.' + k]);
+  const letters = PALETTE
+    .filter(e => e.ch !== '.')
+    .map(e => ['@' + e.ch, `${e.ch}  (${e.name})`]);
+  return [
+    ...fixed,
+    ['black', 'Color::BLACK'], ['white', 'Color::WHITE'],
+    ...theme,
+    ...letters,
+  ];
+}
+
+function fixedOf(key) { return FIXED.find(f => f.key === key); }
+
+/// Resolve a source name to hex. `seen` guards the letter chain against
+/// a cycle: H from t, t from H would otherwise recurse until the page
+/// locks. A cycle resolves to magenta and is reported in the editor
+/// rather than hanging.
+function sourceHex(key, seen) {
+  if (key === 'black') return '#000000';
+  if (key === 'white') return '#ffffff';
+  const f = fixedOf(key);
+  if (f) return f.hex;
+  if (key && key[0] === '@') {
+    const ch = key.slice(1);
+    if (seen.has(ch)) return null;            // cycle
+    seen.add(ch);
+    const e = PALETTE.find(p => p.ch === ch);
+    return e ? resolveWith(e, seen) : '#ff00ff';
+  }
+  return THEME[key] || '#ff00ff';             // a name we do not know
+}
+
+function resolveWith(e, seen) {
+  if (e.ch === '.') return 'transparent';
+  if (e.hex) return e.hex;
+  const base = sourceHex(e.base, seen);
+  if (base === null) return null;
+  if (!e.mix || !e.amount) return base;
+  const target = sourceHex(e.mix, new Set(seen));
+  if (target === null) return null;
+  return lerpHex(base, target, e.amount);
+}
+
+/// The colour a letter paints. Magenta means the recipe is broken —
+/// deliberately loud, in the spirit of Sprite::new panicking rather than
+/// leaving a hole nobody notices until it is in a screenshot.
+function resolve(e) {
+  const r = resolveWith(e, new Set(e.ch === '.' ? [] : [e.ch]));
+  return r === null ? '#ff00ff' : r;
+}
+
+function hasCycle(e) {
+  return resolveWith(e, new Set(e.ch === '.' ? [] : [e.ch])) === null;
+}
+
+function colorOf(ch) {
+  const e = PALETTE.find(p => p.ch === ch);
+  return e ? resolve(e) : 'transparent';
+}
+
+// --- colour maths ---------------------------------------------------
+
+function hexToRgb(h) {
+  const s = String(h || '').replace('#', '').trim();
+  const v = s.length === 3 ? s.split('').map(c => c + c).join('') : s.padEnd(6, '0');
+  return [
+    parseInt(v.slice(0,2),16) || 0,
+    parseInt(v.slice(2,4),16) || 0,
+    parseInt(v.slice(4,6),16) || 0,
+  ];
+}
+function rgbToHex(r, g, b) {
+  return '#' + [r,g,b]
+    .map(n => Math.max(0, Math.min(255, n)).toString(16).padStart(2,'0'))
+    .join('');
+}
+
+/// Byte-for-byte what Color::lerp does in core/src/backend/mod.rs:
+/// per-channel linear mix in sRGB, `t` clamped to 0..1, and ROUNDED.
+///
+/// If this ever drifted from the Rust, every swatch here would disagree
+/// with the game by a channel and every judgement made in this tool
+/// would be quietly wrong.
+function lerpHex(aHex, bHex, t) {
+  t = Math.max(0, Math.min(1, t));
+  const a = hexToRgb(aHex), b = hexToRgb(bHex);
+  const mix = (x, y) => Math.round(x + (y - x) * t);
+  return rgbToHex(mix(a[0],b[0]), mix(a[1],b[1]), mix(a[2],b[2]));
+}
+
+// --- Rust emission --------------------------------------------------
+
+function sourceRust(key) {
+  if (key === 'black') return 'Color::BLACK';
+  if (key === 'white') return 'Color::WHITE';
+  if (fixedOf(key)) return key;
+  if (key && key[0] === '@') return varName(key.slice(1));
+  return 'theme.' + key;
+}
+
+/// Rust identifiers for the palette letters that need a `let` binding.
+///
+/// Names are slugged from the labels so the output reads like
+/// hand-written code — 'tyre top' becomes `tyre_top`, which is what
+/// art.rs calls it today. But nothing stops two tones sharing a label,
+/// and two `let glow = ...` lines is a compile error, so collisions are
+/// resolved GLOBALLY here rather than guessed at per letter. Case is
+/// significant in the grid ('T' rear tyre vs 't' front tyre) and not in
+/// a Rust identifier, which is one way this collides; two tones simply
+/// named alike is the other.
+let VAR_NAMES = {};
+
+function rebuildVarNames() {
+  VAR_NAMES = {};
+  const taken = new Set(FIXED.map(f => f.key));
+  taken.add('theme');
+  for (const e of PALETTE) {
+    if (e.ch === '.') continue;
+    let slug = e.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_|_$/g, '');
+    if (!slug || /^[0-9]/.test(slug)) slug = 'tone_' + slug;
+    let name = slug, n = 2;
+    while (taken.has(name)) name = `${slug}_${n++}`;
+    taken.add(name);
+    VAR_NAMES[e.ch] = name;
+  }
+}
+
+function varName(ch) {
+  return VAR_NAMES[ch] || ('c_' + ch.toLowerCase());
+}
+
+function rustLiteral(hex) {
+  const [r,g,b] = hexToRgb(hex);
+  const h = n => '0x' + n.toString(16).padStart(2,'0');
+  return `Color::rgb(${h(r)}, ${h(g)}, ${h(b)})`;
+}
+
+function recipeRust(e) {
+  if (e.hex) return rustLiteral(e.hex);
+  const base = sourceRust(e.base);
+  if (!e.mix || !e.amount) return base;
+  return `${base}.lerp(${sourceRust(e.mix)}, ${e.amount.toFixed(2)})`;
+}
+
+/// Order the palette so a tone is always defined after everything it
+/// derives from — otherwise the emitted `let` bindings would reference
+/// names that do not exist yet. A cycle is emitted last with a marker
+/// rather than dropped.
+function emissionOrder() {
+  const items = PALETTE.filter(e => e.ch !== '.');
+  const done = [], seen = new Set();
+  let guard = items.length + 1;
+  while (done.length < items.length && guard-- > 0) {
+    for (const e of items) {
+      if (seen.has(e.ch)) continue;
+      const deps = [e.base, e.mix]
+        .filter(k => k && k[0] === '@')
+        .map(k => k.slice(1));
+      if (deps.every(d => seen.has(d))) { done.push(e); seen.add(e.ch); }
+    }
+  }
+  for (const e of items) if (!seen.has(e.ch)) done.push(e);   // cycles
+  return done;
+}
+
+// --- state ----------------------------------------------------------
 
 let COLS = 48, ROWS = 30, CELL = 15;
 
@@ -175,6 +485,19 @@ const BACKGROUNDS = [
   ['dark',  '#10141f', 'dark'],
 ];
 let bg = BACKGROUNDS[0][1];
+
+let grid = Array.from({length: ROWS}, () => Array(COLS).fill('.'));
+let cur = 'B';
+let editing = null;          // which palette letter has the editor open
+let painting = false, erasing = false;
+const undoStack = [];
+
+const cv = document.getElementById('grid');
+const ctx = cv.getContext('2d');
+const pv = document.getElementById('preview');
+const pctx = pv.getContext('2d');
+
+const $ = id => document.getElementById(id);
 
 /// Resize the grid, keeping whatever art already exists anchored at the
 /// BOTTOM CENTRE. A car sits on the road and is symmetric about its
@@ -194,21 +517,6 @@ function resize(cols, rows) {
   grid = next;
   fitZoom();
   draw();
-}
-let grid = Array.from({length: ROWS}, () => Array(COLS).fill('.'));
-let cur = 'B';
-let painting = false, erasing = false;
-const undoStack = [];
-
-const cv = document.getElementById('grid');
-const ctx = cv.getContext('2d');
-
-const pv = document.getElementById('preview');
-const pctx = pv.getContext('2d');
-
-function colorOf(ch) {
-  const e = PALETTE.find(p => p[0] === ch);
-  return e ? e[1] : 'transparent';
 }
 
 function draw() {
@@ -296,8 +604,16 @@ cv.addEventListener('pointerdown', e => {
 cv.addEventListener('pointermove', e => { if (painting) paint(e); });
 cv.addEventListener('pointerup', () => { painting = false; });
 
+// --- swatches -------------------------------------------------------
+
+function chipStyle(col) {
+  return col === 'transparent'
+    ? 'background:repeating-conic-gradient(#333 0 25%, #222 0 50%) 50%/8px 8px'
+    : `background:${col}`;
+}
+
 function renderBackgrounds() {
-  const el = document.getElementById('bgs');
+  const el = $('bgs');
   el.innerHTML = '';
   for (const [key, col, name] of BACKGROUNDS) {
     const b = document.createElement('button');
@@ -309,35 +625,451 @@ function renderBackgrounds() {
 }
 
 function renderSwatches() {
-  const el = document.getElementById('swatches');
+  const el = $('swatches');
   el.innerHTML = '';
-  for (const [ch, col, name] of PALETTE) {
-    const b = document.createElement('button');
-    b.className = 'sw' + (ch === cur ? ' on' : '');
-    b.innerHTML = `<span class="chip" style="background:${col === 'transparent' ? 'repeating-conic-gradient(#333 0 25%, #222 0 50%) 50%/8px 8px' : col}"></span>
-                   <b>${ch === '.' ? '·' : ch}</b> ${name}`;
-    b.onclick = () => { cur = ch; renderSwatches(); };
+  for (const e of PALETTE) {
+    const col = resolve(e);
+    const b = document.createElement('div');
+    b.className = 'sw' + (e.ch === cur ? ' on' : '');
+    b.innerHTML = `<span class="chip" style="${chipStyle(col)}"></span>
+                   <b>${e.ch === '.' ? '&middot;' : e.ch}</b> ${e.name}`;
+    b.onclick = () => { cur = e.ch; renderSwatches(); };
+    if (e.ch !== '.') {
+      const gear = document.createElement('span');
+      gear.className = 'gear';
+      gear.textContent = '⚙';
+      gear.title = 'edit this colour';
+      gear.onclick = ev => {
+        ev.stopPropagation();
+        editing = (editing === e.ch) ? null : e.ch;
+        renderEditor();
+      };
+      b.appendChild(gear);
+    }
     el.appendChild(b);
+  }
+  renderEditor();
+}
+
+function renderFixed() {
+  const el = $('livery');
+  el.innerHTML = '';
+  for (const f of FIXED) {
+    const wrap = document.createElement('div');
+    wrap.className = 'sw';
+    wrap.innerHTML = `<span class="chip" style="background:${f.hex}"></span>
+                      <b>${f.key}</b>${f.livery ? '' : ''}`;
+    const inp = document.createElement('input');
+    inp.type = 'color'; inp.value = f.hex;
+    inp.style.cssText = 'width:26px;height:20px;padding:1px;margin-left:2px';
+    inp.oninput = () => { f.hex = inp.value; refreshColors(); };
+    wrap.appendChild(inp);
+    if (!f.livery) {
+      const x = document.createElement('span');
+      x.className = 'gear';
+      x.textContent = '×';
+      x.title = 'remove';
+      x.onclick = () => removeFixed(f.key);
+      wrap.appendChild(x);
+    }
+    el.appendChild(wrap);
   }
 }
 
-function emit() {
-  const body = grid.map(r => `    "${r.join('')}",`).join('\n');
-  const name = document.getElementById('out').dataset.name || 'PLAYER_CAR';
-  document.getElementById('out').value =
-    `pub const ${name}: &[&str] = &[\n${body}\n];`;
+function renderTheme() {
+  const el = $('themeswatches');
+  el.innerHTML = '';
+  for (const k of THEME_KEYS) {
+    const s = document.createElement('span');
+    s.className = 'sw';
+    s.style.cursor = 'default';
+    s.innerHTML = `<span class="chip" style="background:${THEME[k]}"></span>${k.replace(/_/g,' ')}`;
+    el.appendChild(s);
+  }
 }
 
-document.getElementById('copy').onclick = async () => {
-  await navigator.clipboard.writeText(document.getElementById('out').value);
-  const s = document.getElementById('status');
+/// Everything that has to change when a colour moves. The grid and
+/// preview repaint, every swatch re-resolves, and the emitted Rust is
+/// rewritten — a recipe edit changes the OUTPUT, not just the view.
+function refreshColors() {
+  renderSwatches();
+  renderFixed();
+  renderTheme();
+  draw();
+}
+
+// --- the recipe editor ----------------------------------------------
+
+function renderEditor() {
+  const host = $('editor');
+  host.innerHTML = '';
+  if (!editing) return;
+  const e = PALETTE.find(p => p.ch === editing);
+  if (!e) { editing = null; return; }
+
+  const box = document.createElement('div');
+  box.className = 'editor';
+
+  const opts = sourceOptions().filter(([k]) => k !== '@' + e.ch);
+  const optionHtml = sel => opts
+    .map(([k, label]) => `<option value="${k}"${k === sel ? ' selected' : ''}>${label}</option>`)
+    .join('');
+
+  const pinned = !!e.hex;
+
+  box.innerHTML = `
+    <div class="line">
+      <label>letter</label>
+      <input type="text" id="e_ch" value="${e.ch}" maxlength="1" style="width:56px">
+    </div>
+    <div class="line">
+      <label>name</label>
+      <input type="text" id="e_name" value="${e.name}">
+    </div>
+    <div class="line">
+      <label>kind</label>
+      <select id="e_kind">
+        <option value="derived"${pinned ? '' : ' selected'}>derived (follows theme)</option>
+        <option value="pinned"${pinned ? ' selected' : ''}>pinned hex (fixed)</option>
+      </select>
+    </div>
+    <div id="e_derived" style="${pinned ? 'display:none' : ''}">
+      <div class="line">
+        <label>base</label>
+        <select id="e_base">${optionHtml(e.base)}</select>
+      </div>
+      <div class="line">
+        <label>mix to</label>
+        <select id="e_mix">
+          <option value="">&mdash; none &mdash;</option>
+          ${optionHtml(e.mix)}
+        </select>
+      </div>
+      <div class="line">
+        <label>amount</label>
+        <span class="amt">
+          <input type="range" id="e_amt" min="0" max="1" step="0.01"
+                 value="${e.amount != null ? e.amount : 0}">
+          <b id="e_amtv">${(e.amount != null ? e.amount : 0).toFixed(2)}</b>
+        </span>
+      </div>
+    </div>
+    <div id="e_pinned" style="${pinned ? '' : 'display:none'}">
+      <div class="line">
+        <label>colour</label>
+        <input type="color" id="e_hex" value="${pinned ? e.hex : resolve(e)}">
+      </div>
+    </div>
+    <div class="result">
+      <span class="chip big" id="e_chip" style="${chipStyle(resolve(e))}"></span>
+      <code id="e_rust">${recipeRust(e)}</code>
+    </div>
+    <div class="row">
+      <button id="e_del">Delete</button>
+      <button id="e_close">Done</button>
+      <span class="hint" id="e_status"></span>
+    </div>
+  `;
+  host.appendChild(box);
+
+  const status = $('e_status');
+  const restate = () => {
+    $('e_chip').style.cssText = 'width:22px;height:22px;border-radius:3px;border:1px solid rgba(255,255,255,.15);flex:none;' + chipStyle(resolve(e));
+    $('e_rust').textContent = recipeRust(e);
+    if (hasCycle(e)) {
+      status.innerHTML = '<span class="warn">circular reference &mdash; this tone derives from itself</span>';
+    } else {
+      status.textContent = '';
+    }
+    refreshColorsKeepEditor();
+  };
+
+  $('e_kind').onchange = ev => {
+    if (ev.target.value === 'pinned') {
+      e.hex = resolve(e);
+      $('e_derived').style.display = 'none';
+      $('e_pinned').style.display = '';
+      $('e_hex').value = e.hex;
+    } else {
+      delete e.hex;
+      if (!e.base) e.base = 'body';
+      $('e_derived').style.display = '';
+      $('e_pinned').style.display = 'none';
+    }
+    restate();
+  };
+  $('e_hex').oninput = ev => { e.hex = ev.target.value; restate(); };
+  $('e_base').onchange = ev => { e.base = ev.target.value; restate(); };
+  $('e_mix').onchange = ev => {
+    const v = ev.target.value;
+    if (!v) { delete e.mix; delete e.amount; }
+    else { e.mix = v; if (e.amount == null) e.amount = Number($('e_amt').value) || 0.5; }
+    restate();
+  };
+  $('e_amt').oninput = ev => {
+    e.amount = Number(ev.target.value);
+    $('e_amtv').textContent = e.amount.toFixed(2);
+    restate();
+  };
+  $('e_name').oninput = ev => { e.name = ev.target.value || '?'; restate(); };
+
+  // Renaming a letter has to carry the painted cells with it, and every
+  // recipe that referenced it. Otherwise the grid keeps a character the
+  // palette no longer knows — which is exactly the Sprite::new panic
+  // this tool exists to prevent.
+  $('e_ch').onchange = ev => {
+    const next = ev.target.value;
+    const err = letterProblem(next, e.ch);
+    if (err) {
+      status.innerHTML = `<span class="warn">${err}</span>`;
+      ev.target.value = e.ch;
+      return;
+    }
+    const old = e.ch;
+    if (next === old) return;
+    pushUndo();
+    for (let y = 0; y < ROWS; y++)
+      for (let x = 0; x < COLS; x++)
+        if (grid[y][x] === old) grid[y][x] = next;
+    for (const p of PALETTE) {
+      if (p.base === '@' + old) p.base = '@' + next;
+      if (p.mix === '@' + old) p.mix = '@' + next;
+    }
+    e.ch = next;
+    if (cur === old) cur = next;
+    editing = next;
+    refreshColors();
+  };
+
+  $('e_del').onclick = () => {
+    const used = countUses(e.ch);
+    if (used > 0) {
+      status.innerHTML = `<span class="warn">still painted on ${used} cell${used === 1 ? '' : 's'} &mdash; erase them first</span>`;
+      return;
+    }
+    const dependents = PALETTE.filter(p =>
+      p.ch !== e.ch && (p.base === '@' + e.ch || p.mix === '@' + e.ch));
+    if (dependents.length) {
+      status.innerHTML = `<span class="warn">${dependents.map(d => d.ch).join(', ')} derive${dependents.length === 1 ? 's' : ''} from it</span>`;
+      return;
+    }
+    PALETTE = PALETTE.filter(p => p.ch !== e.ch);
+    if (cur === e.ch) cur = 'B';
+    editing = null;
+    refreshColors();
+  };
+
+  $('e_close').onclick = () => { editing = null; renderEditor(); };
+}
+
+/// Re-resolve everything without tearing down the open editor — an
+/// editor that rebuilt on every slider tick would lose focus mid-drag.
+function refreshColorsKeepEditor() {
+  const el = $('swatches');
+  [...el.children].forEach((node, i) => {
+    const e = PALETTE[i];
+    if (!e) return;
+    const chip = node.querySelector('.chip');
+    if (chip) chip.style.cssText =
+      'width:14px;height:14px;border-radius:3px;border:1px solid rgba(255,255,255,.15);flex:none;' + chipStyle(resolve(e));
+    const label = node.childNodes;
+    // The <b> holds the letter; the trailing text node holds the name.
+    const bold = node.querySelector('b');
+    if (bold) bold.innerHTML = e.ch === '.' ? '&middot;' : e.ch;
+    if (bold && bold.nextSibling) bold.nextSibling.textContent = ' ' + e.name;
+  });
+  draw();
+}
+
+function countUses(ch) {
+  let n = 0;
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS; x++)
+      if (grid[y][x] === ch) n++;
+  return n;
+}
+
+/// Why a letter cannot be used. '.' is reserved for transparent by
+/// Sprite::TRANSPARENT, and a duplicate would make two recipes fight
+/// over the same cells.
+function letterProblem(ch, allow) {
+  if (!ch || ch.length !== 1) return 'one character only';
+  if (ch === '.') return "'.' is reserved for transparent";
+  if (!/[!-~]/.test(ch)) return 'printable ASCII only';
+  if (ch === '"' || ch === '\\') return 'would break the Rust string';
+  if (ch !== allow && PALETTE.some(p => p.ch === ch)) return `${ch} is already taken`;
+  return null;
+}
+
+/// The next character not already in use. Case matters in the grid, so
+/// this walks the alphabet in both cases before reaching for digits and
+/// symbols — 93 usable slots against the 11 in use today.
+function nextFreeLetter() {
+  const pool = 'BDSAGTHLWCEFIJKMNOPQRUVXYZbcdefgijklmnopqrsuvwxyz0123456789+*=#%$@&?<>/|~^';
+  for (const c of pool) if (!PALETTE.some(p => p.ch === c)) return c;
+  for (let i = 33; i < 127; i++) {
+    const c = String.fromCharCode(i);
+    if (!letterProblem(c, null)) return c;
+  }
+  return null;
+}
+
+$('addcolor').onclick = () => {
+  const ch = nextFreeLetter();
+  if (!ch) { $('status').innerHTML = '<span class="warn">no free characters left</span>'; return; }
+  // A new tone starts as a highlight on the body — the most common
+  // thing to want next, and immediately visible rather than a duplicate
+  // of something already on the grid.
+  PALETTE.push({ch, name: 'new tone', base: 'body', mix: 'foreground', amount: 0.35});
+  cur = ch;
+  editing = ch;
+  refreshColors();
+};
+
+$('addcustom').onclick = () => {
+  let n = 1, key;
+  do { key = 'custom' + n++; } while (fixedOf(key));
+  FIXED.push({key, hex: '#88aa66'});
+  refreshColors();
+};
+
+function removeFixed(key) {
+  const users = PALETTE.filter(p => p.base === key || p.mix === key);
+  if (users.length) {
+    $('status').innerHTML =
+      `<span class="warn">${key} is used by ${users.map(u => u.ch).join(', ')}</span>`;
+    setTimeout(() => $('status').textContent = '', 2600);
+    return;
+  }
+  FIXED = FIXED.filter(f => f.key !== key);
+  refreshColors();
+}
+
+// --- theme ----------------------------------------------------------
+
+/// Read a colors.toml. Deliberately tolerant in the same way RawTheme
+/// is: unknown keys are ignored and missing ones keep their fallback,
+/// because themes are user-editable and third-party themes install from
+/// git. A file that fails to parse must not blank the palette.
+function parseThemeToml(text) {
+  const found = {};
+  const re = /^\s*([a-z_]+)\s*=\s*["']([^"']+)["']/gmi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const key = m[1].toLowerCase();
+    const val = m[2].trim();
+    if (THEME_KEYS.includes(key) && /^#?[0-9a-f]{3,8}$/i.test(val)) {
+      found[key] = val[0] === '#' ? val : '#' + val;
+    }
+  }
+  return found;
+}
+
+$('pastetheme').onclick = () => {
+  const box = $('themebox');
+  box.style.display = box.style.display === 'none' ? '' : 'none';
+  if (box.style.display === '') $('themein').focus();
+};
+
+$('applytheme').onclick = () => {
+  const found = parseThemeToml($('themein').value);
+  const n = Object.keys(found).length;
+  const st = $('themestatus');
+  if (!n) {
+    st.innerHTML = '<span class="warn">no colour keys found</span>';
+    return;
+  }
+  THEME = {...FALLBACK_THEME, ...found};
+  const missing = THEME_KEYS.filter(k => !(k in found));
+  st.innerHTML = `<span class="ok">read ${n} colour${n === 1 ? '' : 's'}</span>`
+    + (missing.length ? ` <span class="hint">(${missing.length} fell back)</span>` : '');
+  refreshColors();
+};
+
+$('resettheme').onclick = () => {
+  THEME = {...FALLBACK_THEME};
+  $('themestatus').innerHTML = '<span class="ok">Everforest</span>';
+  refreshColors();
+};
+
+// --- emit / load ----------------------------------------------------
+
+/// The grid AND its palette, together.
+///
+/// They are the pair that has to stay in sync: a grid carrying a letter
+/// the palette does not know is a Sprite::new panic, and that is the
+/// failure this whole tool exists to move from `cargo run` to authoring
+/// time. Emitting one without the other is how they drift.
+function emit() {
+  rebuildVarNames();
+  const rows = grid.map(r => `    "${r.join('')}",`).join('\n');
+  const name = $('out').dataset.name || 'PLAYER_CAR';
+
+  const lines = [];
+  lines.push(`pub const ${name}: &[&str] = &[`);
+  lines.push(rows);
+  lines.push('];');
+  lines.push('');
+
+  // Custom fixed colours first — recipes mix toward them by name.
+  const customs = FIXED.filter(f => !f.livery);
+  const args = FIXED.filter(f => f.livery).map(f => `${f.key}: Color`).join(', ');
+
+  lines.push('/// Colours for one car livery.');
+  lines.push('///');
+  lines.push('/// Livery is fixed; everything else is derived from the live theme,');
+  lines.push('/// so the car sits in the scene\'s light rather than on top of it.');
+  lines.push(`pub fn car_palette(theme: &Theme, ${args}) -> Vec<PaletteEntry> {`);
+  for (const f of customs) {
+    lines.push(`    let ${f.key} = ${rustLiteral(f.hex)};`);
+  }
+  if (customs.length) lines.push('');
+
+  const ordered = emissionOrder();
+  // A tone another tone derives from needs a name to be referenced by.
+  const needsBinding = new Set();
+  for (const e of ordered)
+    for (const k of [e.base, e.mix])
+      if (k && k[0] === '@') needsBinding.add(k.slice(1));
+
+  for (const e of ordered) {
+    if (needsBinding.has(e.ch)) {
+      lines.push(`    let ${varName(e.ch)} = ${recipeRust(e)};`);
+    }
+  }
+  if (needsBinding.size) lines.push('');
+
+  lines.push('    vec![');
+  for (const e of ordered) {
+    const expr = needsBinding.has(e.ch) ? varName(e.ch) : recipeRust(e);
+    const pad = ' '.repeat(Math.max(0, 22 - expr.length));
+    lines.push(`        ('${e.ch}', ${expr}),${pad} // ${e.name}`);
+  }
+  lines.push('    ]');
+  lines.push('}');
+
+  $('out').value = lines.join('\n');
+}
+
+$('copy').onclick = async () => {
+  await navigator.clipboard.writeText($('out').value);
+  const s = $('status');
   s.textContent = 'copied'; setTimeout(() => s.textContent = '', 1400);
 };
 
-document.getElementById('load').onclick = () => {
-  const text = document.getElementById('out').value;
-  const rows = [...text.matchAll(/"([^"]*)"/g)].map(m => m[1]);
-  const status = document.getElementById('status');
+/// Read a grid back, and the palette with it when one is present.
+///
+/// The grid rows are taken from the `&[&str]` block ONLY — scanning the
+/// whole textarea for quoted strings would swallow doc comments and any
+/// string in the palette function below, and silently corrupt the grid.
+$('load').onclick = () => {
+  const text = $('out').value;
+  const status = $('status');
+
+  const block = text.match(/&\[&str\]\s*=\s*&\[([\s\S]*?)\];/);
+  const scope = block ? block[1] : text;
+  const rows = [...scope.matchAll(/"([^"]*)"/g)].map(m => m[1]);
+
   if (!rows.length) { status.innerHTML = '<span class="warn">no quoted rows found</span>'; return; }
   const w = rows[0].length;
   const ragged = rows.findIndex(r => r.length !== w);
@@ -345,21 +1077,137 @@ document.getElementById('load').onclick = () => {
     status.innerHTML = `<span class="warn">row ${ragged} is ${rows[ragged].length} chars, expected ${w}</span>`;
     return;
   }
+
   const nameMatch = text.match(/pub const ([A-Z0-9_]+)/);
-  if (nameMatch) document.getElementById('out').dataset.name = nameMatch[1];
+  if (nameMatch) $('out').dataset.name = nameMatch[1];
+
   pushUndo();
   COLS = w; ROWS = rows.length;
   grid = rows.map(r => r.split(''));
+
+  const learned = loadPaletteFrom(text);
+
   fitZoom();
   // Keep the picker honest about what is actually loaded.
-  const sel = document.getElementById('size');
+  const sel = $('size');
   const key = `${COLS}x${ROWS}`;
   sel.value = [...sel.options].some(o => o.value === key) ? key : sel.value;
-  status.textContent = `loaded ${ROWS} rows of ${COLS}`;
-  draw();
+
+  // Any letter on the grid with no recipe would panic Sprite::new. Say
+  // so here rather than at cargo run.
+  const unknown = [...new Set(grid.flat())]
+    .filter(c => c !== '.' && !PALETTE.some(p => p.ch === c));
+  let msg = `loaded ${ROWS} rows of ${COLS}`;
+  if (learned) msg += `, ${learned} palette entr${learned === 1 ? 'y' : 'ies'}`;
+  status.innerHTML = unknown.length
+    ? `${msg} &mdash; <span class="warn">no palette entry for ${unknown.join(', ')}</span>`
+    : msg;
+
+  refreshColors();
 };
 
-document.getElementById('mirror').onclick = () => {
+/// Recover recipes from an emitted car_palette(). Round-tripping matters
+/// because the tool's output is the input next session — anything it can
+/// write and not read back has to be rebuilt by hand.
+function loadPaletteFrom(text) {
+  const fn = text.match(/fn car_palette[\s\S]*?vec!\[([\s\S]*?)\]/);
+  if (!fn) return 0;
+
+  // `let name = expr;` bindings, so a letter deriving from another can
+  // be resolved back to '@X'.
+  const bindings = {};
+  for (const m of text.matchAll(/^\s*let\s+([a-z_][a-z0-9_]*)\s*=\s*(.+?);\s*$/gm)) {
+    bindings[m[1]] = m[2].trim();
+  }
+
+  const entries = [...fn[1].matchAll(/\(\s*'(.)'\s*,\s*([^)]*?(?:\([^)]*\)[^)]*?)*)\)\s*,/g)];
+  if (!entries.length) return 0;
+
+  // Map a binding name back to the letter it belongs to, so
+  // `tyre.lerp(...)` becomes base '@T'.
+  const letterOfBinding = {};
+  for (const [, ch, expr] of entries) {
+    const t = expr.trim();
+    if (bindings[t] !== undefined) letterOfBinding[t] = ch;
+  }
+
+  const nameFor = ch => {
+    const prev = PALETTE.find(p => p.ch === ch);
+    return prev ? prev.name : 'tone ' + ch;
+  };
+
+  const customs = [];
+  const toSource = tok => {
+    const t = tok.trim();
+    if (t === 'Color::BLACK') return 'black';
+    if (t === 'Color::WHITE') return 'white';
+    if (t.startsWith('theme.')) return t.slice(6);
+    if (letterOfBinding[t]) return '@' + letterOfBinding[t];
+    if (fixedOf(t)) return t;
+    const lit = t.match(/Color::rgb\(\s*(0x[0-9a-f]{2}|\d+)\s*,\s*(0x[0-9a-f]{2}|\d+)\s*,\s*(0x[0-9a-f]{2}|\d+)\s*\)/i);
+    if (lit) {
+      const [r,g,b] = lit.slice(1,4).map(v => Number(v));
+      return {literal: rgbToHex(r,g,b)};
+    }
+    if (bindings[t]) {           // a named custom colour
+      const l = bindings[t].match(/Color::rgb\(\s*(0x[0-9a-f]{2}|\d+)\s*,\s*(0x[0-9a-f]{2}|\d+)\s*,\s*(0x[0-9a-f]{2}|\d+)\s*\)/i);
+      if (l) {
+        const [r,g,b] = l.slice(1,4).map(v => Number(v));
+        customs.push({key: t, hex: rgbToHex(r,g,b)});
+        return t;
+      }
+    }
+    return null;
+  };
+
+  const next = [{ch:'.', name:'erase'}];
+  let count = 0;
+  for (const [, ch, rawExpr] of entries) {
+    let expr = rawExpr.trim();
+    if (bindings[expr] !== undefined) expr = bindings[expr].trim();
+
+    const rec = {ch, name: nameFor(ch)};
+    const lerp = expr.match(/^(.*?)\.lerp\(\s*(.*?)\s*,\s*([0-9.]+)\s*\)$/);
+    if (lerp) {
+      const b = toSource(lerp[1]), m = toSource(lerp[2]);
+      if (b && m) {
+        rec.base = typeof b === 'object' ? pinCustom(b, customs) : b;
+        rec.mix  = typeof m === 'object' ? pinCustom(m, customs) : m;
+        rec.amount = Number(lerp[3]);
+      } else { rec.hex = '#ff00ff'; }
+    } else {
+      const s = toSource(expr);
+      if (s && typeof s === 'object') rec.hex = s.literal;
+      else if (s) rec.base = s;
+      else rec.hex = '#ff00ff';
+    }
+    next.push(rec);
+    count++;
+  }
+
+  for (const c of customs) if (!fixedOf(c.key)) FIXED.push(c);
+  PALETTE = next;
+  rebuildVarNames();
+  if (!PALETTE.some(p => p.ch === cur)) cur = PALETTE[1] ? PALETTE[1].ch : '.';
+  editing = null;
+  return count;
+}
+
+/// An inline literal found while loading becomes a named custom colour,
+/// so the editor can offer it in a dropdown rather than hiding it.
+function pinCustom(obj, customs) {
+  const existing = FIXED.find(f => f.hex.toLowerCase() === obj.literal.toLowerCase())
+    || customs.find(c => c.hex.toLowerCase() === obj.literal.toLowerCase());
+  if (existing) return existing.key;
+  let n = 1, key;
+  do { key = 'custom' + n++; } while (fixedOf(key) || customs.some(c => c.key === key));
+  customs.push({key, hex: obj.literal});
+  return key;
+}
+
+// --- tools ----------------------------------------------------------
+
+$('mirror').onclick = () => {
   pushUndo();
   // Left half wins, mirrored onto the right. Symmetry by construction.
   for (let y = 0; y < ROWS; y++)
@@ -367,21 +1215,21 @@ document.getElementById('mirror').onclick = () => {
       grid[y][COLS-1-x] = grid[y][x];
   draw();
 };
-document.getElementById('clear').onclick = () => {
+$('clear').onclick = () => {
   pushUndo();
   grid = Array.from({length: ROWS}, () => Array(COLS).fill('.'));
   draw();
 };
-document.getElementById('undo').onclick = doUndo;
+$('undo').onclick = doUndo;
 function doUndo() {
   if (!undoStack.length) return;
   grid = undoStack.pop(); draw();
 }
-document.getElementById('up').onclick = () => {
+$('up').onclick = () => {
   pushUndo();
   grid.shift(); grid.push(Array(COLS).fill('.')); draw();
 };
-document.getElementById('down').onclick = () => {
+$('down').onclick = () => {
   pushUndo();
   grid.pop(); grid.unshift(Array(COLS).fill('.')); draw();
 };
@@ -392,24 +1240,23 @@ document.getElementById('down').onclick = () => {
 /// panel, and the canvas simply overflows — which reads as "the canvas
 /// shrank" when in fact the art grew.
 function fitZoom() {
-  const wrap = document.getElementById('gridwrap');
+  const wrap = $('gridwrap');
   const avail = Math.max(240, wrap.clientWidth - 4);
   CELL = Math.max(6, Math.min(28, Math.floor(avail / COLS)));
-  document.getElementById('zoom').value = CELL;
+  $('zoom').value = CELL;
   cv.width = COLS * CELL;
   cv.height = ROWS * CELL;
 }
 
-document.getElementById('fit').onclick = () => { fitZoom(); draw(); };
-
+$('fit').onclick = () => { fitZoom(); draw(); };
 addEventListener('resize', () => { fitZoom(); draw(); });
 
-document.getElementById('size').onchange = e => {
+$('size').onchange = e => {
   const [c, r] = e.target.value.split('x').map(Number);
   pushUndo();
   resize(c, r);
 };
-document.getElementById('zoom').oninput = e => {
+$('zoom').oninput = e => {
   CELL = Number(e.target.value);
   cv.width = COLS * CELL; cv.height = ROWS * CELL;
   draw();
@@ -455,10 +1302,12 @@ grid = [
 
 COLS = grid[0].length;
 ROWS = grid.length;
-document.getElementById('size').value = `${COLS}x${ROWS}`;
+$('size').value = `${COLS}x${ROWS}`;
 fitZoom();
 
 renderSwatches();
+renderFixed();
+renderTheme();
 renderBackgrounds();
 draw();
 </script>

@@ -12,7 +12,10 @@
   }
   header {
     padding: 14px 20px; border-bottom: 1px solid var(--edge);
-    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header .controls {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
   }
   h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .04em; }
   header p { margin: 0; color: var(--muted); font-size: 12px; }
@@ -72,7 +75,7 @@
 <header>
   <h1>Omarcade Sprite Playground</h1>
   <p>Paint pixels &rarr; copy the Rust back into <code>art.rs</code>. Drag to draw, right-click erases.</p>
-  <span style="margin-left:auto; display:flex; gap:8px; align-items:center">
+  <span class="controls">
     <label class="hint" for="size">grid</label>
     <select id="size">
       <option value="32x20">32 &times; 20 &mdash; chunky</option>
@@ -80,7 +83,8 @@
       <option value="64x40">64 &times; 40 &mdash; fine</option>
     </select>
     <label class="hint" for="zoom">zoom</label>
-    <input id="zoom" type="range" min="8" max="28" value="15" style="width:110px">
+    <input id="zoom" type="range" min="6" max="28" value="15" style="width:110px">
+    <button id="fit" style="padding:5px 10px">Fit</button>
   </span>
 </header>
 
@@ -171,7 +175,7 @@ function resize(cols, rows) {
       if (nx >= 0 && nx < COLS && ny >= 0 && ny < ROWS) next[ny][nx] = old[y][x];
     }
   grid = next;
-  cv.width = COLS * CELL; cv.height = ROWS * CELL;
+  fitZoom();
   draw();
 }
 let grid = Array.from({length: ROWS}, () => Array(COLS).fill('.'));
@@ -314,8 +318,8 @@ document.getElementById('load').onclick = () => {
   if (nameMatch) document.getElementById('out').dataset.name = nameMatch[1];
   pushUndo();
   COLS = w; ROWS = rows.length;
-  cv.width = COLS * CELL; cv.height = ROWS * CELL;
   grid = rows.map(r => r.split(''));
+  fitZoom();
   // Keep the picker honest about what is actually loaded.
   const sel = document.getElementById('size');
   const key = `${COLS}x${ROWS}`;
@@ -350,6 +354,24 @@ document.getElementById('down').onclick = () => {
   pushUndo();
   grid.pop(); grid.unshift(Array(COLS).fill('.')); draw();
 };
+
+/// Pick a cell size that fits the available width.
+///
+/// A 48-wide grid at the 32-wide default cell size is wider than the
+/// panel, and the canvas simply overflows — which reads as "the canvas
+/// shrank" when in fact the art grew.
+function fitZoom() {
+  const wrap = document.getElementById('gridwrap');
+  const avail = Math.max(240, wrap.clientWidth - 4);
+  CELL = Math.max(6, Math.min(28, Math.floor(avail / COLS)));
+  document.getElementById('zoom').value = CELL;
+  cv.width = COLS * CELL;
+  cv.height = ROWS * CELL;
+}
+
+document.getElementById('fit').onclick = () => { fitZoom(); draw(); };
+
+addEventListener('resize', () => { fitZoom(); draw(); });
 
 document.getElementById('size').onchange = e => {
   const [c, r] = e.target.value.split('x').map(Number);
@@ -399,6 +421,15 @@ grid = [
   "................................................",
   "................................................",
 ].map(r => r.split(''));
+
+// The seed above decides the grid size — deriving COLS/ROWS from it
+// rather than trusting the declarations means the canvas is always sized
+// for the art actually loaded. Without this the element kept its initial
+// width and showed only the first dozen columns of a 48-wide car.
+COLS = grid[0].length;
+ROWS = grid.length;
+document.getElementById('size').value = `${COLS}x${ROWS}`;
+fitZoom();
 
 renderSwatches();
 draw();

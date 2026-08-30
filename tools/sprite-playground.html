@@ -654,19 +654,74 @@ function renderSwatches() {
   renderEditor();
 }
 
+/// Fixed colours, each with BOTH a native picker and a hex field.
+///
+/// The native `<input type="color">` panel is drawn by the browser and
+/// anchored to its input, so a swatch near the right edge of a narrow
+/// window opens a panel that runs off-screen with the blue channel and
+/// the hex box clipped — and nothing in the page can reposition it.
+/// The text field is the way out: it is always reachable, it is how
+/// anyone with a hex value in hand actually wants to enter one, and it
+/// makes the picker a convenience rather than the only route.
 function renderFixed() {
   const el = $('livery');
   el.innerHTML = '';
   for (const f of FIXED) {
     const wrap = document.createElement('div');
     wrap.className = 'sw';
-    wrap.innerHTML = `<span class="chip" style="background:${f.hex}"></span>
-                      <b>${f.key}</b>${f.livery ? '' : ''}`;
+    wrap.style.flexWrap = 'wrap';
+
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.style.background = f.hex;
+    wrap.appendChild(chip);
+
+    const label = document.createElement('b');
+    label.textContent = f.key;
+    wrap.appendChild(label);
+
     const inp = document.createElement('input');
     inp.type = 'color'; inp.value = f.hex;
+    inp.title = 'colour picker';
     inp.style.cssText = 'width:26px;height:20px;padding:1px;margin-left:2px';
-    inp.oninput = () => { f.hex = inp.value; refreshColors(); };
+
+    const hex = document.createElement('input');
+    hex.type = 'text';
+    hex.value = f.hex;
+    hex.spellcheck = false;
+    hex.title = 'hex value — type or paste';
+    hex.style.cssText = 'width:74px;padding:2px 5px;font-size:11px';
+
+    // Keep the three views of one value in step, without rebuilding the
+    // row — a full re-render on every keystroke would drop focus.
+    const apply = (v, from) => {
+      f.hex = v;
+      chip.style.background = v;
+      if (from !== 'hex') hex.value = v;
+      if (from !== 'picker') inp.value = v;
+      renderSwatches();
+      renderTheme();
+      draw();
+    };
+
+    inp.oninput = () => apply(inp.value, 'picker');
+    hex.oninput = () => {
+      let v = hex.value.trim();
+      if (v && v[0] !== '#') v = '#' + v;
+      // Only commit a complete value; partial typing must not repaint
+      // the grid black halfway through.
+      if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) {
+        const full = v.length === 4
+          ? '#' + v.slice(1).split('').map(c => c + c).join('')
+          : v.toLowerCase();
+        apply(full, 'hex');
+      }
+    };
+    hex.onblur = () => { hex.value = f.hex; };
+
     wrap.appendChild(inp);
+    wrap.appendChild(hex);
+
     if (!f.livery) {
       const x = document.createElement('span');
       x.className = 'gear';
@@ -760,7 +815,14 @@ function renderEditor() {
     <div id="e_pinned" style="${pinned ? '' : 'display:none'}">
       <div class="line">
         <label>colour</label>
-        <input type="color" id="e_hex" value="${pinned ? e.hex : resolve(e)}">
+        <span style="display:flex;gap:6px;align-items:center;min-width:0">
+          <input type="color" id="e_hex" value="${pinned ? e.hex : resolve(e)}"
+                 style="flex:none">
+          <input type="text" id="e_hextext" spellcheck="false"
+                 value="${pinned ? e.hex : resolve(e)}"
+                 title="hex value — type or paste"
+                 style="width:84px;flex:none">
+        </span>
       </div>
     </div>
     <div class="result">
@@ -793,6 +855,7 @@ function renderEditor() {
       $('e_derived').style.display = 'none';
       $('e_pinned').style.display = '';
       $('e_hex').value = e.hex;
+      $('e_hextext').value = e.hex;
     } else {
       delete e.hex;
       if (!e.base) e.base = 'body';
@@ -801,7 +864,26 @@ function renderEditor() {
     }
     restate();
   };
-  $('e_hex').oninput = ev => { e.hex = ev.target.value; restate(); };
+  // Picker and hex field are two views of one value. The text field is
+  // the one that always works — the native picker panel can open
+  // off-screen in a narrow window and cannot be repositioned from here.
+  $('e_hex').oninput = ev => {
+    e.hex = ev.target.value;
+    $('e_hextext').value = e.hex;
+    restate();
+  };
+  $('e_hextext').oninput = ev => {
+    let v = ev.target.value.trim();
+    if (v && v[0] !== '#') v = '#' + v;
+    if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) {
+      e.hex = v.length === 4
+        ? '#' + v.slice(1).split('').map(c => c + c).join('')
+        : v.toLowerCase();
+      $('e_hex').value = e.hex;
+      restate();
+    }
+  };
+  $('e_hextext').onblur = ev => { ev.target.value = e.hex || resolve(e); };
   $('e_base').onchange = ev => { e.base = ev.target.value; restate(); };
   $('e_mix').onchange = ev => {
     const v = ev.target.value;

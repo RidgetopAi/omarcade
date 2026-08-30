@@ -101,19 +101,24 @@ pub fn draw_road_into(
             let hw = far.half_width + (near.half_width - far.half_width) * t;
             let dist = far.distance + (near.distance - far.distance) * t;
 
-            let seg = (dist + car.z) / road.segment_length();
-            let phase = (seg as u32) % 2 == 0;
+            // Two separate groupings, because the ground and the markings
+            // have different jobs. The ground is coarse so it cannot
+            // appear to run backwards; the markings stay fine so the near
+            // road keeps the texture that reads as speed. Neither is a
+            // raw divide by segment_length — that is what aliased.
+            let phase = road.band_index(dist + car.z) % 2 == 0;
+            let mark = road.marking_index(dist + car.z) % 2 == 0;
             let sy = fy + y;
 
             c.fill_rect_f(fx, sy, fw, bh, if phase { grass_a } else { grass_b });
             c.fill_rect_f(cx - hw, sy, hw * 2.0, bh, if phase { road_a } else { road_b });
 
             let rumble = (hw * 0.13).max(0.7);
-            let rc = if phase { rumble_a } else { rumble_b };
+            let rc = if mark { rumble_a } else { rumble_b };
             c.fill_rect_f(cx - hw, sy, rumble, bh, rc);
             c.fill_rect_f(cx + hw - rumble, sy, rumble, bh, rc);
 
-            if phase {
+            if mark {
                 let lw = (hw * 0.035).max(0.5);
                 c.fill_rect_f(cx - lw / 2.0, sy, lw, bh, line);
             }

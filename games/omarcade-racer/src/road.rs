@@ -212,6 +212,82 @@ impl Road {
         Road::new(vec![Segment::STRAIGHT; n], 200.0, 2200.0)
     }
 
+    /// How many segments make up one visual band of road.
+    ///
+    /// The ground stripes alternate light/dark, so their pattern has a
+    /// period of **two** bands. Sampling that once per frame aliases —
+    /// the wagon-wheel effect — as soon as the car covers more than half
+    /// a period per frame, and past that point the road appears to run
+    /// BACKWARDS.
+    ///
+    /// This is not theoretical. At one segment per band the threshold
+    /// landed at 75% of top speed: holding the throttle made the ground
+    /// reverse, and decelerating back through 75% flipped it forward
+    /// again in a snap that read as being yanked backwards on a rubber
+    /// band. Tapping the throttle never reached 75%, so it only happened
+    /// on a sustained hold — which is exactly how it was reported.
+    ///
+    /// Four segments per band puts top speed at 0.33 of the limit at
+    /// 60fps and 0.67 at 30 — and 30fps is the case that decides it. Two
+    /// segments was safe at 60 and aliased at 30, which would have brought
+    /// the reversing road back on a loaded desktop, exactly when it is
+    /// hardest to tell from a stutter.
+    ///
+    /// It is a fixed grouping rather than one that adapts to speed,
+    /// because a grouping that changed as you accelerated would visibly
+    /// pop. A band is 0.36 road-widths long, still a fine stripe.
+    ///
+    /// The tread has the same problem and solves it a different way, by
+    /// capping its rate (`MAX_ROLL_PER_FRAME`) — it can afford to pin
+    /// because a wheel that stops advancing still reads as "very fast".
+    /// The ground cannot: it is the whole sensation of speed.
+    pub const SEGMENTS_PER_BAND: f32 = 4.0;
+
+    /// Segments per band for the ROAD MARKINGS — rumble strips and the
+    /// dashed centre line.
+    ///
+    /// Finer than the ground on purpose. The two patterns have different
+    /// jobs, and one grouping for both was wrong in a way the first fix
+    /// made worse: at four segments the near road lost nearly all its
+    /// texture, the rumble strips became solid lines and the dashes became
+    /// continuous — and that near-field detail *is* the sensation of
+    /// speed.
+    ///
+    /// They can afford to be finer because of what they are. The ground is
+    /// a large low-contrast field where a reversal is unmistakable; the
+    /// markings are high-contrast edge detail where the same error reads
+    /// as texture. At two segments they are still safe to 24,000 u/s
+    /// against a top speed of 16,000, so this is margin, not a gamble.
+    pub const SEGMENTS_PER_MARKING: f32 = 2.0;
+
+    /// Which visual band a distance down the track falls in.
+    ///
+    /// Renderers must use this rather than dividing by `segment_length`
+    /// themselves, or the Nyquist margin above is silently thrown away.
+    pub fn band_index(&self, z: f32) -> u32 {
+        (z / (self.segment_length * Self::SEGMENTS_PER_BAND)) as u32
+    }
+
+    /// Which marking band a distance falls in — the finer grouping used
+    /// for rumble strips and centre-line dashes.
+    pub fn marking_index(&self, z: f32) -> u32 {
+        (z / (self.segment_length * Self::SEGMENTS_PER_MARKING)) as u32
+    }
+
+    /// How fast the car may travel before the ground banding aliases and
+    /// appears to reverse, in world units per second.
+    ///
+    /// A pattern of period `2 * SEGMENTS_PER_BAND` segments may advance at
+    /// most half a period per frame.
+    pub fn aliasing_speed(&self, fps: f32) -> f32 {
+        self.segment_length * Self::SEGMENTS_PER_BAND * fps
+    }
+
+    /// The same limit for the finer marking pattern.
+    pub fn marking_aliasing_speed(&self, fps: f32) -> f32 {
+        self.segment_length * Self::SEGMENTS_PER_MARKING * fps
+    }
+
     /// How many segments the car crosses per frame, given a reaction
     /// window and a frame rate.
     ///
@@ -812,6 +888,86 @@ mod tests {
             "the car crosses only {per_frame:.2} segments per frame; \
              the road is coarser than it needs to be",
         );
+    }
+
+    /// The ground must not alias at any speed the car can reach.
+    ///
+    /// THE BUG THIS EXISTS FOR: at one segment per band the aliasing
+    /// threshold was 75% of top speed. Holding the throttle made the
+    /// ground visibly run BACKWARDS, and lifting off flipped it forward
+    /// again in a snap that felt like being yanked back on a rubber band.
+    /// Every one of the 59 tests passed while this happened, because none
+    /// of them asked whether the pattern could be sampled at all.
+    ///
+    /// Reported from actually playing it, not from a test — which is the
+    /// point. Sample-rate bugs are invisible to a renderer that draws one
+    /// frame at a time and correct in every still.
+    #[test]
+    fn the_ground_does_not_alias_at_top_speed() {
+        let road = Road::straight(400);
+        // The shipped tuning: top speed solved from a 1.5s reaction
+        // window (decision e515f892).
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        let top_speed = visible / 1.5;
+
+        for fps in [60.0f32, 30.0] {
+            let limit = road.aliasing_speed(fps);
+            assert!(
+                top_speed < limit,
+                "at {fps}fps the ground aliases above {limit:.0} u/s but the car \
+                 reaches {top_speed:.0} — the road will appear to run backwards",
+            );
+        }
+    }
+
+    /// The finer MARKING pattern must also stay under the limit. It is
+    /// allowed to be finer than the ground; it is not allowed to alias.
+    #[test]
+    fn the_markings_do_not_alias_either() {
+        let road = Road::straight(400);
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        let top_speed = visible / 1.5;
+
+        assert!(
+            top_speed < road.marking_aliasing_speed(60.0),
+            "rumble strips and centre dashes alias above {:.0} u/s, car reaches {top_speed:.0}",
+            road.marking_aliasing_speed(60.0),
+        );
+        // Finer than the ground, which is the whole point of splitting
+        // them — if these ever converge, the near road goes flat again.
+        assert!(Road::SEGMENTS_PER_MARKING < Road::SEGMENTS_PER_BAND);
+    }
+
+    /// ...with real margin, not by a hair. A tuning change that eats the
+    /// margin should fail here rather than in someone's hands.
+    #[test]
+    fn the_ground_has_aliasing_margin_to_spare() {
+        let road = Road::straight(400);
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        let top_speed = visible / 1.5;
+        let ratio = top_speed / road.aliasing_speed(60.0);
+
+        assert!(
+            ratio < 0.8,
+            "the ground runs at {ratio:.2} of the aliasing limit; \
+             too close to reverse under any retune",
+        );
+    }
+
+    /// Bands must be grouped, not one per segment — that grouping IS the
+    /// margin. A refactor that "simplifies" band_index back to a plain
+    /// divide silently reintroduces the reversing road.
+    #[test]
+    fn bands_group_more_than_one_segment() {
+        let road = Road::straight(400);
+        assert!(Road::SEGMENTS_PER_BAND >= 2.0);
+
+        let seg = road.segment_length();
+        let n = Road::SEGMENTS_PER_BAND;
+        // Segments inside one band must share an index...
+        assert_eq!(road.band_index(0.0), road.band_index(seg * (n - 0.5)));
+        // ...and the next one along must not.
+        assert_ne!(road.band_index(0.0), road.band_index(seg * (n + 0.5)));
     }
 
     /// The nearest band must fit ON the screen, verges included.

@@ -10,6 +10,7 @@
 //! 32x20 grid after the art moved to 48x30.
 
 mod art;
+mod drive;
 mod road;
 
 use art::Art;

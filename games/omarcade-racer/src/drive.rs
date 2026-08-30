@@ -1,0 +1,658 @@
+//! Motion: where the car is on the track, and how fast.
+//!
+//! Kept separate from [`crate::road`] on purpose. The road answers *where
+//! is this piece of track?*; this answers *where am I on it, and how fast
+//! am I going?*. The road never moves and has no notion of time.
+//!
+//! # Where the numbers come from
+//!
+//! L015, the most expensive lesson on this project: a tuning constant
+//! copied from somewhere else is an untested assumption. Pong inherited a
+//! paddle speed from Breakout and matches became unwinnable, because the
+//! same name meant a different physical quantity.
+//!
+//! So nothing here is picked by feel and then defended. Two constants
+//! matter — how fast you can go, and how fast you can steer — and each
+//! one is *solved* from a duration a person can actually judge:
+//!
+//! - **[`Tuning::from_corner`]** fixes how long you get to react to a bend
+//!   appearing at the horizon, and solves top speed from it.
+//! - **[`Tuning::from_crossing`]** fixes how long it takes to cross the
+//!   road verge to verge, and solves the steer rate from it.
+//!
+//! Whichever duration is chosen is the *constraint*; the other constant
+//! becomes a free knob that can be tuned by feel without breaking the
+//! geometry. They produce genuinely different games, which is why both
+//! exist and why `dump_art.rs` can render them side by side.
+
+use crate::road::Road;
+
+/// Which quantity was solved for, and which was left free.
+///
+/// Carried so a render can say what it is showing, and so nobody later
+/// reads a number out of here without knowing whether it was derived or
+/// merely chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Derivation {
+    /// Top speed solved from reaction time. Steering is the free knob.
+    FromCorner,
+    /// Steer rate solved from crossing time. Top speed is the free knob.
+    FromCrossing,
+}
+
+/// The numbers that decide how the car moves.
+#[derive(Clone, Copy, Debug)]
+pub struct Tuning {
+    /// World units per second at full throttle.
+    pub top_speed: f32,
+    /// How fast the car crosses the road, in half-widths per second.
+    /// The road is 2.0 half-widths wide, so 2.0 here means "verge to
+    /// verge in one second".
+    pub steer_rate: f32,
+    /// Seconds to reach top speed from a standstill.
+    pub accel_time: f32,
+    /// Which of the two above was solved rather than chosen.
+    pub derived: Derivation,
+    /// The duration the derivation was solved from, in seconds. Kept for
+    /// display: it is the number a person actually judged.
+    pub basis_seconds: f32,
+}
+
+impl Tuning {
+    /// **A — derive top speed from corner reaction time.**
+    ///
+    /// A bend first becomes visible at the far edge of the drawn road.
+    /// Choosing how many seconds the player gets between seeing it and
+    /// arriving at it fixes how fast they may travel:
+    ///
+    /// ```text
+    /// top_speed = visible_distance / reaction_seconds
+    /// ```
+    ///
+    /// This is the arcade-authentic constraint. Pole Position's difficulty
+    /// *is* corner recognition, and tuning this way means the bend arrival
+    /// rate is correct by construction rather than by luck.
+    ///
+    /// Note it uses the road's real draw distance, so a road that can see
+    /// further permits a faster car — the relationship the player actually
+    /// experiences.
+    pub fn from_corner(road: &Road, reaction_seconds: f32) -> Tuning {
+        assert!(
+            reaction_seconds > 0.0 && reaction_seconds.is_finite(),
+            "reaction time must be positive and finite, got {reaction_seconds}",
+        );
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        Tuning {
+            top_speed: visible / reaction_seconds,
+            // Free knob. Chosen by feel, and safe to change: no geometry
+            // depends on it under this derivation.
+            steer_rate: 1.6,
+            accel_time: 4.0,
+            derived: Derivation::FromCorner,
+            basis_seconds: reaction_seconds,
+        }
+    }
+
+    /// **B — derive the steer rate from verge-to-verge crossing time.**
+    ///
+    /// The road is 2.0 half-widths across, so:
+    ///
+    /// ```text
+    /// steer_rate = 2.0 / crossing_seconds
+    /// ```
+    ///
+    /// This tunes the game around lane-changing and threading traffic
+    /// rather than around corner recognition.
+    ///
+    /// Top speed is the free knob here — but it still takes the road as an
+    /// argument, and that is deliberate. It was once a bare `90_000.0`,
+    /// and when the road's scale was retuned that silently became 5.6x too
+    /// fast: B ended up with a 0.27-second reaction window, which is not a
+    /// game. A free knob may be chosen by feel; it may not be expressed in
+    /// units that do not track the system (L019). So it is stated as a
+    /// relaxed reaction window and converted, exactly as A's is — the
+    /// difference is that this one is *chosen*, not *solved for*.
+    ///
+    /// Note what B still does not do: it never consults the road to decide
+    /// its STEERING, which is the actual trade-off being chosen between.
+    pub fn from_crossing(road: &Road, crossing_seconds: f32) -> Tuning {
+        assert!(
+            crossing_seconds > 0.0 && crossing_seconds.is_finite(),
+            "crossing time must be positive and finite, got {crossing_seconds}",
+        );
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        Tuning {
+            // Free knob, at a relaxed window so B is unmistakably the
+            // "bends are easy, traffic is the challenge" tuning.
+            top_speed: visible / RELAXED_REACTION,
+            steer_rate: 2.0 / crossing_seconds,
+            accel_time: 4.0,
+            derived: Derivation::FromCrossing,
+            basis_seconds: crossing_seconds,
+        }
+    }
+
+    /// How long the player actually gets between a bend appearing at the
+    /// horizon and arriving at it, at full speed.
+    ///
+    /// Under [`Derivation::FromCorner`] this returns the number that was
+    /// chosen. Under [`Derivation::FromCrossing`] it is *whatever falls
+    /// out* — and that is the point of being able to ask.
+    pub fn reaction_seconds(&self, road: &Road) -> f32 {
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        visible / self.top_speed
+    }
+
+    /// How long it takes to cross the road verge to verge.
+    ///
+    /// The mirror of [`Tuning::reaction_seconds`]: chosen under one
+    /// derivation, consequential under the other.
+    pub fn crossing_seconds(&self) -> f32 {
+        2.0 / self.steer_rate
+    }
+}
+
+/// The car's live state on the track.
+#[derive(Clone, Copy, Debug)]
+pub struct Drive {
+    /// Position along the track, in world units. Wraps with the road.
+    pub z: f32,
+    /// Position across the road, in half-widths. 0.0 is the centre line,
+    /// ±1.0 is a verge.
+    ///
+    /// Stored as a *ratio* rather than in world units so it means the same
+    /// thing on a road of any width (L019). The projection multiplies it
+    /// back up when it needs world units.
+    pub x: f32,
+    /// Current speed, world units per second.
+    pub speed: f32,
+}
+
+/// How far past the verge the car may stray before it is off the road.
+///
+/// Not zero, because clamping exactly at the verge means the car can never
+/// visibly put a wheel onto the grass, and that moment is most of what
+/// makes a near-miss read as a near-miss.
+pub const MAX_STRAY: f32 = 1.35;
+
+impl Drive {
+    /// Sitting still on the centre line at the start of the track.
+    pub fn new() -> Drive {
+        Drive { z: 0.0, x: 0.0, speed: 0.0 }
+    }
+
+    /// Advance by `dt` seconds.
+    ///
+    /// `throttle` is 0..1, `steer` is -1..1 (negative left). Both are
+    /// clamped rather than trusted, because they come from input handling
+    /// and a held key that misses its key-up should not be able to send
+    /// the car off the map.
+    pub fn update(&mut self, dt: f32, throttle: f32, steer: f32, road: &Road, tuning: &Tuning) {
+        let throttle = throttle.clamp(0.0, 1.0);
+        let steer = steer.clamp(-1.0, 1.0);
+
+        // Speed eases toward its target rather than snapping, so the car
+        // has weight. Lifting off coasts down at the same rate.
+        let target = tuning.top_speed * throttle;
+        let rate = tuning.top_speed / tuning.accel_time;
+        if self.speed < target {
+            self.speed = (self.speed + rate * dt).min(target);
+        } else {
+            self.speed = (self.speed - rate * dt).max(target);
+        }
+
+        self.z = road.wrap(self.z + self.speed * dt);
+
+        // Steering authority scales with speed. A stationary car cannot
+        // change lanes, which is both true and what stops the car sliding
+        // sideways off the line while parked.
+        let authority = if tuning.top_speed > 0.0 {
+            (self.speed / tuning.top_speed).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.x += steer * tuning.steer_rate * authority * dt;
+
+        // Centrifugal push: a bend throws the car toward its outside. This
+        // is what makes a corner something to *drive* rather than
+        // something to watch go by, and it is why steering into a bend at
+        // speed is not free.
+        //
+        // Scaled by speed as a fraction of top, so it is a ratio and means
+        // the same thing under either tuning.
+        // NOT segment_at().curve — that is the renderer's raw authoring
+        // number. See Road::curve_at.
+        let curve = road.curve_at(self.z);
+        self.x -= curve * authority * authority * CENTRIFUGAL * dt;
+
+        self.x = self.x.clamp(-MAX_STRAY, MAX_STRAY);
+    }
+
+    /// True when the car has a wheel off the road.
+    pub fn off_road(&self) -> bool {
+        self.x.abs() > 1.0
+    }
+
+    /// The car's position across the road in **world units**, which is
+    /// what [`Road::project`] wants for its `x_offset`.
+    pub fn x_offset(&self, road: &Road) -> f32 {
+        self.x * road.width() / 2.0
+    }
+
+    /// How hard the car is cornering right now, -1..1, for feeding
+    /// [`omarcade_core::Pose::cornering`].
+    ///
+    /// This is deliberately the *bend*, not the steering input: the car
+    /// leans because it is going round a corner, not because a key is
+    /// held. Holding left on a straight should not bank the car.
+    pub fn cornering(&self, road: &Road, tuning: &Tuning) -> f32 {
+        let authority = if tuning.top_speed > 0.0 {
+            (self.speed / tuning.top_speed).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (road.curve_at(self.z) / FULL_LEAN_CURVE * authority).clamp(-1.0, 1.0)
+    }
+}
+
+impl Default for Drive {
+    fn default() -> Self {
+        Drive::new()
+    }
+}
+
+/// The reaction window B leaves the player, in seconds.
+///
+/// Chosen, not derived — that is what makes it B's free knob. Deliberately
+/// far above A's 1.5s so the two tunings are visibly different games.
+const RELAXED_REACTION: f32 = 2.6;
+
+/// How hard a bend throws the car toward its outside, in half-widths per
+/// second at full speed per unit of curve.
+///
+/// A ratio, so it means the same on any road (L019).
+const CENTRIFUGAL: f32 = 0.9;
+
+/// The normalised curve at which the car reaches FULL lean.
+///
+/// Stated as "the bend that pins the pose" rather than as a multiplier,
+/// because a multiplier has to be re-derived every time anything upstream
+/// moves — and it was, twice, in one session. It was 0.02 against raw
+/// curve values, then 1.2 against normalised ones, and then `draw_distance`
+/// went from 300 to 120, normalised curve moved from ~0.6 to ~1.49, and
+/// every corner silently pinned at full lean again: identical-looking
+/// bends, which is the exact failure the constant exists to prevent.
+///
+/// Expressed this way the number says what it means — "a bend of 1.8 is as
+/// hard as this car ever leans" — and a reader can check it against
+/// `Road::curve_at` without doing any arithmetic. L019: state the
+/// constant in the units of the thing it is about.
+const FULL_LEAN_CURVE: f32 = 1.8;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::road::Segment;
+
+    fn straight() -> Road {
+        Road::straight(400)
+    }
+
+    /// The point of derivation A: the reaction time you asked for is the
+    /// reaction time you get.
+    #[test]
+    fn deriving_from_the_corner_delivers_that_reaction_time() {
+        let road = straight();
+        for wanted in [0.8f32, 1.5, 3.0] {
+            let t = Tuning::from_corner(&road, wanted);
+            let got = t.reaction_seconds(&road);
+            assert!(
+                (got - wanted).abs() < 0.001,
+                "asked for {wanted}s to react, got {got}s",
+            );
+        }
+    }
+
+    /// The point of derivation B: the crossing time you asked for is the
+    /// crossing time you get.
+    #[test]
+    fn deriving_from_the_crossing_delivers_that_crossing_time() {
+        let road = straight();
+        for wanted in [0.6f32, 1.2, 2.5] {
+            let t = Tuning::from_crossing(&road, wanted);
+            let got = t.crossing_seconds();
+            assert!(
+                (got - wanted).abs() < 0.001,
+                "asked for {wanted}s to cross, got {got}s",
+            );
+        }
+    }
+
+    /// The two derivations must actually produce different games, or
+    /// there is no choice to make and this whole module is ceremony.
+    #[test]
+    fn the_two_derivations_disagree() {
+        let road = straight();
+        let a = Tuning::from_corner(&road, 1.5);
+        let b = Tuning::from_crossing(&road, 1.2);
+
+        assert!(
+            (a.top_speed - b.top_speed).abs() > 1.0,
+            "both tunings picked the same top speed; there is nothing to choose between",
+        );
+        // ...and each is worse than the other at what the other optimises.
+        assert!(a.crossing_seconds() != b.crossing_seconds());
+        assert!(a.reaction_seconds(&road) != b.reaction_seconds(&road));
+    }
+
+    /// A road you can see further down permits a faster car under
+    /// derivation A. This is the relationship that makes it "authentic":
+    /// the constraint is the player's eyes, not a number.
+    #[test]
+    fn seeing_further_permits_going_faster_under_derivation_a() {
+        let mut near = straight();
+        near.set_draw_distance(100);
+        let mut far = straight();
+        far.set_draw_distance(300);
+
+        let slow = Tuning::from_corner(&near, 1.5);
+        let fast = Tuning::from_corner(&far, 1.5);
+        assert!(fast.top_speed > slow.top_speed * 2.5);
+    }
+
+    /// ...and derivation B is blind to it, which is precisely the
+    /// trade-off being chosen between.
+    #[test]
+    fn derivation_b_does_not_care_how_far_you_can_see() {
+        let road = straight();
+        let a = Tuning::from_crossing(&road, 1.2);
+        let b = Tuning::from_crossing(&road, 1.2);
+        assert_eq!(a.top_speed, b.top_speed);
+        assert_eq!(a.steer_rate, b.steer_rate);
+    }
+
+    #[test]
+    fn the_car_accelerates_and_reaches_top_speed() {
+        let road = straight();
+        let t = Tuning::from_corner(&road, 1.5);
+        let mut d = Drive::new();
+        assert_eq!(d.speed, 0.0);
+
+        for _ in 0..((t.accel_time / 0.016) as usize + 8) {
+            d.update(0.016, 1.0, 0.0, &road, &t);
+        }
+        assert!(
+            (d.speed - t.top_speed).abs() < t.top_speed * 0.01,
+            "expected to reach {} but got {}",
+            t.top_speed,
+            d.speed,
+        );
+    }
+
+    #[test]
+    fn lifting_off_slows_the_car_down() {
+        let road = straight();
+        let t = Tuning::from_corner(&road, 1.5);
+        let mut d = Drive::new();
+        for _ in 0..300 {
+            d.update(0.016, 1.0, 0.0, &road, &t);
+        }
+        let fast = d.speed;
+        for _ in 0..60 {
+            d.update(0.016, 0.0, 0.0, &road, &t);
+        }
+        assert!(d.speed < fast, "coasting did not slow the car");
+    }
+
+    /// Crossing time is a claim about the car, not about the maths, so
+    /// drive the car and time it.
+    #[test]
+    fn the_car_really_crosses_the_road_in_the_stated_time() {
+        let road = straight();
+        let t = Tuning::from_crossing(&road, 1.2);
+        let mut d = Drive::new();
+
+        // Up to speed first — steering authority scales with it.
+        for _ in 0..600 {
+            d.update(0.016, 1.0, 0.0, &road, &t);
+        }
+        d.x = -1.0;
+
+        let dt = 0.001;
+        let mut elapsed = 0.0;
+        while d.x < 1.0 && elapsed < 10.0 {
+            d.update(dt, 1.0, 1.0, &road, &t);
+            elapsed += dt;
+        }
+        assert!(
+            (elapsed - 1.2).abs() < 0.05,
+            "verge to verge took {elapsed}s, expected 1.2s",
+        );
+    }
+
+    /// A parked car cannot steer. Without this the car slides sideways off
+    /// the line while stationary, which looks like a physics bug.
+    #[test]
+    fn a_stationary_car_cannot_steer() {
+        let road = straight();
+        let t = Tuning::from_corner(&road, 1.5);
+        let mut d = Drive::new();
+        for _ in 0..120 {
+            d.update(0.016, 0.0, 1.0, &road, &t);
+        }
+        assert_eq!(d.x, 0.0, "a parked car steered to {}", d.x);
+    }
+
+    /// The car must not be able to leave the world, however long a key is
+    /// held or however wrong the input is.
+    #[test]
+    fn the_car_cannot_leave_the_road_entirely() {
+        let road = straight();
+        let t = Tuning::from_corner(&road, 1.5);
+        let mut d = Drive::new();
+        for _ in 0..2000 {
+            // Deliberately out-of-range input, as a stuck key would give.
+            d.update(0.016, 5.0, 9.0, &road, &t);
+        }
+        assert!(d.x <= MAX_STRAY + 0.001, "car reached x={}", d.x);
+        assert!(d.speed <= t.top_speed + 0.001);
+    }
+
+    /// Lean must actually VARY across the range of bends, not pin.
+    ///
+    /// It has pinned twice: once when the constant was calibrated against
+    /// raw curve values and once when `draw_distance` moved and shifted
+    /// what "normalised curve" meant. A pinned lean makes every corner
+    /// look identical, which is worse than no lean at all because it
+    /// implies information that is not there.
+    #[test]
+    fn lean_varies_across_bends_instead_of_pinning() {
+        let dt = 1.0 / 120.0;
+        let mut seen: Vec<f32> = Vec::new();
+
+        for raw in [10.0f32, 30.0, 60.0, 90.0] {
+            let road = Road::new(vec![Segment::curving(raw); 400], 200.0, 2200.0);
+            let tuning = Tuning::from_corner(&road, 1.5);
+            let mut d = Drive::new();
+            for _ in 0..(6.0 / dt) as usize {
+                let correction = (-d.x * 3.0).clamp(-1.0, 1.0);
+                d.update(dt, 1.0, correction, &road, &tuning);
+            }
+            let lean = d.cornering(&road, &tuning).abs();
+            assert!(
+                lean < 1.0,
+                "a curve of {raw} already pins lean at {lean}; \
+                 harder bends cannot read as harder",
+            );
+            seen.push(lean);
+        }
+
+        for pair in seen.windows(2) {
+            assert!(
+                pair[1] > pair[0] + 0.01,
+                "lean barely moved between bends: {seen:?}",
+            );
+        }
+    }
+
+    /// A corner must be SURVIVABLE: steering has to be able to beat the
+    /// centrifugal push, or the bend is unwinnable by construction.
+    ///
+    /// This is the bug that shipped. Physics read `segment_at().curve`
+    /// directly — the renderer's raw authoring number, around 90 at a
+    /// draw distance of 300 — and multiplied it by CENTRIFUGAL. The push
+    /// came out at 81 half-widths per second against 1.6 of steering
+    /// authority, so the car crossed the entire road in 25 milliseconds
+    /// and sat pinned at MAX_STRAY before the scene even began. Reading
+    /// through `Road::curve_at` is what keeps the two in the same units.
+    ///
+    /// L015 again, and L022 rule 3: two quantities sharing a name are not
+    /// necessarily the same kind of thing.
+    #[test]
+    fn a_corner_can_be_held_by_steering_into_it() {
+        // A hard bend, at the strength the visual scenes actually use.
+        let road = Road::new(vec![Segment::curving(90.0); 400], 1000.0, 2200.0);
+        for tuning in [Tuning::from_corner(&road, 1.5), Tuning::from_crossing(&road, 1.2)] {
+            let mut d = Drive::new();
+            // Drive it like a driver FROM THE START: steer toward the
+            // centre line, as much as is needed and no more.
+            //
+            // Note there is no free warm-up lap here. An earlier version
+            // accelerated for 600 frames with no steering first, which put
+            // the car off the road before the driver existed and made this
+            // look like a physics failure. Holding full lock forever is
+            // not "surviving the corner" either — that leaves by the
+            // inside. A corner is survivable if a corrective driver can
+            // hold a line through it, which is what this asserts.
+            for _ in 0..1200 {
+                let correction = (-d.x * 3.0).clamp(-1.0, 1.0);
+                d.update(0.016, 1.0, correction, &road, &tuning);
+                assert!(
+                    !d.off_road(),
+                    "a driver holding the line still went off at x={} ({:?})",
+                    d.x,
+                    tuning.derived,
+                );
+            }
+            // ...and it should settle near the middle, not merely survive
+            // by scraping a verge.
+            assert!(
+                d.x.abs() < 0.5,
+                "the line settled at x={}, which is most of the way to a verge",
+                d.x,
+            );
+        }
+    }
+
+    /// ...and the mirror: a corner must not be trivial either. Ignoring it
+    /// entirely has to cost you the road, or there is nothing to drive.
+    #[test]
+    fn ignoring_a_corner_puts_you_off_the_road() {
+        let road = Road::new(vec![Segment::curving(90.0); 400], 1000.0, 2200.0);
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let mut d = Drive::new();
+        for _ in 0..900 {
+            d.update(0.016, 1.0, 0.0, &road, &tuning);
+        }
+        assert!(
+            d.off_road(),
+            "the car held a hard bend with no steering input at all, x={}",
+            d.x,
+        );
+    }
+
+    /// A bend must push the car toward its outside, or a corner is
+    /// scenery rather than something to drive.
+    #[test]
+    fn a_bend_pushes_the_car_to_its_outside() {
+        let road = Road::new(vec![Segment::curving(60.0); 400], 1000.0, 2200.0);
+        let t = Tuning::from_corner(&road, 1.5);
+        let mut d = Drive::new();
+        for _ in 0..600 {
+            d.update(0.016, 1.0, 0.0, &road, &t);
+        }
+        assert!(
+            d.x < -0.05,
+            "a right-hand bend should push the car left (outside), x={}",
+            d.x,
+        );
+    }
+
+    /// The car leans because of the BEND, not because a key is held.
+    /// Holding left on a straight must not bank it.
+    #[test]
+    fn lean_comes_from_the_corner_not_from_the_input() {
+        let road = straight();
+        let t = Tuning::from_corner(&road, 1.5);
+        let mut d = Drive::new();
+        for _ in 0..600 {
+            d.update(0.016, 1.0, -1.0, &road, &t);
+        }
+        assert_eq!(
+            d.cornering(&road, &t),
+            0.0,
+            "the car banked on a straight road while steering",
+        );
+
+        let bendy = Road::new(vec![Segment::curving(40.0); 400], 1000.0, 2200.0);
+        let bt = Tuning::from_corner(&bendy, 1.5);
+        let mut bd = Drive::new();
+        for _ in 0..600 {
+            bd.update(0.016, 1.0, 0.0, &bendy, &bt);
+        }
+        assert!(bd.cornering(&bendy, &bt).abs() > 0.01, "the car did not bank in a bend");
+    }
+
+    /// Track position wraps, so a long session cannot run off the end or
+    /// lose float precision drifting into the millions.
+    #[test]
+    fn driving_far_enough_wraps_the_track() {
+        let road = straight();
+        let t = Tuning::from_corner(&road, 1.5);
+        let mut d = Drive::new();
+        for _ in 0..4000 {
+            d.update(0.016, 1.0, 0.0, &road, &t);
+        }
+        assert!(d.z >= 0.0 && d.z < road.length(), "z={} escaped the track", d.z);
+    }
+
+    /// Off-road must be reachable and must be reported, or there is
+    /// nothing to build a penalty on later.
+    #[test]
+    fn straying_past_the_verge_reads_as_off_road() {
+        let road = straight();
+        let t = Tuning::from_crossing(&road, 1.2);
+        let mut d = Drive::new();
+        assert!(!d.off_road());
+        for _ in 0..600 {
+            d.update(0.016, 1.0, 0.0, &road, &t);
+        }
+        for _ in 0..600 {
+            d.update(0.016, 1.0, 1.0, &road, &t);
+        }
+        assert!(d.off_road(), "car sat at x={} and was not off-road", d.x);
+    }
+
+    /// The state a renderer reads must be in the units the renderer wants.
+    #[test]
+    fn x_offset_is_in_world_units() {
+        let road = straight();
+        let mut d = Drive::new();
+        d.x = 1.0;
+        assert!((d.x_offset(&road) - road.width() / 2.0).abs() < 0.001);
+        d.x = 0.0;
+        assert_eq!(d.x_offset(&road), 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "reaction time must be positive")]
+    fn a_zero_reaction_time_is_rejected() {
+        Tuning::from_corner(&straight(), 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "crossing time must be positive")]
+    fn a_zero_crossing_time_is_rejected() {
+        Tuning::from_crossing(&straight(), 0.0);
+    }
+}

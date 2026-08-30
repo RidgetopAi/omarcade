@@ -167,6 +167,13 @@ pub struct Road {
     width: f32,
     /// How far ahead the camera can see, in segments. Beyond this, road is
     /// not drawn — it is under a pixel tall and costs more than it shows.
+    ///
+    /// This is also, quietly, a *motion* constant. With a reaction window
+    /// of R seconds at F fps, the car crosses `draw_distance / (R * F)`
+    /// segments per frame — independent of how long a segment is. At the
+    /// original 300, a 1.5s window at 60fps meant 3.3 segments per frame,
+    /// so the road carried more detail than the car could ever travel
+    /// through. See `segments_per_frame`.
     draw_distance: usize,
 }
 
@@ -192,7 +199,7 @@ impl Road {
             width > 0.0 && width.is_finite(),
             "road width must be positive and finite, got {width}",
         );
-        Road { segments, segment_length, width, draw_distance: 300 }
+        Road { segments, segment_length, width, draw_distance: 120 }
     }
 
     /// A straight test track of `n` segments.
@@ -202,7 +209,20 @@ impl Road {
     /// segment is about half a road-width long, which is what makes rumble
     /// banding land at a believable rate as it streams past.
     pub fn straight(n: usize) -> Road {
-        Road::new(vec![Segment::STRAIGHT; n], 1000.0, 2200.0)
+        Road::new(vec![Segment::STRAIGHT; n], 200.0, 2200.0)
+    }
+
+    /// How many segments the car crosses per frame, given a reaction
+    /// window and a frame rate.
+    ///
+    /// Notice what is absent: `segment_length`. It cancels — the car's
+    /// speed is derived from the visible distance, which is itself
+    /// segments times segment length. So this is purely a statement about
+    /// `draw_distance`, and it is the number that says whether the road's
+    /// detail is finer than the car's travel. Above ~2 the per-segment
+    /// shape of the road cannot be seen at all.
+    pub fn segments_per_frame(&self, reaction_seconds: f32, fps: f32) -> f32 {
+        self.draw_distance as f32 / (reaction_seconds * fps)
     }
 
     /// Total track length in world units. The track loops at this point.
@@ -240,6 +260,25 @@ impl Road {
     }
 
     /// The segment containing track position `z`, wrapping.
+    /// The curve at `z`, in the SAME normalised units the projection
+    /// uses — a fraction of half the screen per unit of visible distance.
+    ///
+    /// This exists because `Segment::curve` is a raw authoring number
+    /// whose good-looking values depend on `draw_distance` (they are
+    /// around 90 at a draw distance of 300). Physics that reads
+    /// `segment_at(z).curve` directly is reading a number scaled for the
+    /// *renderer*, and will produce a cornering force hundreds of times
+    /// too strong — which is exactly what happened: a corner that threw
+    /// the car across the whole road in 25 milliseconds.
+    ///
+    /// Anything that wants to know "how hard is this bend?" as a physical
+    /// quantity must ask here, so that the renderer and the physics can
+    /// never disagree about it.
+    pub fn curve_at(&self, z: f32) -> f32 {
+        let n = self.draw_distance as f32;
+        self.segment_at(z).curve / (n * (n + 1.0) / 2.0) * n
+    }
+
     pub fn segment_at(&self, z: f32) -> Segment {
         self.segments[self.segment_index_at(z)]
     }
@@ -555,7 +594,11 @@ mod tests {
     fn the_track_wraps_in_both_directions() {
         let road = Road::straight(10);
         let len = road.length();
-        assert_eq!(len, 10_000.0);
+        // Derived from the road, not hardcoded: an earlier version
+        // asserted 10_000.0 and broke the moment the segment length was
+        // retuned, which is a test encoding a constant rather than a
+        // property.
+        assert_eq!(len, 10.0 * road.segment_length());
 
         assert!((road.wrap(len + 250.0) - 250.0).abs() < 0.001);
         assert!((road.wrap(-250.0) - (len - 250.0)).abs() < 0.001);
@@ -745,6 +788,29 @@ mod tests {
             (nearest.y - H).abs() < 1.0,
             "the default camera leaves the road ending at y={}, not {H}",
             nearest.y,
+        );
+    }
+
+    /// The road's detail must not be finer than the car's travel.
+    ///
+    /// `draw_distance` looks like a rendering constant and is also a
+    /// motion one. At the original 300, a 1.5s reaction window at 60fps
+    /// meant the car crossed 3.3 segments EVERY FRAME — so per-segment
+    /// road shape could never be seen, no matter how it was authored.
+    /// Segment length does not enter into it; it cancels.
+    #[test]
+    fn the_car_does_not_outrun_the_road_detail() {
+        let road = Road::straight(400);
+        let per_frame = road.segments_per_frame(1.5, 60.0);
+        assert!(
+            per_frame <= 2.0,
+            "the car crosses {per_frame:.2} segments per frame; \
+             the road carries more detail than can ever be seen",
+        );
+        assert!(
+            per_frame >= 0.5,
+            "the car crosses only {per_frame:.2} segments per frame; \
+             the road is coarser than it needs to be",
         );
     }
 

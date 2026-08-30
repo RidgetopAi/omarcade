@@ -36,7 +36,8 @@ use omarcade_core::{Color, Theme};
 ///   B body (primary livery)   D body shadow / lower panels
 ///   A accent stripe           G glass / rear window
 ///   S lit upper surface       C mid tone, canopy surround + fins
-///   T tyre                    H tyre highlight (top curve)
+///   T tyre                    H highlight (diffuser fins)
+///   R tread — same colour as H, animated by roll
 ///   L brake light             W wing
 ///   E vent band under the wing
 ///   F near-black, the diffuser recesses
@@ -72,13 +73,13 @@ pub const PLAYER_CAR: &[&str] = &[
     "...............BSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSB...............",
     "..............BSBBBFFFFFFFFFFFFFFFFFFFFFFFFFFBBBSB..............",
     "...........TTTTTBBFFFFFFFDDDDDSSSSDDDDDFFFFFFFBBTTTTT...........",
-    "..........THHTHTBBFSSSFSSFDDDDLLLLDDDDFSSFSSSFBBTHTHHT..........",
+    "..........TRRTRTBBFSSSFSSFDDDDLLLLDDDDFSSFSSSFBBTRTRRT..........",
     "..........TTTTTTTBFLLLFLLFFDDDDDDDDDDFFLLFLLLFBTTTTTTT..........",
-    "..........THHTHTHBFFFFFFFFFFFFFFFFFFFFFFFFFFFFBHTHTHHT..........",
+    "..........TRRTRTRBFFFFFFFFFFFFFFFFFFFFFFFFFFFFBRTRTRRT..........",
     "..........TTTTTTTBDDDCHHHHHHCCCHHCCCHHHHHHCDDDBTTTTTTT..........",
-    "..........THHTHTHTDCCCFFCFHCFFFCCFFFCHFCFFCCCDTHTHTHHT..........",
+    "..........TRRTRTRTDCCCFFCFHCFFFCCFFFCHFCFFCCCDTRTRTRRT..........",
     "..........TTTTTTTTTCCCHFCFHCFFFCCFFFCHFCFHCCCTTTTTTTTT..........",
-    "..........THHTHTHTFFFFFFCFFFCCCHHCCCFFFCFFFFFFTHTHTHHT..........",
+    "..........TRRTRTRTFFFFFFCFFFCCCHHCCCFFFCFFFFFFTRTRTRRT..........",
     "...........TTTTTTT......FF............FF......TTTTTTT...........",
     "................................................................",
 ];
@@ -132,6 +133,11 @@ pub fn car_palette(theme: &Theme, body: Color, accent: Color) -> Vec<PaletteEntr
         ('G', glass),
         ('T', tyre),
         ('H', tyre_top),
+        // Tread. The SAME colour as 'H', deliberately — it is a separate
+        // letter only so the roll animation can find the wheels without
+        // also strobing the diffuser highlights, which were 'H' too.
+        // Nothing about the still image changes.
+        ('R', tyre_top),
         // Front tyres: the same rubber a little further away, so they
         // read as forward of the rears rather than as a second pair of
         // the same thing.
@@ -172,6 +178,13 @@ pub struct Art {
     pub rivals: Vec<Sprite>,
     pub post: Sprite,
 }
+
+/// The grid characters that ROLL.
+///
+/// Only the tyre tread. 'H' is the same colour but sits in the diffuser
+/// as well as the wheels, and animating by colour would strobe the
+/// bodywork — which is exactly why the tread got its own letter.
+pub const TREAD: &[char] = &['R'];
 
 /// The player's livery. The one car on the road that is fully saturated.
 pub const PLAYER_BODY: Color = Color::rgb(214, 78, 62);
@@ -227,12 +240,12 @@ impl Art {
                     // eye locks onto when hunting for its own car.
                     mute(theme, accent, RIVAL_MUTE + 0.18),
                 );
-                Sprite::new(PLAYER_CAR, &pal)
+                Sprite::new_with_tread(PLAYER_CAR, &pal, TREAD)
             })
             .collect();
 
         Art {
-            player: Sprite::new(PLAYER_CAR, &player_pal),
+            player: Sprite::new_with_tread(PLAYER_CAR, &player_pal, TREAD),
             rivals,
             post: Sprite::new(MARKER_POST, &post_palette(theme)),
         }

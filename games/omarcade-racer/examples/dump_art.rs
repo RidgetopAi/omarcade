@@ -11,6 +11,7 @@
 //!   sheet   every sprite at several scales, on a neutral ground
 //!   road    the cars sitting on a real pseudo-3D road
 //!   lean    one car swept through the full range of poses
+//!   roll    consecutive frames of the tread scrolling
 //!
 //! Never screenshot a window for this — the render is deterministic and
 //! the window is not.
@@ -42,8 +43,9 @@ fn main() {
             "sheet" => draw_sheet(&mut c, &art, &theme),
             "road" => draw_road(&mut c, &art, &theme),
             "lean" => draw_lean(&mut c, &art, &theme),
+            "roll" => draw_roll(&mut c, &art, &theme),
             other => {
-                eprintln!("unknown scene {other:?} — try: sheet | road | lean");
+                eprintln!("unknown scene {other:?} — try: sheet | road | lean | roll");
                 std::process::exit(2);
             }
         }
@@ -311,5 +313,41 @@ fn draw_lean(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
             let x = span * (i as f32 + 0.5);
             art.player.draw_ground_posed(c, x, ground, s, pose_of(t), None);
         }
+    }
+}
+
+/// Consecutive frames of the tread rolling.
+///
+/// A still cannot show motion, so this lays successive frames side by
+/// side: the wheels must differ between them while everything else — the
+/// wing, the lights, the diffuser — stays pinned. That second half is
+/// the real check, because the tread shares its colour with the
+/// diffuser highlights and an animation keyed on colour rather than on
+/// the tread letter would strobe both.
+fn draw_roll(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
+    c.clear(theme.background);
+
+    let steps = 5;
+    let span = W as f32 / steps as f32;
+    let s = (span * 0.80) / art.player.width() as f32;
+
+    // Two rows at different speeds, so the difference between a gentle
+    // roll and a fast one is visible rather than asserted.
+    for (row, (ground, per_frame)) in [(250.0f32, 0.35f32), (620.0, 0.9)].iter().enumerate() {
+        c.fill_rect(0, *ground as i32, W, 1, theme.muted);
+        for i in 0..steps {
+            let roll = i as f32 * per_frame;
+            let x = span * (i as f32 + 0.5);
+            art.player.draw_ground_rolling(
+                c,
+                x,
+                *ground,
+                s,
+                Pose::UPRIGHT,
+                roll,
+                None,
+            );
+        }
+        let _ = row;
     }
 }

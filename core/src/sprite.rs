@@ -44,6 +44,15 @@ struct Pixel {
     x: u16,
     y: u16,
     color: Color,
+    /// Whether this pixel belongs to a rolling surface.
+    ///
+    /// A sprite resolves characters to colours at build time and then
+    /// forgets the grid, so the roll animation has no way to ask "was
+    /// this a tread?" later. One bool per pixel, decided once, is
+    /// cheaper than carrying the whole character grid around and far
+    /// cheaper than matching on colour — two different parts of a car
+    /// can legitimately share a tone.
+    tread: bool,
 }
 
 /// A grid of pixels, drawable at any scale.
@@ -52,6 +61,13 @@ pub struct Sprite {
     pixels: Vec<Pixel>,
     width: u16,
     height: u16,
+    /// The rows the tread occupies, inclusive, if there is any.
+    ///
+    /// Computed once at build time so the roll animation can wrap the
+    /// tread inside its own band rather than the whole sprite —
+    /// otherwise scrolling rubber climbs out of the tyre and across the
+    /// bodywork.
+    tread_span: Option<(u16, u16)>,
 }
 
 /// What went wrong while parsing a sprite grid.
@@ -97,6 +113,22 @@ impl Sprite {
     /// Ragged rows and unpalletted characters both fail loudly — see
     /// [`SpriteError`].
     pub fn from_rows(rows: &[&str], palette: &[PaletteEntry]) -> Result<Sprite, SpriteError> {
+        Sprite::from_rows_with_tread(rows, palette, &[])
+    }
+
+    /// Build, marking some characters as rolling surface.
+    ///
+    /// `tread_chars` are the letters that scroll under
+    /// [`Sprite::draw_ground_rolling`] — the tyre tread on a car, the
+    /// links on a tank track. Everything else is painted on and stays
+    /// put. Kept separate from the palette because it is a question
+    /// about MOTION, not colour: tread usually shares a tone with
+    /// something static, and matching on colour would animate both.
+    pub fn from_rows_with_tread(
+        rows: &[&str],
+        palette: &[PaletteEntry],
+        tread_chars: &[char],
+    ) -> Result<Sprite, SpriteError> {
         if rows.is_empty() {
             return Err(SpriteError::Empty);
         }
@@ -126,11 +158,31 @@ impl Sprite {
                 if color.a == 0 {
                     continue;
                 }
-                pixels.push(Pixel { x: x as u16, y: y as u16, color });
+                pixels.push(Pixel {
+                    x: x as u16,
+                    y: y as u16,
+                    color,
+                    tread: tread_chars.contains(&ch),
+                });
             }
         }
 
-        Ok(Sprite { pixels, width: width as u16, height: rows.len() as u16 })
+        let tread_span = pixels
+            .iter()
+            .filter(|p| p.tread)
+            .fold(None, |acc: Option<(u16, u16)>, p| {
+                Some(match acc {
+                    None => (p.y, p.y),
+                    Some((lo, hi)) => (lo.min(p.y), hi.max(p.y)),
+                })
+            });
+
+        Ok(Sprite {
+            pixels,
+            width: width as u16,
+            height: rows.len() as u16,
+            tread_span,
+        })
     }
 
     /// Build, panicking on malformed art.
@@ -144,6 +196,23 @@ impl Sprite {
             Ok(s) => s,
             Err(e) => panic!("malformed sprite: {e}"),
         }
+    }
+
+    /// [`Sprite::new`], marking some characters as rolling surface.
+    pub fn new_with_tread(
+        rows: &[&str],
+        palette: &[PaletteEntry],
+        tread_chars: &[char],
+    ) -> Sprite {
+        match Sprite::from_rows_with_tread(rows, palette, tread_chars) {
+            Ok(s) => s,
+            Err(e) => panic!("malformed sprite: {e}"),
+        }
+    }
+
+    /// How many pixels are marked as rolling surface.
+    pub fn tread_ink(&self) -> usize {
+        self.pixels.iter().filter(|p| p.tread).count()
     }
 
     pub fn width(&self) -> u16 {
@@ -311,6 +380,74 @@ impl Sprite {
             canvas.fill_rect_f(px, py, scale * squash, scale * squish, color);
         }
     }
+
+    /// Draw posed, with the tread scrolling.
+    ///
+    /// `roll` is a phase in source pixels: pass a value that accumulates
+    /// with road speed and the tread appears to rotate. Only pixels
+    /// marked as tread move; everything painted on the car stays put.
+    ///
+    /// The tread wraps within the WHEEL'S OWN vertical extent rather
+    /// than the sprite's, so rubber never climbs out of the tyre and
+    /// onto the bodywork. That extent is measured per column, because a
+    /// car's left and right wheels need not be the same height and a
+    /// single sprite may carry several rolling surfaces.
+    pub fn draw_ground_rolling(
+        &self,
+        canvas: &mut Canvas<'_>,
+        cx: f32,
+        ground_y: f32,
+        scale: f32,
+        pose: Pose,
+        roll: f32,
+        tint: Option<(Color, f32)>,
+    ) {
+        if !(cx.is_finite() && ground_y.is_finite() && scale.is_finite()) || scale <= 0.0 {
+            return;
+        }
+        if !pose.is_finite() || !roll.is_finite() {
+            return;
+        }
+        // No tread, or standing still: this is exactly the posed draw,
+        // and going through one code path keeps them from drifting.
+        if self.tread_span.is_none() || roll == 0.0 {
+            self.draw_ground_posed(canvas, cx, ground_y, scale, pose, tint);
+            return;
+        }
+        let (t_lo, t_hi) = self.tread_span.unwrap();
+        let span = (t_hi - t_lo + 1) as f32;
+
+        let w = self.width as f32;
+        let h = self.height as f32;
+        let squash = 1.0 - pose.turn.abs() * MAX_SQUASH;
+        let squish = 1.0 - pose.squat * MAX_SQUAT;
+
+        for p in &self.pixels {
+            // A tread pixel is drawn at a scrolled row, wrapped inside
+            // the tread band. rem_euclid rather than `%` so a negative
+            // roll (reversing) wraps instead of going out of range.
+            let src_y = if p.tread {
+                let off = (p.y as f32 - t_lo as f32 + roll).rem_euclid(span);
+                t_lo as f32 + off
+            } else {
+                p.y as f32
+            };
+
+            let up = h - src_y;
+            let shear = pose.lean * (up / h) * w * LEAN_SHEAR;
+            let from_centre = p.x as f32 - w / 2.0;
+
+            let px = cx + (from_centre * squash + shear) * scale;
+            let py = ground_y - up * squish * scale;
+
+            let color = match tint {
+                Some((t, amount)) => p.color.lerp(t, amount),
+                None => p.color,
+            };
+            canvas.fill_rect_f(px, py, scale * squash, scale * squish, color);
+        }
+    }
+
 }
 
 /// How far a full turn pulls the silhouette in, as a fraction of width.
@@ -333,6 +470,15 @@ const LEAN_SHEAR: f32 = 0.16;
 
 /// How far a full squat compresses height.
 const MAX_SQUAT: f32 = 0.12;
+
+/// The fastest the tread may scroll, in source pixels per frame.
+///
+/// Above about one row per frame a scrolling pattern aliases and
+/// visually REVERSES — the wagon-wheel effect from film. There is no
+/// fixing that with more speed; the eye simply cannot resolve it. So the
+/// rate pins here and the car reads as "very fast" instead of appearing
+/// to roll backwards, which is what the arcade originals did too.
+pub const MAX_ROLL_PER_FRAME: f32 = 0.9;
 
 /// How a sprite is oriented: leaning, turning, and loaded.
 ///
@@ -396,6 +542,54 @@ impl Pose {
 
     fn is_finite(self) -> bool {
         self.lean.is_finite() && self.turn.is_finite() && self.squat.is_finite()
+    }
+}
+
+/// Accumulates tread phase from road speed.
+///
+/// A wheel's tread scrolls at a rate set by how fast the car is
+/// travelling. Keeping that as its own small type means a game advances
+/// one value per car and hands it to the draw call, rather than
+/// scattering phase arithmetic through the render code.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Roll {
+    phase: f32,
+}
+
+impl Roll {
+    pub const fn new() -> Roll {
+        Roll { phase: 0.0 }
+    }
+
+    /// Advance by `speed` (units/second) over `dt` seconds.
+    ///
+    /// `pixels_per_unit` converts the game's own speed units into
+    /// source pixels of tread travel — the one number to tune if the
+    /// wheels look like they are spinning too fast or too slow for the
+    /// speed on the HUD.
+    ///
+    /// The step is capped at [`MAX_ROLL_PER_FRAME`], so flooring it at
+    /// 200mph makes the tread pin rather than strobe backwards.
+    pub fn advance(&mut self, speed: f32, pixels_per_unit: f32, dt: f32) {
+        if !(speed.is_finite() && pixels_per_unit.is_finite() && dt.is_finite()) {
+            return;
+        }
+        let step = (speed * pixels_per_unit * dt).clamp(
+            -MAX_ROLL_PER_FRAME,
+            MAX_ROLL_PER_FRAME,
+        );
+        self.phase += step;
+        // Kept small so the phase never drifts into the range where an
+        // f32 loses sub-pixel precision. A car that has driven for an
+        // hour must roll exactly as smoothly as one that just started.
+        if self.phase.abs() > 4096.0 {
+            self.phase = self.phase % 1.0;
+        }
+    }
+
+    /// The current phase, in source pixels.
+    pub fn phase(self) -> f32 {
+        self.phase
     }
 }
 
@@ -783,5 +977,196 @@ mod tests {
         assert_eq!(Pose::cornering(0.0), Pose::UPRIGHT);
         // Overshoot from physics must pin, not shear off screen.
         assert_eq!(Pose::cornering(4.0).lean, 1.0);
+    }
+
+    /// A grid whose tread band is rows 2..=4.
+    ///
+    /// The tread rows must DIFFER from each other, or scrolling an
+    /// identical pattern produces an identical image and a "the tread
+    /// moves" test passes vacuously. This one alternates.
+    fn wheelie() -> Sprite {
+        Sprite::new_with_tread(
+            &["BBBB", "BBBB", "RRBB", "BBRR", "RRBB", "BBBB"],
+            &[('B', BLACK), ('R', WHITE)],
+            &['R'],
+        )
+    }
+
+    #[test]
+    fn only_tread_characters_are_marked() {
+        let s = wheelie();
+        assert_eq!(s.ink(), 24);
+        assert_eq!(s.tread_ink(), 6, "three rows of two");
+    }
+
+    #[test]
+    fn a_sprite_with_no_tread_rolls_identically_to_posed() {
+        // The fallback path. If these ever diverged, wheels-less sprites
+        // would shift the moment roll was wired up.
+        let s = Sprite::new(&["RW", "BR"], &palette());
+        let render = |rolling: bool| {
+            let mut buf = canvas_of(32, 32);
+            {
+                let mut c = Canvas::new(&mut buf, 32, 32);
+                if rolling {
+                    s.draw_ground_rolling(&mut c, 16.0, 24.0, 3.0, Pose::UPRIGHT, 7.5, None);
+                } else {
+                    s.draw_ground_posed(&mut c, 16.0, 24.0, 3.0, Pose::UPRIGHT, None);
+                }
+            }
+            buf
+        };
+        assert_eq!(render(true), render(false));
+    }
+
+    #[test]
+    fn zero_roll_changes_nothing() {
+        let s = wheelie();
+        let render = |roll: Option<f32>| {
+            let mut buf = canvas_of(48, 48);
+            {
+                let mut c = Canvas::new(&mut buf, 48, 48);
+                match roll {
+                    Some(r) => s.draw_ground_rolling(&mut c, 24.0, 40.0, 4.0, Pose::UPRIGHT, r, None),
+                    None => s.draw_ground_posed(&mut c, 24.0, 40.0, 4.0, Pose::UPRIGHT, None),
+                }
+            }
+            buf
+        };
+        assert_eq!(render(Some(0.0)), render(None));
+    }
+
+    /// The property that keeps rubber on the tyre: however far the tread
+    /// scrolls, it must never paint outside the rows it started in.
+    #[test]
+    fn tread_wraps_inside_the_wheel_and_never_escapes() {
+        let s = wheelie();
+        // Where the tread colour appears, in source rows.
+        let tread_rows = |roll: f32| {
+            let mut buf = canvas_of(64, 64);
+            {
+                let mut c = Canvas::new(&mut buf, 64, 64);
+                s.draw_ground_rolling(&mut c, 32.0, 50.0, 4.0, Pose::UPRIGHT, roll, None);
+            }
+            let mut rows = std::collections::BTreeSet::new();
+            for y in 0..64 {
+                for x in 0..64 {
+                    if buf[y * 64 + x] == WHITE.to_u32() {
+                        // Screen row back to a source row.
+                        rows.insert((50 - y) / 4);
+                    }
+                }
+            }
+            rows
+        };
+        let at_rest = tread_rows(0.0);
+        assert!(!at_rest.is_empty(), "the test sprite must show tread");
+        // Sweep well past a full wrap, forwards and backwards.
+        for i in -40..=40 {
+            let roll = i as f32 * 0.37;
+            let rows = tread_rows(roll);
+            assert!(
+                rows.is_subset(&at_rest),
+                "tread escaped its band at roll {roll}: {rows:?} vs {at_rest:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn tread_actually_moves() {
+        // The other half: wrapping must not be achieved by not moving.
+        let s = wheelie();
+        let frame = |roll: f32| {
+            let mut buf = canvas_of(64, 64);
+            {
+                let mut c = Canvas::new(&mut buf, 64, 64);
+                s.draw_ground_rolling(&mut c, 32.0, 50.0, 4.0, Pose::UPRIGHT, roll, None);
+            }
+            buf
+        };
+        assert_ne!(frame(0.0), frame(1.0), "one row of roll must be visible");
+    }
+
+    #[test]
+    fn a_full_wrap_returns_to_the_start() {
+        // The tread band is 2 rows, so rolling by 2 is a whole cycle.
+        let s = wheelie();
+        let frame = |roll: f32| {
+            let mut buf = canvas_of(64, 64);
+            {
+                let mut c = Canvas::new(&mut buf, 64, 64);
+                s.draw_ground_rolling(&mut c, 32.0, 50.0, 4.0, Pose::UPRIGHT, roll, None);
+            }
+            buf
+        };
+        assert_eq!(frame(0.0), frame(3.0), "a full cycle must be seamless");
+        assert_eq!(frame(0.0), frame(-3.0), "and seamless in reverse");
+    }
+
+    #[test]
+    fn roll_is_capped_so_it_cannot_alias() {
+        // Above ~1 row per frame a scrolling pattern reverses visually.
+        // Flooring it must pin the rate, not strobe.
+        let mut r = Roll::new();
+        r.advance(100_000.0, 50.0, 1.0 / 60.0);
+        assert!(
+            r.phase().abs() <= MAX_ROLL_PER_FRAME + 1e-6,
+            "one step went past the cap: {}",
+            r.phase(),
+        );
+        // Reverse pins too.
+        let mut back = Roll::new();
+        back.advance(-100_000.0, 50.0, 1.0 / 60.0);
+        assert!(back.phase() >= -MAX_ROLL_PER_FRAME - 1e-6);
+    }
+
+    #[test]
+    fn roll_stays_precise_over_a_long_drive() {
+        // An hour at full tilt must not accumulate into the range where
+        // an f32 loses sub-pixel resolution — a car that has been
+        // driving a while has to roll as smoothly as one that just
+        // started.
+        let mut r = Roll::new();
+        for _ in 0..(60 * 60 * 60) {
+            r.advance(300.0, 0.5, 1.0 / 60.0);
+        }
+        assert!(r.phase().is_finite());
+        assert!(r.phase().abs() <= 4096.0, "phase ran away: {}", r.phase());
+    }
+
+    #[test]
+    fn a_bad_roll_draws_nothing_rather_than_garbage() {
+        let s = wheelie();
+        let mut buf = canvas_of(48, 48);
+        {
+            let mut c = Canvas::new(&mut buf, 48, 48);
+            s.draw_ground_rolling(&mut c, 24.0, 40.0, 4.0, Pose::UPRIGHT, f32::NAN, None);
+        }
+        assert_eq!(painted(&buf), 0);
+
+        // And a NaN speed must not poison the accumulator.
+        let mut r = Roll::new();
+        r.advance(5.0, 1.0, 1.0 / 60.0);
+        let before = r.phase();
+        r.advance(f32::NAN, 1.0, 1.0 / 60.0);
+        assert_eq!(r.phase(), before, "a bad step must be ignored, not stored");
+    }
+
+    #[test]
+    fn rolling_composes_with_a_pose() {
+        // Roll and lean are independent; using both must not cancel
+        // either out.
+        let s = wheelie();
+        let frame = |pose: Pose, roll: f32| {
+            let mut buf = canvas_of(96, 96);
+            {
+                let mut c = Canvas::new(&mut buf, 96, 96);
+                s.draw_ground_rolling(&mut c, 48.0, 70.0, 5.0, pose, roll, None);
+            }
+            buf
+        };
+        let lean = Pose { lean: 1.0, turn: 0.0, squat: 0.0 };
+        assert_ne!(frame(Pose::UPRIGHT, 1.0), frame(lean, 1.0), "lean must apply");
+        assert_ne!(frame(lean, 0.0), frame(lean, 1.0), "roll must apply");
     }
 }

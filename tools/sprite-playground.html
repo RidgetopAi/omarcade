@@ -34,7 +34,7 @@
   }
   #gridwrap { overflow: auto; }
   canvas { image-rendering: pixelated; display: block; cursor: crosshair; }
-  #preview { background: #10141f; border-radius: 6px; margin-bottom: 4px; }
+  #preview { border-radius: 6px; margin-bottom: 4px; }
   .swatches { display: flex; flex-wrap: wrap; gap: 6px; }
   .sw {
     display: flex; align-items: center; gap: 6px; padding: 5px 9px;
@@ -101,8 +101,12 @@
   <div>
     <div class="panel">
       <h2>Preview</h2>
+      <div class="swatches" id="bgs" style="margin-bottom:10px"></div>
       <canvas id="preview" width="288" height="180"></canvas>
-      <p class="hint">Actual size, 2x, 4x &mdash; how it reads at distance.</p>
+      <p class="hint">
+        Actual size, 2x, 4x &mdash; how it reads at distance.
+        Dark tyres vanish on a dark ground; check against <b>road</b>.
+      </p>
     </div>
 
     <div class="panel" style="margin-top:16px">
@@ -158,6 +162,19 @@ const PALETTE = [
 ];
 
 let COLS = 48, ROWS = 30, CELL = 15;
+
+// Preview backgrounds. 'road' and 'grass' are the tones dump_art
+// actually draws, so the sprite is judged against its real setting —
+// near-black tyres on a near-black ground are invisible in the editor
+// and perfectly visible in the game, or the reverse.
+const BACKGROUNDS = [
+  ['road',  '#3e4449', 'road'],
+  ['grass', '#4a5a48', 'grass'],
+  ['light', '#8a9298', 'light'],
+  ['white', '#d8d4c8', 'paper'],
+  ['dark',  '#10141f', 'dark'],
+];
+let bg = BACKGROUNDS[0][1];
 
 /// Resize the grid, keeping whatever art already exists anchored at the
 /// BOTTOM CENTRE. A car sits on the road and is symmetric about its
@@ -222,6 +239,8 @@ function draw() {
 
 function drawPreview() {
   pctx.clearRect(0, 0, pv.width, pv.height);
+  pctx.fillStyle = bg;
+  pctx.fillRect(0, 0, pv.width, pv.height);
   let ox = 8;
   // Preview at three sizes relative to the grid, so a 64-wide sprite is
   // not eight times the width of a 32-wide one on this strip.
@@ -276,6 +295,18 @@ cv.addEventListener('pointerdown', e => {
 });
 cv.addEventListener('pointermove', e => { if (painting) paint(e); });
 cv.addEventListener('pointerup', () => { painting = false; });
+
+function renderBackgrounds() {
+  const el = document.getElementById('bgs');
+  el.innerHTML = '';
+  for (const [key, col, name] of BACKGROUNDS) {
+    const b = document.createElement('button');
+    b.className = 'sw' + (col === bg ? ' on' : '');
+    b.innerHTML = `<span class="chip" style="background:${col}"></span>${name}`;
+    b.onclick = () => { bg = col; renderBackgrounds(); drawPreview(); };
+    el.appendChild(b);
+  }
+}
 
 function renderSwatches() {
   const el = document.getElementById('swatches');
@@ -400,11 +431,11 @@ grid = [
   "..................DD........DD..................",
   "............SSSSSSSSSSSSSSSSSSSSSSSS............",
   "...........SSBBBBBBBBBBBBBBBBBBBBBBSS...........",
-  "....ttt....SBBGGGGGGGGGGGGGGGGGGGGBBS....ttt....",
-  "...thhht..SSBBGGGGGGGGGGGGGGGGGGGGBBSS..thhht...",
-  "...thhht..SBBBBBBBBBBBBBBBBBBBBBBBBBBS..thhht...",
-  "...thhht..SBBBBBBBBBBBBBBBBBBBBBBBBBBS..thhht...",
-  "....ttt..SSBBBBBBBAAAAAAAAAAAABBBBBBBSS..ttt....",
+  ".......th..SBBGGGGGGGGGGGGGGGGGGGGBBS..ht.......",
+  "......thht.SBBGGGGGGGGGGGGGGGGGGGGBBS.thht......",
+  "......thht.SBBBBBBBBBBBBBBBBBBBBBBBBS.thht......",
+  ".......th..SBBBBBBBBBBBBBBBBBBBBBBBBS..ht.......",
+  ".........SSBBBBBBBAAAAAAAAAAAABBBBBBBSS.........",
   ".......SSBBBBBBBBBAAAAAAAAAAAABBBBBBBBBSS.......",
   ".....SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS.....",
   "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
@@ -422,15 +453,12 @@ grid = [
   "................................................",
 ].map(r => r.split(''));
 
-// The seed above decides the grid size — deriving COLS/ROWS from it
-// rather than trusting the declarations means the canvas is always sized
-// for the art actually loaded. Without this the element kept its initial
-// width and showed only the first dozen columns of a 48-wide car.
 COLS = grid[0].length;
 ROWS = grid.length;
 document.getElementById('size').value = `${COLS}x${ROWS}`;
 fitZoom();
 
 renderSwatches();
+renderBackgrounds();
 draw();
 </script>

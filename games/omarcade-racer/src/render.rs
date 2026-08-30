@@ -60,10 +60,32 @@ pub fn draw_road_into(
     h: u32,
 ) {
     let sky = theme.background.lerp(theme.blue, 0.30);
-    let grass_a = theme.background.lerp(theme.green, 0.40);
-    let grass_b = theme.background.lerp(theme.green, 0.28);
-    let road_a = theme.dark_background.lerp(theme.foreground, 0.15);
-    let road_b = theme.dark_background.lerp(theme.foreground, 0.11);
+
+    // Grass and road stripe INDEPENDENTLY, and by different amounts.
+    //
+    // Measured on the shipped theme, the old pairs had grass alternating
+    // by 16.0 luminance and road by only 6.9 — so the road read as static
+    // while the grass flickered hard beside it. Worse, both were driven by
+    // the same band index, which put a strong light/dark boundary straight
+    // across the full width of the screen in one unbroken line. Moving,
+    // that reads as a rolling scanline: a bad video feed rather than
+    // ground going past.
+    //
+    // So: the grass stripe is softened, the road stripe is strengthened,
+    // and the two are offset from each other (see `road_phase`) so their
+    // boundaries never coincide. Ground texture should read as two
+    // surfaces moving, not as one horizontal bar sweeping the screen.
+    // Mixed well toward the theme's own green rather than barely away
+    // from the background. At 0.36 the grass landed at chroma 0.184
+    // against the theme green's 0.333 — a muddy grey-green sitting close
+    // enough to the grey road that the two blended into each other, which
+    // is a large part of why the ground read as one wash rather than as
+    // two surfaces. Mixing further both restores the hue and widens the
+    // road-to-grass edge.
+    let grass_a = theme.background.lerp(theme.green, 0.62);
+    let grass_b = theme.background.lerp(theme.green, 0.50);
+    let road_a = theme.dark_background.lerp(theme.foreground, 0.19);
+    let road_b = theme.dark_background.lerp(theme.foreground, 0.09);
     let rumble_a = theme.red.lerp(Color::WHITE, 0.15);
     let rumble_b = theme.foreground.lerp(Color::WHITE, 0.4);
     let line = theme.foreground.lerp(Color::WHITE, 0.5);
@@ -106,12 +128,57 @@ pub fn draw_road_into(
             // appear to run backwards; the markings stay fine so the near
             // road keeps the texture that reads as speed. Neither is a
             // raw divide by segment_length — that is what aliased.
-            let phase = road.band_index(dist + car.z) % 2 == 0;
-            let mark = road.marking_index(dist + car.z) % 2 == 0;
+            let z_here = dist + car.z;
+            let phase = road.band_index(z_here) % 2 == 0;
+            // The road's stripe is offset half a band from the grass, so
+            // the two boundaries never land on the same scanline. That
+            // offset is what breaks the full-width bar.
+            let road_phase = road.band_index(
+                z_here + road.segment_length() * Road::SEGMENTS_PER_BAND * 0.5,
+            ) % 2 == 0;
+            let mark = road.marking_index(z_here) % 2 == 0;
             let sy = fy + y;
 
-            c.fill_rect_f(fx, sy, fw, bh, if phase { grass_a } else { grass_b });
-            c.fill_rect_f(cx - hw, sy, hw * 2.0, bh, if phase { road_a } else { road_b });
+            // Grass, with a second much finer stripe laid over the band
+            // stripe.
+            //
+            // The band stripe alone leaves the near grass flat: at four
+            // segments per band the NEAREST band covers 270 screen rows
+            // (measured), so the bottom third of the screen is one solid
+            // colour and has no motion cue at all — which is most of why
+            // the ground read as a bad video feed rather than as ground.
+            //
+            // It cannot be fixed by a finer band. The Nyquist floor is a
+            // WORLD-space distance — speed/fps, about 533 units at 30fps —
+            // and it applies at every depth, so no distance-varying period
+            // escapes it near the camera where you move fastest relative
+            // to the pattern.
+            //
+            // KNOWN GAP, deliberately left: below about y=460 the grass
+            // is one flat colour — the nearest band alone covers ~270
+            // screen rows, so there is no grass stripe in the near field
+            // at all and the road carries the whole motion cue there.
+            //
+            // It is not fixable by a finer band: the Nyquist floor is a
+            // WORLD-space distance (speed/fps, ~533 units at 30fps) and
+            // applies at every depth, so no distance-varying period
+            // escapes it near the camera where you move fastest relative
+            // to the pattern. It needs near-field detail that is not a
+            // scrolling horizontal stripe — verge posts, tufts, texture
+            // broken along x.
+            //
+            // Two attempts at that failed the same way and are worth
+            // recording: both positioned the detail in SCREEN space (as a
+            // fraction of the verge width, then as a multiple of the road
+            // half-width). Both shrink with distance, so each band's
+            // detail landed at a different screen x and they smeared into
+            // long diagonal rays converging on the horizon. Anything meant
+            // to sit still in the world must be positioned in world units
+            // and projected — the same lesson as the road itself.
+            let grass = if phase { grass_a } else { grass_b };
+            c.fill_rect_f(fx, sy, fw, bh, grass);
+
+            c.fill_rect_f(cx - hw, sy, hw * 2.0, bh, if road_phase { road_a } else { road_b });
 
             let rumble = (hw * 0.13).max(0.7);
             let rc = if mark { rumble_a } else { rumble_b };

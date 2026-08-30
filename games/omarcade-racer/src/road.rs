@@ -935,7 +935,10 @@ mod tests {
         );
         // Finer than the ground, which is the whole point of splitting
         // them — if these ever converge, the near road goes flat again.
-        assert!(Road::SEGMENTS_PER_MARKING < Road::SEGMENTS_PER_BAND);
+        // A const block: both sides are constants, so this is a
+        // compile-time claim, not a runtime one. Written as a runtime
+        // assert it could never fail and would prove nothing (L017).
+        const { assert!(Road::SEGMENTS_PER_MARKING < Road::SEGMENTS_PER_BAND) };
     }
 
     /// ...with real margin, not by a hair. A tuning change that eats the
@@ -960,7 +963,7 @@ mod tests {
     #[test]
     fn bands_group_more_than_one_segment() {
         let road = Road::straight(400);
-        assert!(Road::SEGMENTS_PER_BAND >= 2.0);
+        const { assert!(Road::SEGMENTS_PER_BAND >= 2.0) };
 
         let seg = road.segment_length();
         let n = Road::SEGMENTS_PER_BAND;

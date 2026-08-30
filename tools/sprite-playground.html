@@ -1,0 +1,338 @@
+<title>Omarcade Sprite Playground</title>
+<style>
+  :root {
+    --bg: #1e2326; --panel: #272e33; --edge: #3a4248;
+    --fg: #d3c6aa; --muted: #859289; --accent: #83c092;
+    --warn: #e67e80;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--edge);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .04em; }
+  header p { margin: 0; color: var(--muted); font-size: 12px; }
+  main {
+    display: grid; grid-template-columns: minmax(0,1fr) 320px;
+    gap: 20px; padding: 20px; align-items: start;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 8px; padding: 16px;
+  }
+  .panel h2 {
+    font-size: 12px; margin: 0 0 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+  }
+  #gridwrap { overflow: auto; }
+  canvas { image-rendering: pixelated; display: block; cursor: crosshair; }
+  #preview { background: #10141f; border-radius: 6px; margin-bottom: 4px; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sw {
+    display: flex; align-items: center; gap: 6px; padding: 5px 9px;
+    border: 1px solid var(--edge); border-radius: 5px; cursor: pointer;
+    background: #1e2326; font-size: 12px; color: var(--fg);
+  }
+  .sw:hover { border-color: var(--muted); }
+  .sw.on { border-color: var(--accent); background: #2d3b33; }
+  .chip {
+    width: 14px; height: 14px; border-radius: 3px;
+    border: 1px solid rgba(255,255,255,.15);
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  button {
+    font: inherit; font-size: 12px; padding: 7px 12px; cursor: pointer;
+    background: #1e2326; color: var(--fg);
+    border: 1px solid var(--edge); border-radius: 5px;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  textarea {
+    width: 100%; min-height: 300px; background: #10141f; color: var(--fg);
+    border: 1px solid var(--edge); border-radius: 6px; padding: 10px;
+    font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace;
+    white-space: pre; overflow-wrap: normal; overflow-x: auto; resize: vertical;
+  }
+  .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  .warn { color: var(--warn); }
+  kbd {
+    background: #1e2326; border: 1px solid var(--edge); border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 5px; font-size: 11px;
+  }
+</style>
+
+<header>
+  <h1>Omarcade Sprite Playground</h1>
+  <p>Paint pixels &rarr; copy the Rust back into <code>art.rs</code>. Drag to draw, right-click erases.</p>
+</header>
+
+<main>
+  <div class="panel">
+    <h2>Canvas</h2>
+    <div id="gridwrap"><canvas id="grid"></canvas></div>
+    <p class="hint">
+      <kbd>drag</kbd> paint &nbsp; <kbd>right-drag</kbd> erase &nbsp;
+      <kbd>alt+click</kbd> pick colour &nbsp; <kbd>ctrl+z</kbd> undo
+    </p>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Preview</h2>
+      <canvas id="preview" width="288" height="180"></canvas>
+      <p class="hint">Actual size, 2x, 4x &mdash; how it reads at distance.</p>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Palette</h2>
+      <div class="swatches" id="swatches"></div>
+      <p class="hint">Same letters <code>art.rs</code> uses.</p>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Tools</h2>
+      <div class="row">
+        <button id="mirror">Mirror L&rarr;R</button>
+        <button id="clear">Clear</button>
+        <button id="undo">Undo</button>
+      </div>
+      <div class="row">
+        <button id="up">Shift up</button>
+        <button id="down">Shift down</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="panel" style="margin:0 20px 20px">
+  <h2>Rust &mdash; paste into art.rs</h2>
+  <textarea id="out" spellcheck="false"></textarea>
+  <div class="row">
+    <button id="copy">Copy</button>
+    <button id="load">Load from textarea</button>
+    <span class="hint" id="status"></span>
+  </div>
+  <p class="hint">
+    Paste an existing <code>&amp;[&amp;str]</code> block and hit <b>Load</b> to edit it,
+    or copy this back into <code>art.rs</code> when you like what you see.
+  </p>
+</div>
+
+<script>
+// The palette mirrors car_palette() in art.rs. Colours here are the
+// resolved Everforest values so the playground shows what the game shows.
+const PALETTE = [
+  ['.', 'transparent',  'erase'],
+  ['B', '#d64e3e',      'body'],
+  ['D', '#8a3a30',      'shadow'],
+  ['A', '#f0d678',      'accent'],
+  ['G', '#241c1c',      'cockpit'],
+  ['T', '#16191c',      'tyre'],
+  ['H', '#2b3136',      'tyre top'],
+  ['t', '#12151a',      'front tyre'],
+  ['h', '#1e2429',      'front top'],
+  ['L', '#ff5a46',      'brake light'],
+  ['W', '#a05348',      'wing'],
+];
+
+const COLS = 32, ROWS = 20, CELL = 22;
+let grid = Array.from({length: ROWS}, () => Array(COLS).fill('.'));
+let cur = 'B';
+let painting = false, erasing = false;
+const undoStack = [];
+
+const cv = document.getElementById('grid');
+const ctx = cv.getContext('2d');
+cv.width = COLS * CELL; cv.height = ROWS * CELL;
+
+const pv = document.getElementById('preview');
+const pctx = pv.getContext('2d');
+
+function colorOf(ch) {
+  const e = PALETTE.find(p => p[0] === ch);
+  return e ? e[1] : 'transparent';
+}
+
+function draw() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const ch = grid[y][x];
+      // Checkerboard under transparent cells so the shape is readable.
+      if (ch === '.') {
+        ctx.fillStyle = ((x + y) % 2) ? '#20262a' : '#242b2f';
+        ctx.fillRect(x*CELL, y*CELL, CELL, CELL);
+      } else {
+        ctx.fillStyle = colorOf(ch);
+        ctx.fillRect(x*CELL, y*CELL, CELL, CELL);
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,.045)';
+      ctx.strokeRect(x*CELL + .5, y*CELL + .5, CELL - 1, CELL - 1);
+    }
+  }
+  // Centre line — symmetry is most of what makes a vehicle read right.
+  ctx.strokeStyle = 'rgba(131,192,146,.35)';
+  ctx.beginPath();
+  ctx.moveTo(COLS/2 * CELL, 0); ctx.lineTo(COLS/2 * CELL, cv.height);
+  ctx.stroke();
+  drawPreview();
+  emit();
+}
+
+function drawPreview() {
+  pctx.clearRect(0, 0, pv.width, pv.height);
+  let ox = 8;
+  for (const s of [1, 2, 4]) {
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const ch = grid[y][x];
+        if (ch === '.') continue;
+        pctx.fillStyle = colorOf(ch);
+        pctx.fillRect(ox + x*s, 20 + y*s, s, s);
+      }
+    }
+    ox += COLS * s + 12;
+  }
+}
+
+function pushUndo() {
+  undoStack.push(grid.map(r => r.slice()));
+  if (undoStack.length > 100) undoStack.shift();
+}
+
+function cellAt(ev) {
+  const r = cv.getBoundingClientRect();
+  const x = Math.floor((ev.clientX - r.left) / (r.width / COLS));
+  const y = Math.floor((ev.clientY - r.top) / (r.height / ROWS));
+  return (x >= 0 && x < COLS && y >= 0 && y < ROWS) ? [x, y] : null;
+}
+
+function paint(ev) {
+  const c = cellAt(ev); if (!c) return;
+  const [x, y] = c;
+  const ch = erasing ? '.' : cur;
+  if (grid[y][x] === ch) return;
+  grid[y][x] = ch;
+  draw();
+}
+
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('pointerdown', e => {
+  const c = cellAt(e); if (!c) return;
+  if (e.altKey) {                       // pick
+    const ch = grid[c[1]][c[0]];
+    if (ch !== '.') { cur = ch; renderSwatches(); }
+    return;
+  }
+  pushUndo();
+  painting = true; erasing = (e.button === 2);
+  cv.setPointerCapture(e.pointerId);
+  paint(e);
+});
+cv.addEventListener('pointermove', e => { if (painting) paint(e); });
+cv.addEventListener('pointerup', () => { painting = false; });
+
+function renderSwatches() {
+  const el = document.getElementById('swatches');
+  el.innerHTML = '';
+  for (const [ch, col, name] of PALETTE) {
+    const b = document.createElement('button');
+    b.className = 'sw' + (ch === cur ? ' on' : '');
+    b.innerHTML = `<span class="chip" style="background:${col === 'transparent' ? 'repeating-conic-gradient(#333 0 25%, #222 0 50%) 50%/8px 8px' : col}"></span>
+                   <b>${ch === '.' ? '·' : ch}</b> ${name}`;
+    b.onclick = () => { cur = ch; renderSwatches(); };
+    el.appendChild(b);
+  }
+}
+
+function emit() {
+  const body = grid.map(r => `    "${r.join('')}",`).join('\n');
+  document.getElementById('out').value =
+    `pub const PLAYER_CAR: &[&str] = &[\n${body}\n];`;
+}
+
+document.getElementById('copy').onclick = async () => {
+  await navigator.clipboard.writeText(document.getElementById('out').value);
+  const s = document.getElementById('status');
+  s.textContent = 'copied'; setTimeout(() => s.textContent = '', 1400);
+};
+
+document.getElementById('load').onclick = () => {
+  const text = document.getElementById('out').value;
+  const rows = [...text.matchAll(/"([^"]*)"/g)].map(m => m[1]);
+  const status = document.getElementById('status');
+  if (!rows.length) { status.innerHTML = '<span class="warn">no quoted rows found</span>'; return; }
+  const bad = rows.find(r => r.length !== COLS);
+  if (bad !== undefined) {
+    status.innerHTML = `<span class="warn">a row is ${bad.length} chars, need ${COLS}</span>`;
+    return;
+  }
+  pushUndo();
+  grid = Array.from({length: ROWS}, (_, y) =>
+    (rows[y] || '.'.repeat(COLS)).split(''));
+  status.textContent = `loaded ${rows.length} rows`;
+  draw();
+};
+
+document.getElementById('mirror').onclick = () => {
+  pushUndo();
+  // Left half wins, mirrored onto the right. Symmetry by construction.
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS/2; x++)
+      grid[y][COLS-1-x] = grid[y][x];
+  draw();
+};
+document.getElementById('clear').onclick = () => {
+  pushUndo();
+  grid = Array.from({length: ROWS}, () => Array(COLS).fill('.'));
+  draw();
+};
+document.getElementById('undo').onclick = doUndo;
+function doUndo() {
+  if (!undoStack.length) return;
+  grid = undoStack.pop(); draw();
+}
+document.getElementById('up').onclick = () => {
+  pushUndo();
+  grid.shift(); grid.push(Array(COLS).fill('.')); draw();
+};
+document.getElementById('down').onclick = () => {
+  pushUndo();
+  grid.pop(); grid.unshift(Array(COLS).fill('.')); draw();
+};
+
+addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); doUndo(); }
+});
+
+// Seed with the car as it stands in art.rs today.
+grid = [
+  "................................",
+  "................................",
+  "................................",
+  "................................",
+  "................................",
+  ".......WWWWWWWWWWWWWWWWWW.......",
+  ".......WDDDDDDDDDDDDDDDDW.......",
+  "..........DD........DD..........",
+  "..thh....BBBBBBBBBBBBBB....hht..",
+  ".ththt..BBBGGGGGGGGGGBBB..ththt.",
+  ".ththtBBBBBBBAAAAAABBBBBBBththt.",
+  "..tht.BBBBBBBBBBBBBBBBBBBB.tht..",
+  "..TTBBDDDDDDDDDDDDDDDDDDDDBBTT..",
+  "THHHTBDDDDLLDDDDDDLLDDDDDBTHHHT.",
+  "THHHTDDDDDLLDDDDDDLLDDDDDDTHHHT.",
+  "THHHTDDDDDDDDDDDDDDDDDDDDDTHHHT.",
+  "TTTTTTDDDDDDDDDDDDDDDDDDDTTTTTT.",
+  ".TTTT....................TTTT...",
+  "................................",
+  "................................",
+].map(r => r.split(''));
+
+renderSwatches();
+draw();
+</script>

@@ -1,7 +1,7 @@
 //! What do the REAL sprites cost, at the real resolution?
 //!
 //! bench_road measured hand-written rectangles standing in for cars.
-//! Now that the art is 48x30 with ~800 drawn pixels each, that stand-in
+//! Now that the art is 64x40 with ~700 drawn pixels each, that stand-in
 //! is no longer representative — one car is 800 sub-pixel rects, not 6.
 //! This measures the sprites themselves.
 //!
@@ -11,7 +11,7 @@
 mod art;
 
 use art::Art;
-use omarcade_core::{Canvas, Theme};
+use omarcade_core::{Canvas, Pose, Theme};
 use std::time::Instant;
 
 const W: u32 = 960;
@@ -77,10 +77,38 @@ fn main() {
     println!("= full frame       : {total:.2} ms = {:.0}% of a 60fps budget", total / 16.67 * 100.0);
     println!();
     if total / 16.67 < 0.5 {
-        println!("VERDICT: comfortable at 48x30. The higher-detail art fits.");
+        println!("VERDICT: comfortable at 64x40. The higher-detail art fits.");
     } else if total / 16.67 < 1.0 {
         println!("VERDICT: it fits, but sprite count now matters. Cap traffic.");
     } else {
-        println!("VERDICT: does NOT fit. 48x30 is too expensive on this path.");
+        println!("VERDICT: does NOT fit. 64x40 is too expensive on this path.");
     }
+
+    // Posing is pure arithmetic on where each pixel lands, so it should
+    // cost the same as drawing plain. Measured rather than asserted —
+    // "this is free" is exactly the kind of claim that turns out to be
+    // 3x when someone finally runs it.
+    println!();
+    let plain = time("9 cars, upright (draw_ground)", iters, || {
+        let mut c = Canvas::new(&mut buf, W, H);
+        for i in 0..9 {
+            let s = 1.0 + i as f32 * 0.4;
+            art.player.draw_ground(&mut c, 100.0 + i as f32 * 90.0, 300.0 + i as f32 * 40.0, s);
+        }
+    });
+    let posed = time("9 cars, mid-corner (draw_ground_posed)", iters, || {
+        let mut c = Canvas::new(&mut buf, W, H);
+        for i in 0..9 {
+            let s = 1.0 + i as f32 * 0.4;
+            art.player.draw_ground_posed(
+                &mut c,
+                100.0 + i as f32 * 90.0,
+                300.0 + i as f32 * 40.0,
+                s,
+                Pose::cornering(0.7),
+                None,
+            );
+        }
+    });
+    println!("\nposed / plain = {:.2}x", posed / plain);
 }

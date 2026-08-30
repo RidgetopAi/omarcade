@@ -17,5 +17,5 @@ pub mod theme;
 
 pub use backend::{Backend, Canvas, Color, Game, InputEvent, Key};
 pub use geom::{Axis, Rect, Vec2};
-pub use sprite::Sprite;
+pub use sprite::{Pose, Sprite};
 pub use theme::Theme;

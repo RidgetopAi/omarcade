@@ -236,6 +236,173 @@ impl Sprite {
             );
         }
     }
+
+    /// Draw under a [`Pose`], anchored on the ground like
+    /// [`Sprite::draw_ground`].
+    ///
+    /// This is the one a game calls: a car sits ON the road at a screen
+    /// row, and leans, turns and squats about that contact point rather
+    /// than about its own top-left corner.
+    pub fn draw_ground_posed(
+        &self,
+        canvas: &mut Canvas<'_>,
+        cx: f32,
+        ground_y: f32,
+        scale: f32,
+        pose: Pose,
+        tint: Option<(Color, f32)>,
+    ) {
+        if !(cx.is_finite() && ground_y.is_finite() && scale.is_finite()) || scale <= 0.0 {
+            return;
+        }
+        if !pose.is_finite() {
+            return;
+        }
+
+        let w = self.width as f32;
+        let h = self.height as f32;
+        // Turning squashes width. A car angling away from the camera
+        // shows less of its back, and that foreshortening is most of
+        // what sells the turn — see `Pose::turn`.
+        let squash = 1.0 - pose.turn.abs() * MAX_SQUASH;
+        // Squat compresses height about the contact patch.
+        let squish = 1.0 - pose.squat * MAX_SQUAT;
+
+        for p in &self.pixels {
+            // Height above the sprite's own base, measured to the cell's
+            // TOP edge — the same cell-not-point reasoning as the
+            // horizontal axis below.
+            let up = h - p.y as f32;
+            // Lean shears by height: the wheels stay planted and the
+            // body tilts over them. Shearing about the BASE rather than
+            // the centre is what makes it read as banking rather than
+            // as the whole car sliding sideways.
+            //
+            // `up / h` is how far up the sprite this pixel sits, 0 at
+            // the wheels and 1 at the roof; multiplying by the WIDTH
+            // makes a full lean move the roof by a fixed fraction of the
+            // car's own width. Width rather than height because that is
+            // what the eye compares a tilt against — a tall narrow
+            // sprite sheared by its height leans absurdly far.
+            let shear = pose.lean * (up / h) * w * LEAN_SHEAR;
+            // Offset from the sprite's centreline, so squash pulls the
+            // silhouette inward symmetrically.
+            //
+            // `w / 2.0`, not `(w - 1.0) / 2.0`: a pixel is a CELL, not a
+            // point, so the sprite's centre is the middle of its
+            // bounding box and not the middle of its outermost pixel
+            // CENTRES. Getting this wrong offsets the whole sprite by
+            // half a source pixel — invisible at a glance, but it
+            // destroys the sub-pixel coverage that makes fractional
+            // scaling smooth, and it would shift every car sideways the
+            // moment cornering was switched on.
+            let from_centre = p.x as f32 - w / 2.0;
+
+            let px = cx + (from_centre * squash + shear) * scale;
+            let py = ground_y - up * squish * scale;
+
+            let color = match tint {
+                Some((t, amount)) => p.color.lerp(t, amount),
+                None => p.color,
+            };
+            // Cells are widened by the same factors they are spaced by,
+            // or a squashed sprite draws as a comb of gaps instead of a
+            // solid body.
+            canvas.fill_rect_f(px, py, scale * squash, scale * squish, color);
+        }
+    }
+}
+
+/// How far a full turn pulls the silhouette in, as a fraction of width.
+///
+/// Not 1.0: a car turned hard is still a car, and squashing it to
+/// nothing reads as the sprite vanishing rather than as the car angling.
+/// 0.34 keeps a hard turn recognisably the same vehicle.
+const MAX_SQUASH: f32 = 0.34;
+
+/// How far the top of a fully leaned sprite travels sideways, as a
+/// fraction of the sprite's OWN HEIGHT.
+///
+/// Proportional rather than a fixed offset per row, so lean is an angle
+/// and not a distance. A constant per-row shear tuned on a short sprite
+/// tears a tall one apart: at 0.30 per row a 40-tall car's roof
+/// travelled twelve source pixels and the rear wing smeared into a
+/// streak. Expressed this way the same value means the same visual
+/// angle whatever the sprite's size.
+const LEAN_SHEAR: f32 = 0.16;
+
+/// How far a full squat compresses height.
+const MAX_SQUAT: f32 = 0.12;
+
+/// How a sprite is oriented: leaning, turning, and loaded.
+///
+/// A pseudo-3D racer needs a car that banks into a corner and angles
+/// away as it turns, and drawing a sprite per angle is a great deal of
+/// art to author and keep in sync. All three of these are pure
+/// arithmetic on where each source pixel lands, so they cost nothing
+/// extra to draw and they compose.
+///
+/// What this deliberately does NOT do is rotate. A car seen from behind
+/// and rotated would show its SIDE, and there is no side in a
+/// rear-view grid — no transform can invent one. Squash is the honest
+/// approximation, and it is the one the arcade originals used.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    /// Bank angle, `-1.0` (left) to `1.0` (right).
+    ///
+    /// Shears the sprite horizontally by height above its base, so the
+    /// wheels stay planted and the body tilts over them.
+    pub lean: f32,
+    /// Heading, `-1.0` (hard left) to `1.0` (hard right).
+    ///
+    /// Compresses width, so the car reads as angled away from the
+    /// camera. The sign is carried for callers that want it; the
+    /// squash itself is symmetric.
+    pub turn: f32,
+    /// Weight on the suspension, `0.0` (unloaded) to `1.0` (hard).
+    ///
+    /// Compresses height about the contact patch. Small, but it is what
+    /// makes a lean read as physics rather than as a slider.
+    pub squat: f32,
+}
+
+impl Pose {
+    /// Sitting square and unloaded. Renders exactly as
+    /// [`Sprite::draw_ground`] would.
+    pub const UPRIGHT: Pose = Pose { lean: 0.0, turn: 0.0, squat: 0.0 };
+
+    /// Lean and turn together, which is what a car in a corner is doing.
+    ///
+    /// A real car banks INTO the direction it turns, so one input drives
+    /// both by default and a caller who wants them apart can build the
+    /// struct directly.
+    pub fn cornering(amount: f32) -> Pose {
+        let a = amount.clamp(-1.0, 1.0);
+        Pose { lean: a, turn: a, squat: a.abs() * 0.5 }
+    }
+
+    /// Clamp every field to its documented range.
+    ///
+    /// Physics hands over values that overshoot at the edges, and an
+    /// unclamped lean would shear a sprite off the screen rather than
+    /// pinning at full bank.
+    pub fn clamped(self) -> Pose {
+        Pose {
+            lean: self.lean.clamp(-1.0, 1.0),
+            turn: self.turn.clamp(-1.0, 1.0),
+            squat: self.squat.clamp(0.0, 1.0),
+        }
+    }
+
+    fn is_finite(self) -> bool {
+        self.lean.is_finite() && self.turn.is_finite() && self.squat.is_finite()
+    }
+}
+
+impl Default for Pose {
+    fn default() -> Self {
+        Pose::UPRIGHT
+    }
 }
 
 #[cfg(test)]
@@ -456,5 +623,165 @@ mod tests {
         // Unflipped would be R at x=0; flipped puts B there.
         assert_eq!(buf[0], BLACK.to_u32());
         assert_eq!(buf[1], RED.to_u32());
+    }
+
+    #[test]
+    fn an_upright_pose_matches_plain_ground_drawing() {
+        // The claim in Pose::UPRIGHT's docs, tested rather than trusted:
+        // if the posed path drifted from the plain one, every car would
+        // shift the moment cornering was wired up, and it would look
+        // like a physics bug.
+        let s = Sprite::new(&["RWR", "BRB", "RRR"], &palette());
+        let render = |posed: bool| {
+            let mut buf = canvas_of(64, 64);
+            {
+                let mut c = Canvas::new(&mut buf, 64, 64);
+                if posed {
+                    s.draw_ground_posed(&mut c, 32.0, 40.0, 3.0, Pose::UPRIGHT, None);
+                } else {
+                    s.draw_ground(&mut c, 32.0, 40.0, 3.0);
+                }
+            }
+            buf
+        };
+        assert_eq!(render(true), render(false), "UPRIGHT must be a no-op");
+    }
+
+    #[test]
+    fn leaning_moves_the_top_and_leaves_the_wheels() {
+        // The property that makes a lean read as banking rather than as
+        // the car sliding sideways.
+        // Wide enough for the shear to be measurable: lean is a
+        // fraction of the sprite's WIDTH, so a 3-wide test sprite leans
+        // by half a pixel and proves nothing.
+        let s = Sprite::new(
+            &["RRRRRRRRRRRR", "RRRRRRRRRRRR", "RRRRRRRRRRRR", "RRRRRRRRRRRR"],
+            &palette(),
+        );
+        let spread_at = |row_from_bottom: usize, lean: f32| {
+            let mut buf = canvas_of(96, 96);
+            {
+                let mut c = Canvas::new(&mut buf, 96, 96);
+                s.draw_ground_posed(&mut c, 48.0, 60.0, 4.0,
+                    Pose { lean, turn: 0.0, squat: 0.0 }, None);
+            }
+            // Centre of mass of the painted pixels in one screen row.
+            let y = 60 - 1 - row_from_bottom * 4;
+            let xs: Vec<usize> = (0..96).filter(|&x| buf[y * 96 + x] != 0).collect();
+            if xs.is_empty() { return None; }
+            Some((xs[0] + xs[xs.len() - 1]) as f32 / 2.0)
+        };
+
+        let base_up = spread_at(0, 0.0).unwrap();
+        let base_lean = spread_at(0, 1.0).unwrap();
+        assert!((base_up - base_lean).abs() < 2.0,
+            "the bottom row must stay put: {base_up} -> {base_lean}");
+
+        let top_up = spread_at(3, 0.0).unwrap();
+        let top_lean = spread_at(3, 1.0).unwrap();
+        assert!(top_lean > top_up + 2.0,
+            "the top row must travel: {top_up} -> {top_lean}");
+
+        // And it must go the other way for a negative lean.
+        let top_left = spread_at(3, -1.0).unwrap();
+        assert!(top_left < top_up - 2.0, "leaning left must move left");
+    }
+
+    #[test]
+    fn turning_narrows_the_silhouette_without_moving_it() {
+        let s = Sprite::new(&["RRRRRRRR"], &palette());
+        let width_of = |turn: f32| {
+            let mut buf = canvas_of(128, 64);
+            {
+                let mut c = Canvas::new(&mut buf, 128, 64);
+                s.draw_ground_posed(&mut c, 64.0, 40.0, 4.0,
+                    Pose { lean: 0.0, turn, squat: 0.0 }, None);
+            }
+            let xs: Vec<usize> = (0..128 * 64).filter(|&i| buf[i] != 0)
+                .map(|i| i % 128).collect();
+            let lo = *xs.iter().min().unwrap() as f32;
+            let hi = *xs.iter().max().unwrap() as f32;
+            (hi - lo, (lo + hi) / 2.0)
+        };
+        let (w0, c0) = width_of(0.0);
+        let (w1, c1) = width_of(1.0);
+        assert!(w1 < w0, "a turned car must be narrower: {w0} -> {w1}");
+        assert!((c0 - c1).abs() < 2.0, "but must not drift: {c0} -> {c1}");
+        // Symmetric: turning either way squashes the same amount.
+        let (wl, _) = width_of(-1.0);
+        assert!((wl - w1).abs() < 2.0, "squash must be symmetric");
+    }
+
+    #[test]
+    fn a_squashed_sprite_stays_solid() {
+        // Spacing pixels closer without widening them draws a comb of
+        // gaps — the sprite looks shredded rather than foreshortened.
+        let s = Sprite::new(&["RRRRRRRRRRRR"], &palette());
+        let mut buf = canvas_of(128, 64);
+        {
+            let mut c = Canvas::new(&mut buf, 128, 64);
+            s.draw_ground_posed(&mut c, 64.0, 40.0, 4.0,
+                Pose { lean: 0.0, turn: 1.0, squat: 0.0 }, None);
+        }
+        let row = 39;
+        let xs: Vec<usize> = (0..128).filter(|&x| buf[row * 128 + x] != 0).collect();
+        let lo = xs[0];
+        let hi = xs[xs.len() - 1];
+        let holes = (lo..=hi).filter(|&x| buf[row * 128 + x] == 0).count();
+        assert_eq!(holes, 0, "squashed sprite has {holes} gaps in its body");
+    }
+
+    #[test]
+    fn squatting_lowers_the_roof_and_keeps_the_wheels_down() {
+        let s = Sprite::new(&["RRR", "RRR", "RRR", "RRR"], &palette());
+        let top_of = |squat: f32| {
+            let mut buf = canvas_of(96, 96);
+            {
+                let mut c = Canvas::new(&mut buf, 96, 96);
+                s.draw_ground_posed(&mut c, 48.0, 60.0, 4.0,
+                    Pose { lean: 0.0, turn: 0.0, squat }, None);
+            }
+            let ys: Vec<usize> = (0..96 * 96).filter(|&i| buf[i] != 0)
+                .map(|i| i / 96).collect();
+            (*ys.iter().min().unwrap(), *ys.iter().max().unwrap())
+        };
+        let (top0, bot0) = top_of(0.0);
+        let (top1, bot1) = top_of(1.0);
+        assert!(top1 > top0, "a squatting car must be shorter");
+        assert!((bot1 as i32 - bot0 as i32).abs() <= 1, "wheels stay on the road");
+    }
+
+    #[test]
+    fn a_pose_is_clamped_and_nan_draws_nothing() {
+        let p = Pose { lean: 5.0, turn: -9.0, squat: 3.0 }.clamped();
+        assert_eq!(p.lean, 1.0);
+        assert_eq!(p.turn, -1.0);
+        assert_eq!(p.squat, 1.0);
+
+        let s = Sprite::new(&["RR", "RR"], &palette());
+        let mut buf = canvas_of(32, 32);
+        {
+            let mut c = Canvas::new(&mut buf, 32, 32);
+            s.draw_ground_posed(&mut c, 16.0, 20.0, 2.0,
+                Pose { lean: f32::NAN, turn: 0.0, squat: 0.0 }, None);
+            s.draw_ground_posed(&mut c, 16.0, 20.0, 2.0,
+                Pose { lean: 0.0, turn: f32::INFINITY, squat: 0.0 }, None);
+        }
+        assert_eq!(painted(&buf), 0, "a bad pose must draw nothing, not garbage");
+    }
+
+    #[test]
+    fn cornering_leans_into_the_turn() {
+        // A car banks INTO the corner it is taking; opposite signs would
+        // read as a car sliding out of one.
+        let right = Pose::cornering(1.0);
+        assert_eq!(right.lean.signum(), right.turn.signum());
+        assert!(right.squat > 0.0, "cornering loads the suspension");
+        let left = Pose::cornering(-1.0);
+        assert_eq!(left.lean.signum(), left.turn.signum());
+        assert!(left.squat > 0.0, "squat is unsigned");
+        assert_eq!(Pose::cornering(0.0), Pose::UPRIGHT);
+        // Overshoot from physics must pin, not shear off screen.
+        assert_eq!(Pose::cornering(4.0).lean, 1.0);
     }
 }

@@ -10,6 +10,7 @@
 //! Scenes:
 //!   sheet   every sprite at several scales, on a neutral ground
 //!   road    the cars sitting on a real pseudo-3D road
+//!   lean    one car swept through the full range of poses
 //!
 //! Never screenshot a window for this — the render is deterministic and
 //! the window is not.
@@ -20,7 +21,7 @@ mod art;
 use std::io::Write;
 
 use art::Art;
-use omarcade_core::{Canvas, Color, Theme};
+use omarcade_core::{Canvas, Color, Pose, Theme};
 
 const W: u32 = 960;
 const H: u32 = 720;
@@ -40,8 +41,9 @@ fn main() {
         match scene {
             "sheet" => draw_sheet(&mut c, &art, &theme),
             "road" => draw_road(&mut c, &art, &theme),
+            "lean" => draw_lean(&mut c, &art, &theme),
             other => {
-                eprintln!("unknown scene {other:?} — try: sheet | road");
+                eprintln!("unknown scene {other:?} — try: sheet | road | lean");
                 std::process::exit(2);
             }
         }
@@ -273,4 +275,41 @@ fn crc32(data: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+/// One car swept through the full cornering range.
+///
+/// The row exists to answer a question a still frame cannot: does the
+/// car stay a car at full lock, or does it shear into a parallelogram?
+/// Poses are generated, not authored, so this is also the check that
+/// the transform degrades gracefully at the extremes rather than only
+/// looking right in the middle.
+fn draw_lean(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
+    c.clear(theme.background);
+
+    let steps = 5;
+    // Scale chosen so the cars do NOT overlap: a leaning sprite is
+    // wider than its grid, and cars running into each other reads as
+    // the transform smearing when it is only the layout being too
+    // tight.
+    let span = W as f32 / steps as f32;
+    let s = (span * 0.78) / art.player.width() as f32;
+
+    let rows: [(&str, f32, fn(f32) -> Pose); 3] = [
+        ("cornering", 220.0, |t| Pose::cornering(t)),
+        ("lean only", 430.0, |t| Pose { lean: t, turn: 0.0, squat: 0.0 }),
+        ("turn only", 640.0, |t| Pose { lean: 0.0, turn: t, squat: 0.0 }),
+    ];
+
+    for (_, ground, pose_of) in rows {
+        // A ground line per row: the wheels must sit ON it at every
+        // pose, which is the property that separates banking from
+        // sliding sideways.
+        c.fill_rect(0, ground as i32, W, 1, theme.muted);
+        for i in 0..steps {
+            let t = i as f32 / (steps - 1) as f32 * 2.0 - 1.0;
+            let x = span * (i as f32 + 0.5);
+            art.player.draw_ground_posed(c, x, ground, s, pose_of(t), None);
+        }
+    }
 }

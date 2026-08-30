@@ -4,16 +4,18 @@ A pseudo-3D driving game in the Pole Position lineage: a scanline road, sprites
 scaled by distance, traffic to overtake. The *technique* is borrowed and openly
 so; none of the art is.
 
-**Status: art and rendering, no game yet.** There is no road model, no physics,
-no input. What exists is the car, the traffic, and the machinery that draws them
-convincingly. This document is the map of that machinery and, more usefully, the
-record of *why* each piece is shaped the way it is.
+**Status: art, rendering and the road model. No game yet.** There is no physics,
+no input, no collision, no scoring. What exists is the car, the traffic, the
+machinery that draws them convincingly, and the track they sit on. This document
+is the map of that machinery and, more usefully, the record of *why* each piece
+is shaped the way it is.
 
 ## The files
 
 | File | What it holds |
 |---|---|
 | `src/art.rs` | The sprite grids as text, the palette recipes, and `Art::load` |
+| `src/road.rs` | The track as segments, and the projection from track-z to screen |
 | `src/main.rs` | Reports the sprite set. Exists so `art.rs`'s tests have a target to run in |
 | `examples/dump_art.rs` | Renders the scenes below to PNG. The whole feedback loop |
 | `examples/bench_sprites.rs` | What the real sprites cost at real resolution |
@@ -25,6 +27,7 @@ record of *why* each piece is shaped the way it is.
 ```sh
 cargo run -p omarcade-racer --example dump_art -- out.png sheet   # every sprite, several scales
 cargo run -p omarcade-racer --example dump_art -- out.png road    # the cars in their real setting
+cargo run -p omarcade-racer --example dump_art -- out.png curve   # a bend, which a straight road cannot prove
 cargo run -p omarcade-racer --example dump_art -- out.png lean    # the pose range, three rows
 cargo run -p omarcade-racer --example dump_art -- out.png roll    # consecutive frames of tread
 cargo run --release -p omarcade-racer --example bench_sprites     # settles any "this is cheap" claim
@@ -155,14 +158,56 @@ Colour-only was chosen instead, and it is what Pole Position did. If it stops
 working once the cars are actually moving, the fix is a simpler rival shape —
 **not** a brighter player.
 
+## The road
+
+`src/road.rs` holds the track and the projection. It draws nothing — it answers
+*where on screen is this point of track?*, and the renderer decides colours.
+
+The direction matters. The old sketch walked screen rows and asked "how far is
+this row?" (`z = 1/t`). That cannot become a game, because curvature is a
+property of *track distance*, not of screen row — the same row is a different
+piece of track next frame. So the model inverts it: segments sit at fixed
+track-z and project *forward* to a screen-y.
+
+```rust
+let road = Road::straight(400);
+let camera = Camera::for_road(&road, 0.85);   // 0.85 = fraction of screen the road fills
+for band in road.visible(&camera, camera_z, x_offset, w, h) { … }
+```
+
+Three things here were got wrong first, found by *looking at the render*, and are
+now pinned by tests that fail without the fix:
+
+- **The camera is derived, not chosen.** The first version picked
+  `height: 1000.0, fov: 0.5·π` and the road covered 110% of the screen — a
+  featureless slab with the rumble strips off both edges. `Camera::for_road`
+  solves the camera from the road's own dimensions and a fill fraction, so it
+  holds at any road width and any resolution.
+- **Curvature is not scaled by distance; steering is.** They are different
+  quantities. A steering offset is a fixed lateral distance and must shrink with
+  distance — real perspective. Accumulated curve already grows with distance by
+  construction, so scaling it again cancels the growth exactly, and *every bend
+  rendered as a straight road*. The unit tests passed the whole time, because
+  they checked the accumulator and never checked the screen.
+- **A curve value is a ratio.** Raw double integration grows as n² — at 100
+  segments a curve of 2.0 accumulated to 10,100, putting the road four million
+  pixels off centre. Normalised over the draw distance, `curve: 1.0` now means
+  "displace the road by half a screen over the full visible distance", which is
+  a number a track author can actually pick.
+
+Bands are drawn by **interpolating across each band per scanline**, not as one
+rect. Near the camera a single segment is ~180px tall (measured), so one rect
+per band is the "banded" approach `bench_road` warned about, and the edges
+stair-step in slabs. The model costs 0.15ms/frame — 0.9% of a 60fps budget, and
+curvature costs nothing extra.
+
+Hills are deliberately not built. `Segment` carries a `pitch` field that stays
+0.0, so adding them later is a change to `project` and not a migration of every
+track authored by then.
+
 ## What is not built
 
-- The road model. Segments with curvature, projection from track-z to screen-y.
-  The projection in `dump_art.rs` is a *sketch* for rendering stills; it needs to
-  become real code in the game, with probes.
 - Physics, input, collision, lap timing, scoring.
-- Hills. Pole Position was flat, and pitch is a harder projection — a deliberate
-  decision, not an omission.
 - A name. "Pole Position" is Namco's; ours is unchosen.
 - Sound.
 

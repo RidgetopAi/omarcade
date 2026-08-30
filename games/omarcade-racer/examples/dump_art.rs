@@ -18,11 +18,14 @@
 
 #[path = "../src/art.rs"]
 mod art;
+#[path = "../src/road.rs"]
+mod road;
 
 use std::io::Write;
 
 use art::Art;
 use omarcade_core::{Canvas, Color, Pose, Theme};
+use road::{Camera, Road, Segment};
 
 const W: u32 = 960;
 const H: u32 = 720;
@@ -41,11 +44,12 @@ fn main() {
         let mut c = Canvas::new(&mut buf, W, H);
         match scene {
             "sheet" => draw_sheet(&mut c, &art, &theme),
-            "road" => draw_road(&mut c, &art, &theme),
+            "road" => draw_road(&mut c, &art, &theme, Road::straight(400)),
+            "curve" => draw_road(&mut c, &art, &theme, bendy_track()),
             "lean" => draw_lean(&mut c, &art, &theme),
             "roll" => draw_roll(&mut c, &art, &theme),
             other => {
-                eprintln!("unknown scene {other:?} — try: sheet | road | lean | roll");
+                eprintln!("unknown scene {other:?} — try: sheet | road | curve | lean | roll");
                 std::process::exit(2);
             }
         }
@@ -96,14 +100,35 @@ fn draw_sheet(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
     art.player.draw_ground(c, 700.0, 220.0, 5.5);
 }
 
+/// A track that bends, so a curve can actually be judged. A straight
+/// road looks identical whether curvature works or not.
+fn bendy_track() -> Road {
+    let mut segs = Vec::new();
+    // Only the first ~15 segments occupy real screen height; past that a
+    // band is under a pixel tall (measured). So the bend has to start
+    // close, or it renders into a sub-pixel sliver and looks straight.
+    segs.extend(std::iter::repeat_n(Segment::STRAIGHT, 4));
+    // Eased in and out, because a curve that starts at full strength
+    // reads as a kink. This is the shape a real track section has.
+    for i in 0..6 {
+        segs.push(Segment::curving(90.0 * (i as f32 / 6.0)));
+    }
+    segs.extend(std::iter::repeat_n(Segment::curving(90.0), 40));
+    for i in 0..6 {
+        segs.push(Segment::curving(90.0 * (1.0 - i as f32 / 6.0)));
+    }
+    segs.extend(std::iter::repeat_n(Segment::STRAIGHT, 244));
+    Road::new(segs, 1000.0, 2200.0)
+}
+
 /// The cars on a real road, which is the only view that says whether
 /// they read at speed.
 ///
-/// The projection here is the real one, not a sketch. Screen row -> a
-/// distance down the track, road width falling as 1/distance. Getting
-/// this backwards makes the road narrow toward the camera, which is the
-/// single most obvious way a pseudo-3D racer looks wrong.
-fn draw_road(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
+/// Every coordinate here now comes from `road.rs` — this function decides
+/// only what colour things are. That is the point of the split: if the
+/// road looks wrong, the projection is wrong, and it is wrong somewhere
+/// that has tests.
+fn draw_road(c: &mut Canvas<'_>, art: &Art, theme: &Theme, road: Road) {
     let sky = theme.background.lerp(theme.blue, 0.30);
     let grass_a = theme.background.lerp(theme.green, 0.40);
     let grass_b = theme.background.lerp(theme.green, 0.28);
@@ -113,95 +138,128 @@ fn draw_road(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
     let rumble_b = theme.foreground.lerp(Color::WHITE, 0.4);
     let line = theme.foreground.lerp(Color::WHITE, 0.5);
 
-    // Sky, with a gradient so the horizon has somewhere to sit.
-    for y in 0..HORIZON {
-        let t = y as f32 / HORIZON as f32;
+    let camera = Camera::default();
+    // A little way in, so the eased curve is ahead of us in the `curve`
+    // scene rather than under the bumper.
+    let camera_z = 3_000.0;
+    let x_offset = 0.0;
+
+    // The horizon is where the projection puts it, not a constant. The
+    // sketch had its own HORIZON and the two could drift apart.
+    let horizon = H as f32 / 2.0;
+
+    for y in 0..horizon as u32 {
+        let t = y as f32 / horizon;
         c.fill_rect(0, y as i32, W, 1, sky.lerp(theme.background, 1.0 - t * 0.7));
     }
+    // Grass fills everything below the horizon; road is painted over it.
+    c.fill_rect(0, horizon as i32, W, H - horizon as u32, grass_b);
 
-    // How far down the track each screen row is.
+    let bands = road.visible(&camera, camera_z, x_offset, W as f32, H as f32);
+
+    // Painted far-to-near, and INTERPOLATED ACROSS EACH BAND rather than
+    // filled as one rect.
     //
-    // Rows just under the horizon are far away; rows at the bottom are
-    // right in front of the camera. Distance therefore falls as the row
-    // descends, and road width — being inversely proportional to
-    // distance — GROWS toward the bottom of the screen.
-    let project = |y: f32| -> (f32, f32, f32) {
-        // 0 at the horizon, 1 at the bottom.
-        let t = ((y - HORIZON as f32) / (H - HORIZON) as f32).clamp(0.0001, 1.0);
-        // Distance to this row. Near the horizon t is tiny, so z is huge.
-        let z = 1.0 / t;
-        // Road half-width in screen pixels: a fixed world width divided
-        // by distance.
-        let half = (1150.0 / z).min(W as f32 * 0.62);
-        // A bend: the further away, the more it has accumulated, which
-        // is what makes a curve read as a curve and not a diagonal.
-        let centre = W as f32 / 2.0 + 0.55 * z * z * 0.5;
-        (centre, half, z)
-    };
-
-    for y in HORIZON..H {
-        let (centre, half, z) = project(y as f32);
-
-        // Bands scroll with DISTANCE, not with screen row — that is what
-        // makes them bunch up toward the horizon the way real ground does
-        // instead of striping the screen evenly.
-        let phase = (z * 2.2) as u32 % 2 == 0;
-
-        c.fill_rect(0, y as i32, W, 1, if phase { grass_a } else { grass_b });
-        c.fill_rect_f(centre - half, y as f32, half * 2.0, 1.0,
-                      if phase { road_a } else { road_b });
-
-        // Rumble strips, red/white alternating, scaled with the road.
-        let rumble = (half * 0.13).max(1.0);
-        let rc = if phase { rumble_a } else { rumble_b };
-        c.fill_rect_f(centre - half, y as f32, rumble, 1.0, rc);
-        c.fill_rect_f(centre + half - rumble, y as f32, rumble, 1.0, rc);
-
-        // Dashed centre line, only on alternate bands.
-        if phase {
-            let lw = (half * 0.035).max(1.0);
-            c.fill_rect_f(centre - lw / 2.0, y as f32, lw, 1.0, line);
+    // Near the camera a single segment is ~180px tall (measured), so one
+    // rect per band is the "banded" approach the road bench warned about:
+    // cheapest, but the edges stair-step in slabs. Walking scanlines
+    // inside the band and lerping the edge across it is the classic
+    // scanline road, and the bench put it at 0.51ms — 3% of a frame.
+    for pair in bands.windows(2).rev() {
+        let (near, far) = (pair[0], pair[1]);
+        let y0 = far.y.max(horizon);
+        let y1 = near.y.min(H as f32);
+        if y1 <= y0 {
+            continue;
         }
 
-        // Distance haze.
-        let t = (y - HORIZON) as f32 / (H - HORIZON) as f32;
-        let a = ((1.0 - t).powf(2.2) * 190.0) as u8;
-        if a > 2 {
-            c.fill_rect(0, y as i32, W, 1, sky.with_alpha(a));
+        let span = near.y - far.y;
+        let mut y = y0;
+        while y < y1 {
+            let h = (1.0f32).min(y1 - y);
+            // Where in the band this scanline sits: 0 at the far edge,
+            // 1 at the near edge.
+            let t = if span > 0.001 { ((y - far.y) / span).clamp(0.0, 1.0) } else { 1.0 };
+            let cx = far.x + (near.x - far.x) * t;
+            let hw = far.half_width + (near.half_width - far.half_width) * t;
+            let dist = far.distance + (near.distance - far.distance) * t;
+
+            // Bands alternate by TRACK position, not by screen row — that
+            // is what makes them bunch toward the horizon like real ground
+            // instead of striping the screen evenly.
+            let seg = (dist + camera_z) / road.segment_length();
+            let phase = (seg as u32) % 2 == 0;
+
+            c.fill_rect_f(0.0, y, W as f32, h, if phase { grass_a } else { grass_b });
+            c.fill_rect_f(cx - hw, y, hw * 2.0, h, if phase { road_a } else { road_b });
+
+            // Rumble strips, as a fraction of the road — a ratio, so they
+            // stay proportionate at every distance.
+            let rumble = (hw * 0.13).max(0.7);
+            let rc = if phase { rumble_a } else { rumble_b };
+            c.fill_rect_f(cx - hw, y, rumble, h, rc);
+            c.fill_rect_f(cx + hw - rumble, y, rumble, h, rc);
+
+            if phase {
+                let lw = (hw * 0.035).max(0.5);
+                c.fill_rect_f(cx - lw / 2.0, y, lw, h, line);
+            }
+
+            // Distance haze, keyed off real distance rather than screen row.
+            let ht = (dist / 60_000.0).clamp(0.0, 1.0);
+            let a = (ht.powf(0.9) * 210.0) as u8;
+            if a > 2 {
+                c.fill_rect_f(0.0, y, W as f32, h, sky.with_alpha(a));
+            }
+            y += h;
         }
     }
 
-    // Rivals, far to near, hazed by distance so they belong to the scene.
-    for (i, y) in [352.0f32, 396.0, 470.0, 580.0].iter().enumerate() {
-        let (centre, half, _) = project(*y);
+    // Roadside posts, placed at track positions so they stream past
+    // rather than sitting in an even ladder.
+    let first_post = ((camera_z / 2000.0).floor() + 1.0) * 2000.0;
+    for i in 0..30 {
+        let z = first_post + i as f32 * 2000.0;
+        let Some(p) = road.project(&camera, camera_z, x_offset, z, W as f32, H as f32)
+        else { continue };
+        if p.y <= horizon + 1.0 {
+            break;
+        }
+        // Scale follows the road, so a post is the same real size always.
+        let s = p.half_width / 105.0 * 1.5;
+        let haze = (p.distance / 60_000.0).clamp(0.0, 1.0) * 0.8;
+        for side in [-1.0f32, 1.0] {
+            let px = p.x + side * p.half_width * 1.28;
+            let w = art.post.width() as f32 * s;
+            let h = art.post.height() as f32 * s;
+            art.post.draw_tinted(c, px - w / 2.0, p.y - h, s, Some((sky, haze)));
+        }
+    }
+
+    // Rivals, placed by track position and lane, far-to-near so nearer
+    // cars occlude further ones.
+    let rivals: [(f32, f32); 4] = [
+        (camera_z + 26_000.0, -0.55),
+        (camera_z + 15_000.0, 0.50),
+        (camera_z + 8_000.0, -0.25),
+        (camera_z + 4_200.0, 0.42),
+    ];
+    for (i, (z, lane)) in rivals.iter().enumerate().rev() {
+        let Some(p) = road.project(&camera, camera_z, x_offset, *z, W as f32, H as f32)
+        else { continue };
         // Sprite scale follows road width, so a car always covers the
-        // same fraction of the lane.
-        let s = half / 105.0;
-        let lane = (i as f32 - 1.5) * half * 0.42;
-        let t = (*y - HORIZON as f32) / (H - HORIZON) as f32;
-        let haze = ((1.0 - t) * 0.7).clamp(0.0, 1.0);
-        // A different livery per slot — the point of the traffic being
-        // a set rather than one sprite.
+        // same fraction of the lane at any distance.
+        let s = p.half_width / 105.0;
+        let haze = (p.distance / 60_000.0).clamp(0.0, 1.0) * 0.8;
         let rival = art.rival(i);
         let w = rival.width() as f32 * s;
         let h = rival.height() as f32 * s;
-        rival.draw_tinted(c, centre + lane - w / 2.0, *y - h, s, Some((sky, haze)));
+        rival.draw_tinted(c, p.x + lane * p.half_width - w / 2.0, p.y - h, s,
+                          Some((sky, haze)));
     }
 
-    // Roadside posts down both edges, spaced by distance so they stream
-    // past rather than sitting in an even ladder.
-    for i in 1..14 {
-        let z = i as f32 * 0.85;
-        let t = 1.0 / z;
-        if t > 1.0 { continue; }
-        let y = HORIZON as f32 + t * (H - HORIZON) as f32;
-        let (centre, half, _) = project(y);
-        let s = (half / 105.0) * 1.5;
-        art.post.draw_ground(c, centre - half * 1.28, y, s);
-        art.post.draw_ground(c, centre + half * 1.28, y, s);
-    }
-
-    // The player, big and low, where the camera actually sits.
+    // The player, where the camera actually sits: dead centre, at the
+    // bottom, at the scale the road has right under the bumper.
     art.player.draw_ground(c, W as f32 / 2.0, 706.0, 7.0);
 }
 

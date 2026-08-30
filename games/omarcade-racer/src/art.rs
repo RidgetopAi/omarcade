@@ -39,19 +39,19 @@ pub const PLAYER_CAR: &[&str] = &[
     ".....WWWWWWWWWWWWWWWWWWWWWW.....",
     ".....WDDDDDDDDDDDDDDDDDDDDW.....",
     "..........DD........DD..........",
-    "...tt......BBBBBBBBBB......tt...",
-    "..thht....BBGGGGGGGGBB....thht..",
-    "..thht...BBBBBBBBBBBBBB...thht..",
-    "...tt...BBBBBAAAAAABBBBB...tt...",
-    "......BBBBBBBAAAAAABBBBBBB......",
-    "....BBBBBBBBBBBBBBBBBBBBBBBB....",
-    "...BBDDDDDDDDDDDDDDDDDDDDDDBB...",
-    ".TTTBDDDDLLDDDDDDDDLLDDDDDBTTT..",
-    "THHHTDDDDLLDDDDDDDDLLDDDDDTHHHT.",
+    "...........BBBBBBBBBB...........",
+    "..........BBGGGGGGGGBB..........",
+    "..thh....BBBBBBBBBBBBBB....hht..",
+    ".ththt..BBBBBAAAAAABBBBB..ththt.",
+    ".ththtBBBBBBBAAAAAABBBBBBBththt.",
+    "..tht.BBBBBBBBBBBBBBBBBBBB.tht..",
+    "..TTBBDDDDDDDDDDDDDDDDDDDDBBTT..",
+    "THHHTBDDDDLLDDDDDDLLDDDDDBTHHHT.",
+    "THHHTDDDDDLLDDDDDDLLDDDDDDTHHHT.",
     "THHHTDDDDDDDDDDDDDDDDDDDDDTHHHT.",
-    "THHHTTDDDDDDDDDDDDDDDDDDDTTHHHT.",
-    "TTTTTT..................TTTTTTT.",
-    ".TTTT......................TTTT.",
+    "TTTTTTDDDDDDDDDDDDDDDDDDDTTTTTT.",
+    ".TTTT....................TTTT...",
+    "................................",
     "................................",
     "................................",
 ];
@@ -67,19 +67,19 @@ pub const RIVAL_CAR: &[&str] = &[
     "................................",
     "......WWWWWWWWWWWWWWWWWWWWWW....",
     "...........DD......DD...........",
-    "...tt.......BBBBBBBB.......tt...",
-    "..thht.....BBGGGGGGBB.....thht..",
-    "..thht....BBBBBBBBBBBB....thht..",
-    "...tt....BBBBBBBBBBBBBB....tt...",
-    "......BBBBBBBBBBBBBBBBBBBB......",
-    "....BBBBBBBBBBBBBBBBBBBBBBBB....",
-    "...BBDDDDDDDDDDDDDDDDDDDDDDBB...",
-    ".TTTBDDDDLLDDDDDDDDLLDDDDDBTTT..",
-    "THHHTDDDDLLDDDDDDDDLLDDDDDTHHHT.",
+    "............BBBBBBBB............",
+    "...........BBGGGGGGBB...........",
+    "..thh.....BBBBBBBBBBBB.....hht..",
+    ".ththt...BBBBBBBBBBBBBB...ththt.",
+    ".ththtBBBBBBBBBBBBBBBBBBBBththt.",
+    "..tht.BBBBBBBBBBBBBBBBBBBB.tht..",
+    "..TTBBDDDDDDDDDDDDDDDDDDDDBBTT..",
+    "THHHTBDDDDLLDDDDDDLLDDDDDBTHHHT.",
+    "THHHTDDDDDLLDDDDDDLLDDDDDDTHHHT.",
     "THHHTDDDDDDDDDDDDDDDDDDDDDTHHHT.",
-    "THHHTTDDDDDDDDDDDDDDDDDDDTTHHHT.",
-    "TTTTTT..................TTTTTTT.",
-    ".TTTT......................TTTT.",
+    "TTTTTTDDDDDDDDDDDDDDDDDDDTTTTTT.",
+    ".TTTT....................TTTT...",
+    "................................",
     "................................",
     "................................",
 ];
@@ -116,7 +116,10 @@ pub fn car_palette(theme: &Theme, body: Color, accent: Color) -> Vec<PaletteEntr
     // tinted glass made a murky band that looked like a mistake.
     let glass = theme.darker_background.lerp(body, 0.15);
     let tyre = theme.darker_background.lerp(Color::BLACK, 0.35);
-    let tyre_top = tyre.lerp(theme.foreground, 0.22);
+    // A narrow catch-light on the top of the tyre, not a broad grey
+    // slab. Too much of it and the wheels stop reading as round rubber
+    // and start reading as painted panels.
+    let tyre_top = tyre.lerp(theme.foreground, 0.14);
 
     vec![
         ('B', body),
@@ -129,7 +132,7 @@ pub fn car_palette(theme: &Theme, body: Color, accent: Color) -> Vec<PaletteEntr
         // read as forward of the rears rather than as a second pair of
         // the same thing.
         ('t', tyre.lerp(theme.darker_background, 0.30)),
-        ('h', tyre_top.lerp(theme.darker_background, 0.30)),
+        ('h', tyre_top.lerp(theme.darker_background, 0.45)),
         ('L', theme.red.lerp(Color::rgb(255, 90, 70), 0.5)),
         ('W', shadow.lerp(theme.foreground, 0.18)),
     ]

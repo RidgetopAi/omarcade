@@ -489,6 +489,9 @@ let bg = BACKGROUNDS[0][1];
 let grid = Array.from({length: ROWS}, () => Array(COLS).fill('.'));
 let cur = 'B';
 let editing = null;          // which palette letter has the editor open
+/// Names the most recent load could not resolve. Read by the Load
+/// handler so a partial paste explains itself rather than going magenta.
+let LAST_UNRESOLVED = [];
 let painting = false, erasing = false;
 const undoStack = [];
 
@@ -1099,8 +1102,23 @@ $('load').onclick = () => {
     .filter(c => c !== '.' && !PALETTE.some(p => p.ch === c));
   let msg = `loaded ${ROWS} rows of ${COLS}`;
   if (learned) msg += `, ${learned} palette entr${learned === 1 ? 'y' : 'ies'}`;
-  status.innerHTML = unknown.length
-    ? `${msg} &mdash; <span class="warn">no palette entry for ${unknown.join(', ')}</span>`
+
+  const notes = [];
+  if (unknown.length) {
+    notes.push(`no palette entry for ${unknown.join(', ')}`);
+  }
+  // A paste that carried the vec! block but not the `let` lines above it
+  // is the common half-copy. Say which names went missing and what to do
+  // about it, rather than leaving those tones magenta.
+  if (LAST_UNRESOLVED.length) {
+    notes.push(`could not resolve ${LAST_UNRESOLVED.join(', ')} &mdash; `
+      + 'paste the whole block, including the <code>let</code> lines');
+  }
+  if (!learned && /vec!\s*\[/.test(text)) {
+    notes.push('palette block found but unreadable &mdash; kept the current palette');
+  }
+  status.innerHTML = notes.length
+    ? `${msg} &mdash; <span class="warn">${notes.join('; ')}</span>`
     : msg;
 
   refreshColors();
@@ -1110,7 +1128,13 @@ $('load').onclick = () => {
 /// because the tool's output is the input next session — anything it can
 /// write and not read back has to be rebuilt by hand.
 function loadPaletteFrom(text) {
-  const fn = text.match(/fn car_palette[\s\S]*?vec!\[([\s\S]*?)\]/);
+  LAST_UNRESOLVED = [];
+  // The whole function when it is there, but a bare `vec![...]` block
+  // too: pasting just the entry list is an easy thing to do by hand, and
+  // silently keeping the old palette while the grid changed underneath
+  // is worse than reading a partial paste for what it does contain.
+  const fn = text.match(/fn car_palette[\s\S]*?vec!\[([\s\S]*?)\n\s*\]/)
+          || text.match(/vec!\[([\s\S]*?)\n\s*\]/);
   if (!fn) return 0;
 
   // `let name = expr;` bindings, so a letter deriving from another can
@@ -1161,6 +1185,16 @@ function loadPaletteFrom(text) {
   };
 
   const next = [{ch:'.', name:'erase'}];
+  // Names the paste referred to but did not define — almost always a
+  // partial copy that left the `let` bindings behind. Collected rather
+  // than swallowed: a tone quietly turning magenta reads as a bug in the
+  // tool, when the fix is to paste the whole block.
+  const unresolved = new Set();
+  const note = tok => {
+    const t = String(tok).trim().replace(/\.lerp\([\s\S]*$/, '');
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(t)) unresolved.add(t);
+  };
+
   let count = 0;
   for (const [, ch, rawExpr] of entries) {
     let expr = rawExpr.trim();
@@ -1174,12 +1208,16 @@ function loadPaletteFrom(text) {
         rec.base = typeof b === 'object' ? pinCustom(b, customs) : b;
         rec.mix  = typeof m === 'object' ? pinCustom(m, customs) : m;
         rec.amount = Number(lerp[3]);
-      } else { rec.hex = '#ff00ff'; }
+      } else {
+        if (!b) note(lerp[1]);
+        if (!m) note(lerp[2]);
+        rec.hex = '#ff00ff';
+      }
     } else {
       const s = toSource(expr);
       if (s && typeof s === 'object') rec.hex = s.literal;
       else if (s) rec.base = s;
-      else rec.hex = '#ff00ff';
+      else { note(expr); rec.hex = '#ff00ff'; }
     }
     next.push(rec);
     count++;
@@ -1190,6 +1228,7 @@ function loadPaletteFrom(text) {
   rebuildVarNames();
   if (!PALETTE.some(p => p.ch === cur)) cur = PALETTE[1] ? PALETTE[1].ch : '.';
   editing = null;
+  LAST_UNRESOLVED = [...unresolved];
   return count;
 }
 

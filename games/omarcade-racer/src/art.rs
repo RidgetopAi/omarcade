@@ -83,53 +83,6 @@ pub const PLAYER_CAR: &[&str] = &[
     "................................................................",
 ];
 
-/// An opponent car. Same chassis, plainer read.
-///
-/// Deliberately a simpler silhouette than the player's: at speed the
-/// player needs to tell "that is me" from "that is traffic" instantly,
-/// and shape does that faster than colour.
-pub const RIVAL_CAR: &[&str] = &[
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    "................................................................",
-    ".......................WWWWWWWWWWWWWWWWWW.......................",
-    ".......................WDDDDDDDDDDDDDDDDW.......................",
-    "..........................DD........DD..........................",
-    "..........................DD........DD..........................",
-    "....................SSSSSSSSSSSSSSSSSSSSSSSS....................",
-    "...................SSBBBBBBBBBBBBBBBBBBBBBBSS...................",
-    "...............th..SBBGGGGGGGGGGGGGGGGGGGGBBS..ht...............",
-    "..............thht.SBBGGGGGGGGGGGGGGGGGGGGBBS.thht..............",
-    "..............thht.SBBBBBBBBBBBBBBBBBBBBBBBBS.thht..............",
-    "...............th..SBBBBBBBBBBBBBBBBBBBBBBBBS..ht...............",
-    ".................SSBBBBBBBBBBBBBBBBBBBBBBBBBBSS.................",
-    "...............SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS...............",
-    ".............SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS.............",
-    "............SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS............",
-    "............SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS............",
-    "............SBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBS............",
-    "..........TTSBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBSTT..........",
-    ".........THHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHT.........",
-    "........THHHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHHT........",
-    "........THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT........",
-    "........THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT........",
-    "........THHHTTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTTHHHT........",
-    "........TTTTTT....................................TTTTTT........",
-    ".........TTTT......................................TTTT.........",
-    "................................................................",
-    "................................................................",
-];
 
 /// A roadside marker post — the cheapest thing that sells speed.
 ///
@@ -215,20 +168,84 @@ pub fn post_palette(theme: &Theme) -> Vec<PaletteEntry> {
 /// immediate failure rather than a hole in a screenshot.
 pub struct Art {
     pub player: Sprite,
-    pub rival: Sprite,
+    /// The traffic. Same chassis as the player, different liveries.
+    pub rivals: Vec<Sprite>,
     pub post: Sprite,
+}
+
+/// The player's livery. The one car on the road that is fully saturated.
+pub const PLAYER_BODY: Color = Color::rgb(214, 78, 62);
+pub const PLAYER_ACCENT: Color = Color::rgb(240, 214, 120);
+
+/// Rival liveries, before muting.
+///
+/// Written saturated and dulled at load, rather than hand-picking dull
+/// values: [`mute`] pulls each toward the theme's own muted tone, so the
+/// traffic stays theme-reactive and stays *behind* the player's red on
+/// any palette. Hand-picked greys would be right on Everforest and
+/// muddy or garish everywhere else.
+const RIVAL_LIVERIES: &[(Color, Color)] = &[
+    (Color::rgb(74, 128, 200), Color::rgb(210, 220, 235)),  // blue
+    (Color::rgb(96, 160, 96), Color::rgb(214, 228, 200)),   // green
+    (Color::rgb(206, 168, 72), Color::rgb(240, 232, 200)),  // ochre
+    (Color::rgb(150, 110, 190), Color::rgb(226, 214, 240)), // violet
+    (Color::rgb(120, 132, 148), Color::rgb(214, 220, 228)), // gunmetal
+];
+
+/// How far a rival's livery is pulled toward the theme's muted tone.
+///
+/// The player has to be findable at a glance in a field of traffic, and
+/// on a screen this size that read is carried by SATURATION long before
+/// hue — a bright blue rival and a bright red player are equally loud,
+/// so the eye has to compare shapes to find itself. Dulling the field
+/// makes the player pop without changing a single pixel of the player's
+/// own art.
+///
+/// 0.42 by measurement, not taste: below about 0.3 the brighter rivals
+/// still competed with the player in the road scene, and past about 0.55
+/// the traffic started sinking into the asphalt and stopped reading as
+/// cars at distance.
+const RIVAL_MUTE: f32 = 0.42;
+
+/// Pull a colour toward the theme's muted tone.
+fn mute(theme: &Theme, c: Color, amount: f32) -> Color {
+    c.lerp(theme.muted, amount)
 }
 
 impl Art {
     pub fn load(theme: &Theme) -> Art {
-        let player_pal = car_palette(theme, Color::rgb(214, 78, 62), Color::rgb(240, 214, 120));
-        let rival_pal = car_palette(theme, Color::rgb(74, 128, 200), Color::rgb(210, 220, 235));
+        let player_pal = car_palette(theme, PLAYER_BODY, PLAYER_ACCENT);
+
+        let rivals = RIVAL_LIVERIES
+            .iter()
+            .map(|&(body, accent)| {
+                let pal = car_palette(
+                    theme,
+                    mute(theme, body, RIVAL_MUTE),
+                    // The accent is dulled harder. It is a small bright
+                    // area, and small bright areas are exactly what the
+                    // eye locks onto when hunting for its own car.
+                    mute(theme, accent, RIVAL_MUTE + 0.18),
+                );
+                Sprite::new(PLAYER_CAR, &pal)
+            })
+            .collect();
 
         Art {
             player: Sprite::new(PLAYER_CAR, &player_pal),
-            rival: Sprite::new(RIVAL_CAR, &rival_pal),
+            rivals,
             post: Sprite::new(MARKER_POST, &post_palette(theme)),
         }
+    }
+
+    /// The rival livery for a given traffic slot.
+    ///
+    /// Wraps, so callers can index by lane, by car id, or by anything
+    /// else without bounds-checking. Deterministic on purpose: the same
+    /// car keeps the same colour from frame to frame, which a random
+    /// pick per frame would not.
+    pub fn rival(&self, n: usize) -> &Sprite {
+        &self.rivals[n % self.rivals.len()]
     }
 }
 
@@ -249,8 +266,12 @@ mod tests {
         // at 1.34ms for a full field — authoring effort was.
         assert_eq!(art.player.width(), 64);
         assert_eq!(art.player.height(), 40);
-        assert_eq!(art.rival.width(), 64);
         assert!(art.player.ink() > 400, "the car should have real substance");
+        assert!(!art.rivals.is_empty(), "there has to be traffic");
+        for r in &art.rivals {
+            assert_eq!(r.width(), 64);
+            assert_eq!(r.height(), 40);
+        }
     }
 
     #[test]
@@ -258,8 +279,63 @@ mod tests {
         // They share a road and a scale factor; different dimensions
         // would make one sit wrong relative to the other.
         let art = Art::load(&Theme::fallback());
-        assert_eq!(art.player.width(), art.rival.width());
-        assert_eq!(art.player.height(), art.rival.height());
+        for r in &art.rivals {
+            assert_eq!(art.player.width(), r.width());
+            assert_eq!(art.player.height(), r.height());
+            assert_eq!(art.player.ink(), r.ink(), "same chassis, so same ink");
+        }
+    }
+
+    #[test]
+    fn asking_for_a_rival_past_the_end_wraps() {
+        // Callers index by lane or car id without bounds-checking.
+        let art = Art::load(&Theme::fallback());
+        let n = art.rivals.len();
+        assert_eq!(art.rival(0), art.rival(n));
+        assert_eq!(art.rival(1), art.rival(n + 1));
+    }
+
+    #[test]
+    fn every_rival_has_its_own_livery() {
+        // Muting must not collapse the field into one colour — five
+        // identical cars would be a bug that looks like a design choice.
+        let art = Art::load(&Theme::fallback());
+        let bodies: Vec<Color> = RIVAL_LIVERIES
+            .iter()
+            .map(|&(b, _)| mute(&Theme::fallback(), b, RIVAL_MUTE))
+            .collect();
+        for (i, a) in bodies.iter().enumerate() {
+            for b in &bodies[i + 1..] {
+                assert_ne!(a, b, "two rivals share a livery");
+            }
+        }
+        assert_eq!(art.rivals.len(), RIVAL_LIVERIES.len());
+    }
+
+    /// The point of muting, stated as arithmetic rather than as a
+    /// comment: every rival must be less saturated than the player, or
+    /// the player cannot be found at a glance in traffic.
+    #[test]
+    fn the_player_is_the_most_saturated_car_on_the_road() {
+        let theme = Theme::fallback();
+        // Chroma as max-channel minus min-channel: crude, but it is
+        // exactly the "how colourful is this" the eye is doing here, and
+        // it needs no colour-space conversion.
+        let chroma = |c: Color| {
+            let hi = c.r.max(c.g).max(c.b) as i32;
+            let lo = c.r.min(c.g).min(c.b) as i32;
+            hi - lo
+        };
+        let player = chroma(PLAYER_BODY);
+        for &(body, _) in RIVAL_LIVERIES {
+            let muted = mute(&theme, body, RIVAL_MUTE);
+            assert!(
+                chroma(muted) < player,
+                "rival {body:?} -> {muted:?} is not duller than the player",
+            );
+            // And muting must actually do something to each one.
+            assert!(chroma(muted) < chroma(body), "muting did nothing to {body:?}");
+        }
     }
 
     #[test]

@@ -40,7 +40,7 @@ fn main() {
         art.player.width(),
         art.player.height(),
         art.player.ink(),
-        art.rival.ink()
+        art.rival(0).ink()
     );
 
     time("1 player car, near (scale 6)", iters, || {
@@ -52,7 +52,7 @@ fn main() {
         let mut c = Canvas::new(&mut buf, W, H);
         for i in 0..8 {
             let s = 0.6 + i as f32 * 0.45;
-            art.rival.draw_ground(&mut c, 120.0 + i as f32 * 95.0, 300.0 + i as f32 * 45.0, s);
+            art.rival(i).draw_ground(&mut c, 120.0 + i as f32 * 95.0, 300.0 + i as f32 * 45.0, s);
         }
     });
 
@@ -64,7 +64,7 @@ fn main() {
         }
         for i in 0..8 {
             let s = 0.6 + i as f32 * 0.45;
-            art.rival.draw_ground(&mut c, 120.0 + i as f32 * 95.0, 300.0 + i as f32 * 45.0, s);
+            art.rival(i).draw_ground(&mut c, 120.0 + i as f32 * 95.0, 300.0 + i as f32 * 45.0, s);
         }
         art.player.draw_ground(&mut c, 480.0, 700.0, 6.0);
     });

@@ -24,7 +24,7 @@ fn main() {
     println!("sprites loaded:");
     for (name, s) in [
         ("player", &art.player),
-        ("rival", &art.rival),
+        ("rival", art.rival(0)),
         ("post", &art.post),
     ] {
         println!(

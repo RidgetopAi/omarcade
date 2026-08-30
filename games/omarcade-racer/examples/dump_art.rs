@@ -73,12 +73,13 @@ fn draw_sheet(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
         x += 34.0 * s + 26.0;
     }
 
-    // Rivals underneath, same scales, so the two silhouettes can be
-    // compared directly at matched size.
+    // Every rival livery underneath at one size, so the field can be
+    // judged as a SET: they have to be distinguishable from each other
+    // and all duller than the player above them.
     let mut x = 90.0;
-    for s in scales {
-        art.rival.draw_ground(c, x, 640.0, s);
-        x += 34.0 * s + 26.0;
+    for (i, _) in art.rivals.iter().enumerate() {
+        art.rival(i).draw_ground(c, x, 640.0, 2.6);
+        x += 34.0 * 2.6 + 26.0;
     }
 
     // Marker posts at the far right.
@@ -175,9 +176,12 @@ fn draw_road(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
         let lane = (i as f32 - 1.5) * half * 0.42;
         let t = (*y - HORIZON as f32) / (H - HORIZON) as f32;
         let haze = ((1.0 - t) * 0.7).clamp(0.0, 1.0);
-        let w = art.rival.width() as f32 * s;
-        let h = art.rival.height() as f32 * s;
-        art.rival.draw_tinted(c, centre + lane - w / 2.0, *y - h, s, Some((sky, haze)));
+        // A different livery per slot — the point of the traffic being
+        // a set rather than one sprite.
+        let rival = art.rival(i);
+        let w = rival.width() as f32 * s;
+        let h = rival.height() as f32 * s;
+        rival.draw_tinted(c, centre + lane - w / 2.0, *y - h, s, Some((sky, haze)));
     }
 
     // Roadside posts down both edges, spaced by distance so they stream

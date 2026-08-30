@@ -12,3 +12,10 @@
 *.swp
 *~
 .DS_Store
+
+# dump_art output. It is a 2MB render artifact regenerated on every run,
+# and it was committed by accident once (f6b89db) — it re-dirtied the
+# tree on every feedback loop. Write renders wherever you like; they do
+# not belong in the repo.
+*.png
+!docs/**/*.png

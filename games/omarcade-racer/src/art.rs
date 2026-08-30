@@ -22,48 +22,65 @@ use omarcade_core::{Color, Theme};
 
 /// The player's car, seen from behind.
 ///
-/// 48 wide by 30 tall. Read the silhouette top to bottom: rear wing,
-/// engine cover and roll hoop, the body with side pods, then the four
-/// tyres with the rear pair widest. Open-wheel, so the tyres stand
-/// clear of the body — that is what makes the shape read as a race car
-/// at 8 pixels tall from a distance.
+/// 64 wide by 40 tall. A closed-cockpit GT rather than an open-wheeler:
+/// roof and rear glass at the top, a full-width wing on two posts, then
+/// the tail panel with lights, and a diffuser under it between covered
+/// rear wheels.
+///
+/// The wing is the part that took the longest to get right. It works
+/// here because there is SKY UNDER IT and the roof line stops well
+/// above — body rows immediately under a bar read as a roof, whatever
+/// the gap. See the session-6 notes.
 ///
 /// Legend:
 ///   B body (primary livery)   D body shadow / lower panels
-///   A accent stripe           G glass / intake
+///   A accent stripe           G glass / rear window
+///   S lit upper surface       C mid tone, canopy surround + fins
 ///   T tyre                    H tyre highlight (top curve)
 ///   L brake light             W wing
+///   E vent band under the wing
+///   F near-black, the diffuser recesses
 pub const PLAYER_CAR: &[&str] = &[
-    "................................................",
-    "................................................",
-    "................................................",
-    "..............WWWWWWWWWWWWWWWWWWWW..............",
-    "..............WSSSSSSSSSSSSSSSSSSW..............",
-    "..............WDDDDDDDDDDDDDDDDDDW..............",
-    "..................DD........DD..................",
-    "..................DD........DD..................",
-    "............SSSSSSSSSSSSSSSSSSSSSSSS............",
-    "...........SSBBBBBBBBBBBBBBBBBBBBBBSS...........",
-    ".......th..SBBGGGGGGGGGGGGGGGGGGGGBBS..ht.......",
-    "......thht.SBBGGGGGGGGGGGGGGGGGGGGBBS.thht......",
-    "......thht.SBBBBBBBBBBBBBBBBBBBBBBBBS.thht......",
-    ".......th..SBBBBBBBBBBBBBBBBBBBBBBBBS..ht.......",
-    ".........SSBBBBBBBAAAAAAAAAAAABBBBBBBSS.........",
-    ".......SSBBBBBBBBBAAAAAAAAAAAABBBBBBBBBSS.......",
-    ".....SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS.....",
-    "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
-    "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
-    "....SBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBS....",
-    "..TTSBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBSTT..",
-    ".THHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHT.",
-    "THHHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHHT",
-    "THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT",
-    "THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT",
-    "THHHTTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTTHHHT",
-    "TTTTTT....................................TTTTTT",
-    ".TTTT......................................TTTT.",
-    "................................................",
-    "................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "............................SSSSSSSS............................",
+    ".........................SSSBBBBBBBBSSS.........................",
+    ".......................SBBBCCCCCCCCCCBBBS.......................",
+    "......................SBBCCGGGGGGGGGGCCBBS......................",
+    "..............L......SBBCGGGGGGGGGGGGGGCBBS......L..............",
+    "..............BSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSB..............",
+    "..............BWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWB..............",
+    "..............BWWWWWWDDWWWWWWWWAAWWWWWWWWDDWWWWWWB..............",
+    "..............BEEEEEETTEEEEEEEEEEEEEEEEEETTEEEEEEB..............",
+    "...................SBTTBBBDDDDDDDDDDDDBBBTTBS...................",
+    "................SSBBDTTDBBBDDDDDDDDDDBBBDTTDBBSS................",
+    "...............BSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSB...............",
+    "..............BSBBBFFFFFFFFFFFFFFFFFFFFFFFFFFBBBSB..............",
+    "...........TTTTTBBFFFFFFFDDDDDSSSSDDDDDFFFFFFFBBTTTTT...........",
+    "..........THHTHTBBFSSSFSSFDDDDLLLLDDDDFSSFSSSFBBTHTHHT..........",
+    "..........TTTTTTTBFLLLFLLFFDDDDDDDDDDFFLLFLLLFBTTTTTTT..........",
+    "..........THHTHTHBFFFFFFFFFFFFFFFFFFFFFFFFFFFFBHTHTHHT..........",
+    "..........TTTTTTTBDDDCHHHHHHCCCHHCCCHHHHHHCDDDBTTTTTTT..........",
+    "..........THHTHTHTDCCCFFCFHCFFFCCFFFCHFCFFCCCDTHTHTHHT..........",
+    "..........TTTTTTTTTCCCHFCFHCFFFCCFFFCHFCFHCCCTTTTTTTTT..........",
+    "..........THHTHTHTFFFFFFCFFFCCCHHCCCFFFCFFFFFFTHTHTHHT..........",
+    "...........TTTTTTT......FF............FF......TTTTTTT...........",
+    "................................................................",
 ];
 
 /// An opponent car. Same chassis, plainer read.
@@ -72,36 +89,46 @@ pub const PLAYER_CAR: &[&str] = &[
 /// player needs to tell "that is me" from "that is traffic" instantly,
 /// and shape does that faster than colour.
 pub const RIVAL_CAR: &[&str] = &[
-    "................................................",
-    "................................................",
-    "................................................",
-    "................................................",
-    "...............WWWWWWWWWWWWWWWWWW...............",
-    "...............WDDDDDDDDDDDDDDDDW...............",
-    "..................DD........DD..................",
-    "..................DD........DD..................",
-    "............SSSSSSSSSSSSSSSSSSSSSSSS............",
-    "...........SSBBBBBBBBBBBBBBBBBBBBBBSS...........",
-    ".......th..SBBGGGGGGGGGGGGGGGGGGGGBBS..ht.......",
-    "......thht.SBBGGGGGGGGGGGGGGGGGGGGBBS.thht......",
-    "......thht.SBBBBBBBBBBBBBBBBBBBBBBBBS.thht......",
-    ".......th..SBBBBBBBBBBBBBBBBBBBBBBBBS..ht.......",
-    ".........SSBBBBBBBBBBBBBBBBBBBBBBBBBBSS.........",
-    ".......SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS.......",
-    ".....SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS.....",
-    "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
-    "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
-    "....SBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBS....",
-    "..TTSBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBSTT..",
-    ".THHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHT.",
-    "THHHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHHT",
-    "THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT",
-    "THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT",
-    "THHHTTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTTHHHT",
-    "TTTTTT....................................TTTTTT",
-    ".TTTT......................................TTTT.",
-    "................................................",
-    "................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    "................................................................",
+    ".......................WWWWWWWWWWWWWWWWWW.......................",
+    ".......................WDDDDDDDDDDDDDDDDW.......................",
+    "..........................DD........DD..........................",
+    "..........................DD........DD..........................",
+    "....................SSSSSSSSSSSSSSSSSSSSSSSS....................",
+    "...................SSBBBBBBBBBBBBBBBBBBBBBBSS...................",
+    "...............th..SBBGGGGGGGGGGGGGGGGGGGGBBS..ht...............",
+    "..............thht.SBBGGGGGGGGGGGGGGGGGGGGBBS.thht..............",
+    "..............thht.SBBBBBBBBBBBBBBBBBBBBBBBBS.thht..............",
+    "...............th..SBBBBBBBBBBBBBBBBBBBBBBBBS..ht...............",
+    ".................SSBBBBBBBBBBBBBBBBBBBBBBBBBBSS.................",
+    "...............SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS...............",
+    ".............SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS.............",
+    "............SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS............",
+    "............SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS............",
+    "............SBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBS............",
+    "..........TTSBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBSTT..........",
+    ".........THHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHT.........",
+    "........THHHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHHT........",
+    "........THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT........",
+    "........THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT........",
+    "........THHHTTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTTHHHT........",
+    "........TTTTTT....................................TTTTTT........",
+    ".........TTTT......................................TTTT.........",
+    "................................................................",
+    "................................................................",
 ];
 
 /// A roadside marker post — the cheapest thing that sells speed.
@@ -159,6 +186,17 @@ pub fn car_palette(theme: &Theme, body: Color, accent: Color) -> Vec<PaletteEntr
         ('h', tyre_top.lerp(theme.darker_background, 0.45)),
         ('L', theme.red.lerp(Color::rgb(255, 90, 70), 0.5)),
         ('W', shadow.lerp(theme.foreground, 0.18)),
+        // A mid tone between the body and the scene, for the canopy
+        // surround and the diffuser fins — the places that need to read
+        // as neither lit bodywork nor a hole.
+        ('C', shadow.lerp(theme.muted, 0.37)),
+        // The vent band under the wing. Pinned rather than derived: it
+        // is a deep interior red that has to stay the same regardless of
+        // theme, or the vent stops reading as a recess.
+        ('E', Color::rgb(0x3f, 0x13, 0x13)),
+        // Near-black with just enough of the scene's light in it to
+        // avoid a dead flat hole where the diffuser sits.
+        ('F', Color::BLACK.lerp(theme.foreground, 0.12)),
     ]
 }
 
@@ -204,13 +242,14 @@ mod tests {
     #[test]
     fn all_art_parses() {
         let art = Art::load(&Theme::fallback());
-        // 48x30 rather than the original 32x20: at the coarser grid there
-        // was no room for curved bodywork, a wing with thickness, or a
-        // third body tone, and the result read as blocky next to any
-        // real arcade sprite.
-        assert_eq!(art.player.width(), 48);
-        assert_eq!(art.player.height(), 30);
-        assert_eq!(art.rival.width(), 48);
+        // 64x40 now. 32x20 had no room for curved bodywork or a wing
+        // with thickness; 48x30 fixed that but still could not hold a
+        // diffuser, tail lights and a canopy surround as distinct
+        // shapes. The renderer was never the constraint here — measured
+        // at 1.34ms for a full field — authoring effort was.
+        assert_eq!(art.player.width(), 64);
+        assert_eq!(art.player.height(), 40);
+        assert_eq!(art.rival.width(), 64);
         assert!(art.player.ink() > 400, "the car should have real substance");
     }
 

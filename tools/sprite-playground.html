@@ -59,6 +59,10 @@
   }
   .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
   .warn { color: var(--warn); }
+  select, input[type=range] {
+    font: inherit; font-size: 12px; background: #1e2326; color: var(--fg);
+    border: 1px solid var(--edge); border-radius: 5px; padding: 5px 8px;
+  }
   kbd {
     background: #1e2326; border: 1px solid var(--edge); border-bottom-width: 2px;
     border-radius: 4px; padding: 1px 5px; font-size: 11px;
@@ -68,6 +72,16 @@
 <header>
   <h1>Omarcade Sprite Playground</h1>
   <p>Paint pixels &rarr; copy the Rust back into <code>art.rs</code>. Drag to draw, right-click erases.</p>
+  <span style="margin-left:auto; display:flex; gap:8px; align-items:center">
+    <label class="hint" for="size">grid</label>
+    <select id="size">
+      <option value="32x20">32 &times; 20 &mdash; chunky</option>
+      <option value="48x30" selected>48 &times; 30 &mdash; detailed</option>
+      <option value="64x40">64 &times; 40 &mdash; fine</option>
+    </select>
+    <label class="hint" for="zoom">zoom</label>
+    <input id="zoom" type="range" min="8" max="28" value="15" style="width:110px">
+  </span>
 </header>
 
 <main>
@@ -139,7 +153,27 @@ const PALETTE = [
   ['W', '#a05348',      'wing'],
 ];
 
-const COLS = 32, ROWS = 20, CELL = 22;
+let COLS = 48, ROWS = 30, CELL = 15;
+
+/// Resize the grid, keeping whatever art already exists anchored at the
+/// BOTTOM CENTRE. A car sits on the road and is symmetric about its
+/// centreline, so growing the canvas should add sky above and margin at
+/// the sides — not shift the vehicle off its wheels.
+function resize(cols, rows) {
+  const old = grid, oc = COLS, orr = ROWS;
+  COLS = cols; ROWS = rows;
+  const next = Array.from({length: ROWS}, () => Array(COLS).fill('.'));
+  const dx = Math.floor((COLS - oc) / 2);
+  const dy = ROWS - orr;
+  for (let y = 0; y < orr; y++)
+    for (let x = 0; x < oc; x++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && nx < COLS && ny >= 0 && ny < ROWS) next[ny][nx] = old[y][x];
+    }
+  grid = next;
+  cv.width = COLS * CELL; cv.height = ROWS * CELL;
+  draw();
+}
 let grid = Array.from({length: ROWS}, () => Array(COLS).fill('.'));
 let cur = 'B';
 let painting = false, erasing = false;
@@ -147,7 +181,6 @@ const undoStack = [];
 
 const cv = document.getElementById('grid');
 const ctx = cv.getContext('2d');
-cv.width = COLS * CELL; cv.height = ROWS * CELL;
 
 const pv = document.getElementById('preview');
 const pctx = pv.getContext('2d');
@@ -186,7 +219,11 @@ function draw() {
 function drawPreview() {
   pctx.clearRect(0, 0, pv.width, pv.height);
   let ox = 8;
-  for (const s of [1, 2, 4]) {
+  // Preview at three sizes relative to the grid, so a 64-wide sprite is
+  // not eight times the width of a 32-wide one on this strip.
+  const base = 32 / COLS;
+  for (const mult of [1, 2, 4]) {
+    const s = Math.max(1, Math.round(mult * base * 10) / 10);
     for (let y = 0; y < ROWS; y++) {
       for (let x = 0; x < COLS; x++) {
         const ch = grid[y][x];
@@ -251,8 +288,9 @@ function renderSwatches() {
 
 function emit() {
   const body = grid.map(r => `    "${r.join('')}",`).join('\n');
+  const name = document.getElementById('out').dataset.name || 'PLAYER_CAR';
   document.getElementById('out').value =
-    `pub const PLAYER_CAR: &[&str] = &[\n${body}\n];`;
+    `pub const ${name}: &[&str] = &[\n${body}\n];`;
 }
 
 document.getElementById('copy').onclick = async () => {
@@ -266,15 +304,23 @@ document.getElementById('load').onclick = () => {
   const rows = [...text.matchAll(/"([^"]*)"/g)].map(m => m[1]);
   const status = document.getElementById('status');
   if (!rows.length) { status.innerHTML = '<span class="warn">no quoted rows found</span>'; return; }
-  const bad = rows.find(r => r.length !== COLS);
-  if (bad !== undefined) {
-    status.innerHTML = `<span class="warn">a row is ${bad.length} chars, need ${COLS}</span>`;
+  const w = rows[0].length;
+  const ragged = rows.findIndex(r => r.length !== w);
+  if (ragged >= 0) {
+    status.innerHTML = `<span class="warn">row ${ragged} is ${rows[ragged].length} chars, expected ${w}</span>`;
     return;
   }
+  const nameMatch = text.match(/pub const ([A-Z0-9_]+)/);
+  if (nameMatch) document.getElementById('out').dataset.name = nameMatch[1];
   pushUndo();
-  grid = Array.from({length: ROWS}, (_, y) =>
-    (rows[y] || '.'.repeat(COLS)).split(''));
-  status.textContent = `loaded ${rows.length} rows`;
+  COLS = w; ROWS = rows.length;
+  cv.width = COLS * CELL; cv.height = ROWS * CELL;
+  grid = rows.map(r => r.split(''));
+  // Keep the picker honest about what is actually loaded.
+  const sel = document.getElementById('size');
+  const key = `${COLS}x${ROWS}`;
+  sel.value = [...sel.options].some(o => o.value === key) ? key : sel.value;
+  status.textContent = `loaded ${ROWS} rows of ${COLS}`;
   draw();
 };
 
@@ -305,32 +351,53 @@ document.getElementById('down').onclick = () => {
   grid.pop(); grid.unshift(Array(COLS).fill('.')); draw();
 };
 
+document.getElementById('size').onchange = e => {
+  const [c, r] = e.target.value.split('x').map(Number);
+  pushUndo();
+  resize(c, r);
+};
+document.getElementById('zoom').oninput = e => {
+  CELL = Number(e.target.value);
+  cv.width = COLS * CELL; cv.height = ROWS * CELL;
+  draw();
+};
+
 addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); doUndo(); }
 });
 
 // Seed with the car as it stands in art.rs today.
 grid = [
-  "................................",
-  "................................",
-  "................................",
-  "................................",
-  "................................",
-  ".......WWWWWWWWWWWWWWWWWW.......",
-  ".......WDDDDDDDDDDDDDDDDW.......",
-  "..........DD........DD..........",
-  "..thh....BBBBBBBBBBBBBB....hht..",
-  ".ththt..BBBGGGGGGGGGGBBB..ththt.",
-  ".ththtBBBBBBBAAAAAABBBBBBBththt.",
-  "..tht.BBBBBBBBBBBBBBBBBBBB.tht..",
-  "..TTBBDDDDDDDDDDDDDDDDDDDDBBTT..",
-  "THHHTBDDDDLLDDDDDDLLDDDDDBTHHHT.",
-  "THHHTDDDDDLLDDDDDDLLDDDDDDTHHHT.",
-  "THHHTDDDDDDDDDDDDDDDDDDDDDTHHHT.",
-  "TTTTTTDDDDDDDDDDDDDDDDDDDTTTTTT.",
-  ".TTTT....................TTTT...",
-  "................................",
-  "................................",
+  "................................................",
+  "................................................",
+  "................................................",
+  "..............WWWWWWWWWWWWWWWWWWWW..............",
+  "..............WSSSSSSSSSSSSSSSSSSW..............",
+  "..............WDDDDDDDDDDDDDDDDDDW..............",
+  "..................DD........DD..................",
+  "..................DD........DD..................",
+  "............SSSSSSSSSSSSSSSSSSSSSSSS............",
+  "...........SSBBBBBBBBBBBBBBBBBBBBBBSS...........",
+  "....ttt....SBBGGGGGGGGGGGGGGGGGGGGBBS....ttt....",
+  "...thhht..SSBBGGGGGGGGGGGGGGGGGGGGBBSS..thhht...",
+  "...thhht..SBBBBBBBBBBBBBBBBBBBBBBBBBBS..thhht...",
+  "...thhht..SBBBBBBBBBBBBBBBBBBBBBBBBBBS..thhht...",
+  "....ttt..SSBBBBBBBAAAAAAAAAAAABBBBBBBSS..ttt....",
+  ".......SSBBBBBBBBBAAAAAAAAAAAABBBBBBBBBSS.......",
+  ".....SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS.....",
+  "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
+  "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
+  "....SBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBS....",
+  "..TTSBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBSTT..",
+  ".THHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHT.",
+  "THHHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHHT",
+  "THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT",
+  "THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT",
+  "THHHTTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTTHHHT",
+  "TTTTTT....................................TTTTTT",
+  ".TTTT......................................TTTT.",
+  "................................................",
+  "................................................",
 ].map(r => r.split(''));
 
 renderSwatches();

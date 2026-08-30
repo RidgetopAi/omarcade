@@ -22,7 +22,7 @@ use omarcade_core::{Color, Theme};
 
 /// The player's car, seen from behind.
 ///
-/// 32 wide by 20 tall. Read the silhouette top to bottom: rear wing,
+/// 48 wide by 30 tall. Read the silhouette top to bottom: rear wing,
 /// engine cover and roll hoop, the body with side pods, then the four
 /// tyres with the rear pair widest. Open-wheel, so the tyres stand
 /// clear of the body — that is what makes the shape read as a race car
@@ -34,26 +34,36 @@ use omarcade_core::{Color, Theme};
 ///   T tyre                    H tyre highlight (top curve)
 ///   L brake light             W wing
 pub const PLAYER_CAR: &[&str] = &[
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "......WWWWWWWWWWWWWWWWWWWWWW....",
-    "......WDDDDDDDDDDDDDDDDDDDDW....",
-    "..thh....BBBBBBBBBBBBBB....hht..",
-    ".ththt..BBBGGGGGGGGGGBBB..ththt.",
-    ".ththtBBBBBBBAAAAAABBBBBBBththt.",
-    "..tht.BBBBBBBBBBBBBBBBBBBB.tht..",
-    "..TTBBDDDDDDDDDDDDDDDDDDDDBBTT..",
-    "THHHTBDDDDLLDDDDDDLLDDDDDBTHHHT.",
-    "THHHTDDDDDLLDDDDDDLLDDDDDDTHHHT.",
-    "THHHTDDDDDDDDDDDDDDDDDDDDDTHHHT.",
-    "TTTTTTDDDDDDDDDDDDDDDDDDDTTTTTT.",
-    ".TTTT....................TTTT...",
-    "................................",
-    "................................",
+    "................................................",
+    "................................................",
+    "................................................",
+    "..............WWWWWWWWWWWWWWWWWWWW..............",
+    "..............WSSSSSSSSSSSSSSSSSSW..............",
+    "..............WDDDDDDDDDDDDDDDDDDW..............",
+    "..................DD........DD..................",
+    "..................DD........DD..................",
+    "............SSSSSSSSSSSSSSSSSSSSSSSS............",
+    "...........SSBBBBBBBBBBBBBBBBBBBBBBSS...........",
+    "....ttt....SBBGGGGGGGGGGGGGGGGGGGGBBS....ttt....",
+    "...thhht..SSBBGGGGGGGGGGGGGGGGGGGGBBSS..thhht...",
+    "...thhht..SBBBBBBBBBBBBBBBBBBBBBBBBBBS..thhht...",
+    "...thhht..SBBBBBBBBBBBBBBBBBBBBBBBBBBS..thhht...",
+    "....ttt..SSBBBBBBBAAAAAAAAAAAABBBBBBBSS..ttt....",
+    ".......SSBBBBBBBBBAAAAAAAAAAAABBBBBBBBBSS.......",
+    ".....SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS.....",
+    "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
+    "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
+    "....SBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBS....",
+    "..TTSBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBSTT..",
+    ".THHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHT.",
+    "THHHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHHT",
+    "THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT",
+    "THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT",
+    "THHHTTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTTHHHT",
+    "TTTTTT....................................TTTTTT",
+    ".TTTT......................................TTTT.",
+    "................................................",
+    "................................................",
 ];
 
 /// An opponent car. Same chassis, plainer read.
@@ -62,26 +72,36 @@ pub const PLAYER_CAR: &[&str] = &[
 /// player needs to tell "that is me" from "that is traffic" instantly,
 /// and shape does that faster than colour.
 pub const RIVAL_CAR: &[&str] = &[
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    ".......WWWWWWWWWWWWWWWWWWWWWW...",
-    "..thh.....BBBBBBBBBBBB.....hht..",
-    ".ththt...BBBGGGGGGGGBBB...ththt.",
-    ".ththtBBBBBBBBBBBBBBBBBBBBththt.",
-    "..tht.BBBBBBBBBBBBBBBBBBBB.tht..",
-    "..TTBBDDDDDDDDDDDDDDDDDDDDBBTT..",
-    "THHHTBDDDDLLDDDDDDLLDDDDDBTHHHT.",
-    "THHHTDDDDDLLDDDDDDLLDDDDDDTHHHT.",
-    "THHHTDDDDDDDDDDDDDDDDDDDDDTHHHT.",
-    "TTTTTTDDDDDDDDDDDDDDDDDDDTTTTTT.",
-    ".TTTT....................TTTT...",
-    "................................",
-    "................................",
-    "................................",
+    "................................................",
+    "................................................",
+    "................................................",
+    "................................................",
+    "...............WWWWWWWWWWWWWWWWWW...............",
+    "...............WDDDDDDDDDDDDDDDDW...............",
+    "..................DD........DD..................",
+    "..................DD........DD..................",
+    "............SSSSSSSSSSSSSSSSSSSSSSSS............",
+    "...........SSBBBBBBBBBBBBBBBBBBBBBBSS...........",
+    "....ttt....SBBGGGGGGGGGGGGGGGGGGGGBBS....ttt....",
+    "...thhht..SSBBGGGGGGGGGGGGGGGGGGGGBBSS..thhht...",
+    "...thhht..SBBBBBBBBBBBBBBBBBBBBBBBBBBS..thhht...",
+    "...thhht..SBBBBBBBBBBBBBBBBBBBBBBBBBBS..thhht...",
+    "....ttt..SSBBBBBBBBBBBBBBBBBBBBBBBBBBSS..ttt....",
+    ".......SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS.......",
+    ".....SSBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBSS.....",
+    "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
+    "....SBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBS....",
+    "....SBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBS....",
+    "..TTSBDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDBSTT..",
+    ".THHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHT.",
+    "THHHHTDDDDDDLLLLDDDDDDDDDDDDDDDDLLLLDDDDDDTHHHHT",
+    "THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT",
+    "THHHHTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTHHHHT",
+    "THHHTTDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDTTHHHT",
+    "TTTTTT....................................TTTTTT",
+    ".TTTT......................................TTTT.",
+    "................................................",
+    "................................................",
 ];
 
 /// A roadside marker post — the cheapest thing that sells speed.
@@ -124,6 +144,10 @@ pub fn car_palette(theme: &Theme, body: Color, accent: Color) -> Vec<PaletteEntr
     vec![
         ('B', body),
         ('D', shadow),
+        // The lit upper surface. At 32x20 there was no room for a third
+        // body tone; at 48x30 a top-lit gradient is what stops the car
+        // reading as a flat cutout.
+        ('S', body.lerp(theme.foreground, 0.22)),
         ('A', accent),
         ('G', glass),
         ('T', tyre),
@@ -180,9 +204,14 @@ mod tests {
     #[test]
     fn all_art_parses() {
         let art = Art::load(&Theme::fallback());
-        assert_eq!(art.player.width(), 32);
-        assert_eq!(art.rival.width(), 32);
-        assert!(art.player.ink() > 100, "the car should have real substance");
+        // 48x30 rather than the original 32x20: at the coarser grid there
+        // was no room for curved bodywork, a wing with thickness, or a
+        // third body tone, and the result read as blocky next to any
+        // real arcade sprite.
+        assert_eq!(art.player.width(), 48);
+        assert_eq!(art.player.height(), 30);
+        assert_eq!(art.rival.width(), 48);
+        assert!(art.player.ink() > 400, "the car should have real substance");
     }
 
     #[test]

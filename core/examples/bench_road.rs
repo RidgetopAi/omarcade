@@ -13,13 +13,13 @@
 //!
 //! The candidate approaches, cheapest first:
 //!
-//! 1. BANDED       — one rect per band of scanlines. Cheapest, but the
-//!                   road edges stair-step.
-//! 2. SCANLINE     — one rect per scanline, integer. The classic.
-//! 3. SCANLINE_F   — one sub-pixel rect per scanline. Smooth edges,
-//!                   which is the whole "modern feel" argument.
-//! 4. + SPRITES    — scaled opponent cars on top.
-//! 5. + LIGHTING   — an alpha wash for depth haze and headlight glow.
+//! 1. BANDED — one rect per band of scanlines. Cheapest, but the road
+//!    edges stair-step.
+//! 2. SCANLINE — one rect per scanline, integer. The classic.
+//! 3. SCANLINE_F — one sub-pixel rect per scanline. Smooth edges, which
+//!    is the whole "modern feel" argument.
+//! 4. + SPRITES — scaled opponent cars on top.
+//! 5. + LIGHTING — an alpha wash for depth haze and headlight glow.
 //!
 //! Anything under ~8ms leaves real headroom at 60fps. Over 16.67ms is
 //! a dropped frame no matter what else we do.

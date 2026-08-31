@@ -126,7 +126,7 @@ fn draw_road(c: &mut Canvas<'_>, art: &Art, theme: &Theme, road: Road) {
     let dt = 1.0 / 120.0;
     for _ in 0..(6.0 / dt) as usize {
         let correction = (-car.x * 3.0).clamp(-1.0, 1.0);
-        car.update(dt, 1.0, correction, &road, &tuning);
+        car.update(dt, 1.0, 0.0, correction, &road, &tuning);
     }
     // Placed so the roadside props are mid-stream rather than all bunched
     // at the horizon — this scene exists to judge them.
@@ -211,7 +211,7 @@ fn draw_drive(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
         // compares cornering rather than launching.
         for _ in 0..(6.0 / DT) as usize {
             let correction = (-car.x * 3.0).clamp(-1.0, 1.0);
-            car.update(DT, 1.0, correction, &road, tuning);
+            car.update(DT, 1.0, 0.0, correction, &road, tuning);
         }
         car.z = 0.0;
 
@@ -220,7 +220,7 @@ fn draw_drive(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
             // Drive to this mark on the track, timing how long it takes.
             while car.z < *mark && elapsed < 60.0 {
                 let correction = (-car.x * 3.0).clamp(-1.0, 1.0);
-                car.update(DT, 1.0, correction, &road, tuning);
+                car.update(DT, 1.0, 0.0, correction, &road, tuning);
                 elapsed += DT;
             }
             times[row][panel] = elapsed;

@@ -126,16 +126,32 @@ impl Racer {
         }
     }
 
-    /// Throttle as 0..1. Brake wins over throttle when both are held,
-    /// because a player pressing both wants to stop.
+    /// Throttle as 0..1.
+    ///
+    /// Zero when braking: the two are separate inputs to `Drive::update`
+    /// now, but there is no sense in feeding it both at once, and
+    /// `Drive` resolves the conflict in the brake's favour anyway.
+    ///
+    /// Zero with nothing held is coasting, not free-wheeling: lifting off
+    /// decelerates. A racer that holds its speed with no input has no
+    /// throttle.
     fn throttle(&self) -> f32 {
-        if self.brake_held {
+        if self.brake_held || !self.throttle_held {
             0.0
-        } else if self.throttle_held {
+        } else {
+            1.0
+        }
+    }
+
+    /// Brake as 0..1.
+    ///
+    /// Its own input rather than "throttle, but zero". Those were the
+    /// same thing until this existed, which meant the brake key produced
+    /// a four-second coast — indistinguishable from releasing throttle.
+    fn brake(&self) -> f32 {
+        if self.brake_held {
             1.0
         } else {
-            // Coasting, not free-wheeling: lifting off decelerates. A
-            // racer that holds its speed with no input has no throttle.
             0.0
         }
     }
@@ -167,8 +183,14 @@ impl Game for Racer {
         // roughly four frames keeps a hitch as a hitch.
         let dt = dt.min(1.0 / 15.0);
 
-        self.car
-            .update(dt, self.throttle(), self.steer(), &self.road, &self.tuning);
+        self.car.update(
+            dt,
+            self.throttle(),
+            self.brake(),
+            self.steer(),
+            &self.road,
+            &self.tuning,
+        );
         self.roll
             .advance(self.car.speed, self.pixels_per_unit, dt);
     }

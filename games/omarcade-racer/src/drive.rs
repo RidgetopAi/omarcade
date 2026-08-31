@@ -51,6 +51,18 @@ pub struct Tuning {
     pub steer_rate: f32,
     /// Seconds to reach top speed from a standstill.
     pub accel_time: f32,
+    /// Seconds from top speed to a dead stop under full braking.
+    ///
+    /// Stated as a DURATION, not as a deceleration, for the same reason
+    /// every other number in this file is: a raw `-40_000.0` units per
+    /// second squared is unjudgeable by a person and silently wrong the
+    /// moment the road's scale moves. "How long does it take to stop?"
+    /// is a question you can answer by driving (L019).
+    ///
+    /// Compare `accel_time`: braking is meant to be decisively stronger
+    /// than lifting off, or the brake is a slower way of doing nothing —
+    /// which is exactly what it was before this existed.
+    pub brake_time: f32,
     /// Which of the two above was solved rather than chosen.
     pub derived: Derivation,
     /// The duration the derivation was solved from, in seconds. Kept for
@@ -88,6 +100,7 @@ impl Tuning {
             // depends on it under this derivation.
             steer_rate: 1.6,
             accel_time: 4.0,
+            brake_time: BRAKE_TIME,
             derived: Derivation::FromCorner,
             basis_seconds: reaction_seconds,
         }
@@ -127,6 +140,7 @@ impl Tuning {
             top_speed: visible / RELAXED_REACTION,
             steer_rate: 2.0 / crossing_seconds,
             accel_time: 4.0,
+            brake_time: BRAKE_TIME,
             derived: Derivation::FromCrossing,
             basis_seconds: crossing_seconds,
         }
@@ -183,22 +197,57 @@ impl Drive {
 
     /// Advance by `dt` seconds.
     ///
-    /// `throttle` is 0..1, `steer` is -1..1 (negative left). Both are
-    /// clamped rather than trusted, because they come from input handling
-    /// and a held key that misses its key-up should not be able to send
-    /// the car off the map.
-    pub fn update(&mut self, dt: f32, throttle: f32, steer: f32, road: &Road, tuning: &Tuning) {
+    /// `throttle` and `brake` are 0..1, `steer` is -1..1 (negative left).
+    /// All are clamped rather than trusted, because they come from input
+    /// handling and a held key that misses its key-up should not be able
+    /// to send the car off the map.
+    ///
+    /// # Why the brake is its own input
+    ///
+    /// It was not, and that was a real bug rather than a simplification:
+    /// the brake key set throttle to zero, which is *identical to lifting
+    /// off*. Pressing it did nothing a released key did not already do,
+    /// and the car took a four-second glide to stop either way. A brake
+    /// that cannot be distinguished from coasting is not a brake.
+    ///
+    /// The two cannot share a rate because they are different forces.
+    /// Coasting is drag; braking is brakes. So they get separate
+    /// durations — `accel_time` and `brake_time` — and separate paths
+    /// here.
+    pub fn update(
+        &mut self,
+        dt: f32,
+        throttle: f32,
+        brake: f32,
+        steer: f32,
+        road: &Road,
+        tuning: &Tuning,
+    ) {
         let throttle = throttle.clamp(0.0, 1.0);
+        let brake = brake.clamp(0.0, 1.0);
         let steer = steer.clamp(-1.0, 1.0);
 
-        // Speed eases toward its target rather than snapping, so the car
-        // has weight. Lifting off coasts down at the same rate.
-        let target = tuning.top_speed * throttle;
-        let rate = tuning.top_speed / tuning.accel_time;
-        if self.speed < target {
-            self.speed = (self.speed + rate * dt).min(target);
+        // Braking overrides throttle. A player holding both wants to
+        // stop — and letting the two fight would make the outcome depend
+        // on which force happened to be larger, which is not something a
+        // player can predict or learn.
+        if brake > 0.0 {
+            // Solved from the duration, exactly as the accel rate is.
+            let decel = tuning.top_speed / tuning.brake_time * brake;
+            // `max(0.0)`: the brake stops the car, it does not reverse
+            // it. Without this a large dt at low speed drives `speed`
+            // negative and the car crawls backwards down the track.
+            self.speed = (self.speed - decel * dt).max(0.0);
         } else {
-            self.speed = (self.speed - rate * dt).max(target);
+            // Speed eases toward its target rather than snapping, so the
+            // car has weight. Lifting off coasts down at the same rate.
+            let target = tuning.top_speed * throttle;
+            let rate = tuning.top_speed / tuning.accel_time;
+            if self.speed < target {
+                self.speed = (self.speed + rate * dt).min(target);
+            } else {
+                self.speed = (self.speed - rate * dt).max(target);
+            }
         }
 
         self.z = road.wrap(self.z + self.speed * dt);
@@ -261,6 +310,20 @@ impl Default for Drive {
     }
 }
 
+/// Seconds from top speed to a dead stop under full braking.
+///
+/// 1.2s against coasting's 4.0s, so the brake is a little over three
+/// times stronger than lifting off. That ratio is the point: the brake
+/// has to be worth reaching for at a corner, or the optimal line is
+/// simply "never touch it", which is the game the racer had before this
+/// existed.
+///
+/// A free knob, and safe to move by feel — stated as a duration, so no
+/// geometry depends on it and a retune of the road cannot silently
+/// invalidate it (L019). Shared by both tunings: how hard the car stops
+/// is a property of the CAR, not of which quantity the tuning solved for.
+const BRAKE_TIME: f32 = 1.2;
+
 /// The reaction window B leaves the player, in seconds.
 ///
 /// Chosen, not derived — that is what makes it B's free knob. Deliberately
@@ -311,6 +374,124 @@ mod tests {
                 "asked for {wanted}s to react, got {got}s",
             );
         }
+    }
+
+    /// The brake delivers the stopping time it was stated as.
+    ///
+    /// The same shape as the two derivation tests above, and for the same
+    /// reason: `brake_time` claims to be "seconds from top speed to a
+    /// standstill", so the test is to drive at top speed, stand on the
+    /// brake, and time it.
+    #[test]
+    fn braking_stops_the_car_in_the_stated_time() {
+        let road = straight();
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let mut car = Drive::new();
+        car.speed = tuning.top_speed;
+
+        let dt = 1.0 / 240.0;
+        let mut elapsed = 0.0f32;
+        while car.speed > 0.0 && elapsed < 10.0 {
+            car.update(dt, 0.0, 1.0, 0.0, &road, &tuning);
+            elapsed += dt;
+        }
+
+        assert!(
+            (elapsed - tuning.brake_time).abs() < 0.05,
+            "brake_time says {}s to stop, took {elapsed}s",
+            tuning.brake_time,
+        );
+    }
+
+    /// THE BUG THIS FEATURE EXISTS FOR.
+    ///
+    /// The brake key used to set throttle to zero, which is precisely
+    /// what releasing throttle already does. Pressing it changed nothing.
+    /// This test fails against that version, which is the only reason it
+    /// is worth having (L017: a test that cannot fail is worse than none).
+    ///
+    /// Asserting a RATIO rather than an absolute speed, so retuning the
+    /// road or the top speed cannot invalidate it.
+    #[test]
+    fn braking_is_decisively_stronger_than_coasting() {
+        let road = straight();
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let dt = 1.0 / 240.0;
+        let half_second = (0.5 / dt) as usize;
+
+        let mut braking = Drive::new();
+        braking.speed = tuning.top_speed;
+        let mut coasting = braking;
+
+        for _ in 0..half_second {
+            braking.update(dt, 0.0, 1.0, 0.0, &road, &tuning);
+            coasting.update(dt, 0.0, 0.0, 0.0, &road, &tuning);
+        }
+
+        let lost_braking = tuning.top_speed - braking.speed;
+        let lost_coasting = tuning.top_speed - coasting.speed;
+        // accel_time 4.0 / brake_time 1.2 = 3.33x. Asserting 2.5x leaves
+        // room to retune either duration without a false failure, while
+        // still failing outright if the brake ever collapses back into
+        // being a second coast.
+        assert!(
+            lost_braking > lost_coasting * 2.5,
+            "braking shed {lost_braking} but coasting shed {lost_coasting} \
+             — the brake is not meaningfully stronger than lifting off",
+        );
+    }
+
+    /// The brake stops the car; it does not reverse it.
+    ///
+    /// A large `dt` at low speed is the case that breaks this — the
+    /// deceleration for that step exceeds the remaining speed. Tested at
+    /// the clamp the game actually uses (1/15s) rather than at a
+    /// comfortable 1/240, because the whole point is the bad frame.
+    #[test]
+    fn braking_never_drives_the_car_backwards() {
+        let road = straight();
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let mut car = Drive::new();
+        car.speed = tuning.top_speed * 0.02;
+
+        for _ in 0..30 {
+            car.update(1.0 / 15.0, 0.0, 1.0, 0.0, &road, &tuning);
+            assert!(
+                car.speed >= 0.0,
+                "brake drove speed negative: {}",
+                car.speed,
+            );
+        }
+        assert_eq!(car.speed, 0.0, "the car should have come to rest");
+    }
+
+    /// Holding both pedals stops the car, and stops it at the BRAKE rate.
+    ///
+    /// "Brake wins" was already true when both meant the same thing, so
+    /// it was not saying much. Now that they are different forces, the
+    /// question has content: which rate applies?
+    #[test]
+    fn the_brake_beats_the_throttle() {
+        let road = straight();
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let dt = 1.0 / 240.0;
+
+        let mut both = Drive::new();
+        both.speed = tuning.top_speed;
+        let mut brake_only = both;
+
+        for _ in 0..(0.4 / dt) as usize {
+            both.update(dt, 1.0, 1.0, 0.0, &road, &tuning);
+            brake_only.update(dt, 0.0, 1.0, 0.0, &road, &tuning);
+        }
+
+        assert!(
+            (both.speed - brake_only.speed).abs() < 1.0,
+            "throttle+brake ({}) should decelerate exactly like brake alone ({})",
+            both.speed,
+            brake_only.speed,
+        );
+        assert!(both.speed < tuning.top_speed * 0.9, "the car did not slow down");
     }
 
     /// The point of derivation B: the crossing time you asked for is the
@@ -379,7 +560,7 @@ mod tests {
         assert_eq!(d.speed, 0.0);
 
         for _ in 0..((t.accel_time / 0.016) as usize + 8) {
-            d.update(0.016, 1.0, 0.0, &road, &t);
+            d.update(0.016, 1.0, 0.0, 0.0, &road, &t);
         }
         assert!(
             (d.speed - t.top_speed).abs() < t.top_speed * 0.01,
@@ -395,11 +576,11 @@ mod tests {
         let t = Tuning::from_corner(&road, 1.5);
         let mut d = Drive::new();
         for _ in 0..300 {
-            d.update(0.016, 1.0, 0.0, &road, &t);
+            d.update(0.016, 1.0, 0.0, 0.0, &road, &t);
         }
         let fast = d.speed;
         for _ in 0..60 {
-            d.update(0.016, 0.0, 0.0, &road, &t);
+            d.update(0.016, 0.0, 0.0, 0.0, &road, &t);
         }
         assert!(d.speed < fast, "coasting did not slow the car");
     }
@@ -414,14 +595,14 @@ mod tests {
 
         // Up to speed first — steering authority scales with it.
         for _ in 0..600 {
-            d.update(0.016, 1.0, 0.0, &road, &t);
+            d.update(0.016, 1.0, 0.0, 0.0, &road, &t);
         }
         d.x = -1.0;
 
         let dt = 0.001;
         let mut elapsed = 0.0;
         while d.x < 1.0 && elapsed < 10.0 {
-            d.update(dt, 1.0, 1.0, &road, &t);
+            d.update(dt, 1.0, 0.0, 1.0, &road, &t);
             elapsed += dt;
         }
         assert!(
@@ -438,7 +619,7 @@ mod tests {
         let t = Tuning::from_corner(&road, 1.5);
         let mut d = Drive::new();
         for _ in 0..120 {
-            d.update(0.016, 0.0, 1.0, &road, &t);
+            d.update(0.016, 0.0, 0.0, 1.0, &road, &t);
         }
         assert_eq!(d.x, 0.0, "a parked car steered to {}", d.x);
     }
@@ -452,7 +633,7 @@ mod tests {
         let mut d = Drive::new();
         for _ in 0..2000 {
             // Deliberately out-of-range input, as a stuck key would give.
-            d.update(0.016, 5.0, 9.0, &road, &t);
+            d.update(0.016, 5.0, 0.0, 9.0, &road, &t);
         }
         assert!(d.x <= MAX_STRAY + 0.001, "car reached x={}", d.x);
         assert!(d.speed <= t.top_speed + 0.001);
@@ -476,7 +657,7 @@ mod tests {
             let mut d = Drive::new();
             for _ in 0..(6.0 / dt) as usize {
                 let correction = (-d.x * 3.0).clamp(-1.0, 1.0);
-                d.update(dt, 1.0, correction, &road, &tuning);
+                d.update(dt, 1.0, 0.0, correction, &road, &tuning);
             }
             let lean = d.cornering(&road, &tuning).abs();
             assert!(
@@ -526,7 +707,7 @@ mod tests {
             // hold a line through it, which is what this asserts.
             for _ in 0..1200 {
                 let correction = (-d.x * 3.0).clamp(-1.0, 1.0);
-                d.update(0.016, 1.0, correction, &road, &tuning);
+                d.update(0.016, 1.0, 0.0, correction, &road, &tuning);
                 assert!(
                     !d.off_road(),
                     "a driver holding the line still went off at x={} ({:?})",
@@ -552,7 +733,7 @@ mod tests {
         let tuning = Tuning::from_corner(&road, 1.5);
         let mut d = Drive::new();
         for _ in 0..900 {
-            d.update(0.016, 1.0, 0.0, &road, &tuning);
+            d.update(0.016, 1.0, 0.0, 0.0, &road, &tuning);
         }
         assert!(
             d.off_road(),
@@ -569,7 +750,7 @@ mod tests {
         let t = Tuning::from_corner(&road, 1.5);
         let mut d = Drive::new();
         for _ in 0..600 {
-            d.update(0.016, 1.0, 0.0, &road, &t);
+            d.update(0.016, 1.0, 0.0, 0.0, &road, &t);
         }
         assert!(
             d.x < -0.05,
@@ -586,7 +767,7 @@ mod tests {
         let t = Tuning::from_corner(&road, 1.5);
         let mut d = Drive::new();
         for _ in 0..600 {
-            d.update(0.016, 1.0, -1.0, &road, &t);
+            d.update(0.016, 1.0, 0.0, -1.0, &road, &t);
         }
         assert_eq!(
             d.cornering(&road, &t),
@@ -598,7 +779,7 @@ mod tests {
         let bt = Tuning::from_corner(&bendy, 1.5);
         let mut bd = Drive::new();
         for _ in 0..600 {
-            bd.update(0.016, 1.0, 0.0, &bendy, &bt);
+            bd.update(0.016, 1.0, 0.0, 0.0, &bendy, &bt);
         }
         assert!(bd.cornering(&bendy, &bt).abs() > 0.01, "the car did not bank in a bend");
     }
@@ -611,7 +792,7 @@ mod tests {
         let t = Tuning::from_corner(&road, 1.5);
         let mut d = Drive::new();
         for _ in 0..4000 {
-            d.update(0.016, 1.0, 0.0, &road, &t);
+            d.update(0.016, 1.0, 0.0, 0.0, &road, &t);
         }
         assert!(d.z >= 0.0 && d.z < road.length(), "z={} escaped the track", d.z);
     }
@@ -625,10 +806,10 @@ mod tests {
         let mut d = Drive::new();
         assert!(!d.off_road());
         for _ in 0..600 {
-            d.update(0.016, 1.0, 0.0, &road, &t);
+            d.update(0.016, 1.0, 0.0, 0.0, &road, &t);
         }
         for _ in 0..600 {
-            d.update(0.016, 1.0, 1.0, &road, &t);
+            d.update(0.016, 1.0, 0.0, 1.0, &road, &t);
         }
         assert!(d.off_road(), "car sat at x={} and was not off-road", d.x);
     }

@@ -66,7 +66,17 @@ pub fn draw_road_into(
     w: u32,
     h: u32,
 ) {
-    let sky = theme.background.lerp(theme.blue, 0.30);
+    // The sky, and the colour distance hazes TOWARD.
+    //
+    // `theme.blue` is a teal on this theme (#7fbbb3 — its green channel is
+    // higher than its blue), so hazing the grey road toward it pushed the
+    // road visibly GREEN, strongest near the horizon where the haze is
+    // thickest. Reported as "green striping on the track", and measured at
+    // a green excess of +10 to +25 on a surface that should sit near 0.
+    //
+    // Desaturating toward the background before mixing keeps the sky's
+    // value without dragging the road's hue along with it.
+    let sky = theme.background.lerp(theme.blue.lerp(theme.background, 0.45), 0.55);
 
     // Grass and road stripe INDEPENDENTLY, and by different amounts.
     //
@@ -168,8 +178,19 @@ pub fn draw_road_into(
                 c.fill_rect_f(cx - lw / 2.0, sy, lw, bh, line);
             }
 
-            let ht = (dist / 60_000.0).clamp(0.0, 1.0);
-            let a = (ht.powf(0.9) * 210.0) as u8;
+            // Haze measured against the road's ACTUAL reach, not a fixed
+            // 60,000 units. That figure predated the road being retuned to
+            // a 24,000-unit draw distance, so haze topped out at 36% at
+            // the horizon instead of completing — distant road stayed too
+            // present, and the partial mix is what let the sky's hue tint
+            // it. L015: a constant is measured against something, or it is
+            // an untested assumption.
+            let reach = road.draw_distance() as f32 * road.segment_length();
+            let ht = (dist / reach).clamp(0.0, 1.0);
+            // Capped below full: at 235 the far road disappeared into the
+            // sky entirely and left a hard line at the horizon. Haze
+            // should say "far away", not "gone".
+            let a = (ht.powf(1.5) * 175.0) as u8;
             if a > 2 {
                 c.fill_rect_f(fx, sy, fw, bh, sky.with_alpha(a));
             }

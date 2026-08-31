@@ -200,6 +200,51 @@ pub struct Drive {
     pub speed: f32,
 }
 
+/// How wide the rumble strip is, as a fraction of the road's half-width.
+///
+/// SHARED WITH THE RENDERER, which draws the strip at exactly this
+/// fraction. It lived only in `render.rs` as a drawing detail until the
+/// surface started dragging, and the moment physics depends on where a
+/// thing is painted, the two must read one number. Otherwise the strip
+/// moves in a later art pass and the car starts slowing on tarmac — a
+/// bug that would present as "the handling feels wrong sometimes" and
+/// look nothing like a rendering change.
+pub const RUMBLE_FRACTION: f32 = 0.13;
+
+/// What the car is driving on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// Tarmac. No penalty.
+    Road,
+    /// The rumble strip at the road's edge. A warning, not a punishment:
+    /// it costs a little speed, which is the feedback that tells a player
+    /// they are running out of road before they are off it.
+    Rumble,
+    /// Grass. Costs real time.
+    Grass,
+}
+
+impl Surface {
+    /// The most of top speed this surface will carry, as a fraction.
+    ///
+    /// A ratio rather than an absolute, so a retune of the road or the
+    /// top speed cannot silently turn "grass is slow" into "grass is
+    /// stationary" (L019).
+    ///
+    /// Grass CAPS rather than kills. A dead stop would make a clipped
+    /// verge fatal, and the fail state in this game is a collision, not a
+    /// wheel on the grass. At 45% a mistake costs a corner's worth of
+    /// time and stays recoverable — which is the penalty that teaches,
+    /// where an instant stop just ends the run.
+    pub fn speed_cap(self) -> f32 {
+        match self {
+            Surface::Road => 1.0,
+            Surface::Rumble => 0.85,
+            Surface::Grass => 0.45,
+        }
+    }
+}
+
 /// How far past the verge the car may stray before it is off the road.
 ///
 /// Not zero, because clamping exactly at the verge means the car can never
@@ -268,6 +313,23 @@ impl Drive {
             }
         }
 
+        // Surface drag. Off the tarmac the car is dragged down toward
+        // what the surface will carry — at the BRAKE rate, so leaving the
+        // road feels like something grabbing the car rather than like the
+        // throttle quietly going soft.
+        //
+        // Applied as a ceiling rather than as a force, so it cannot fight
+        // the throttle into an equilibrium the player has to discover.
+        // The rule is simply: this surface will not carry you faster than
+        // this. Note it is read from the position BEFORE this frame's
+        // steering, which is correct — the drag is what the car is on
+        // now, not where it is about to be.
+        let cap = tuning.top_speed * self.surface().speed_cap();
+        if self.speed > cap {
+            let drag = tuning.top_speed / tuning.brake_time;
+            self.speed = (self.speed - drag * dt).max(cap);
+        }
+
         self.z = road.wrap(self.z + self.speed * dt);
 
         // Steering authority scales with speed. A stationary car cannot
@@ -306,6 +368,24 @@ impl Drive {
     /// True when the car has a wheel off the road.
     pub fn off_road(&self) -> bool {
         self.x.abs() > 1.0
+    }
+
+    /// What the car is currently driving on.
+    ///
+    /// The boundaries are the ones the renderer PAINTS: the rumble strip
+    /// occupies the outer [`RUMBLE_FRACTION`] of each half-width, so it
+    /// runs from 0.87 to 1.0 and grass begins past the verge. A player
+    /// can therefore see which surface they are on, which is the whole
+    /// point of a penalty that is not a message on screen.
+    pub fn surface(&self) -> Surface {
+        let d = self.x.abs();
+        if d > 1.0 {
+            Surface::Grass
+        } else if d > 1.0 - RUMBLE_FRACTION {
+            Surface::Rumble
+        } else {
+            Surface::Road
+        }
     }
 
     /// The car's position across the road in **world units**, which is
@@ -435,6 +515,38 @@ mod tests {
         Road::new(segs, 200.0, 2200.0)
     }
 
+    /// The fastest speed a corrective driver can hold this bend at,
+    /// found by trying.
+    ///
+    /// Returned in world units. Steps down from full speed rather than
+    /// bisecting: the range is small, the granularity is what matters
+    /// more than the precision, and a loop that a reader can check by
+    /// eye is worth more here than a tighter bound.
+    fn fastest_holdable(road: &Road, tuning: &Tuning) -> f32 {
+        let dt = 1.0 / 120.0;
+        let mut frac = 1.0f32;
+        while frac > 0.1 {
+            let target = tuning.top_speed * frac;
+            let mut d = Drive::new();
+            let mut left_road = false;
+            for _ in 0..(6.0 / dt) as usize {
+                let correction = (-d.x * 3.0).clamp(-1.0, 1.0);
+                let (throttle, brake) =
+                    if d.speed > target { (0.0, 1.0) } else { (1.0, 0.0) };
+                d.update(dt, throttle, brake, correction, road, tuning);
+                if d.surface() != Surface::Road {
+                    left_road = true;
+                    break;
+                }
+            }
+            if !left_road {
+                return target;
+            }
+            frac -= 0.05;
+        }
+        tuning.top_speed * 0.1
+    }
+
     /// Drive a bend with a CORRECTIVE driver and report how far the car
     /// strays. 1.0 is the verge.
     ///
@@ -462,6 +574,113 @@ mod tests {
             worst = worst.max(car.x.abs());
         }
         worst
+    }
+
+    /// The surfaces begin exactly where the renderer paints them.
+    ///
+    /// The one test that would catch the two drifting apart. If the strip
+    /// is redrawn at a different width and only `render.rs` is edited,
+    /// this still passes — which is why both read `RUMBLE_FRACTION`
+    /// rather than each holding a copy.
+    #[test]
+    fn the_surfaces_are_where_they_are_drawn() {
+        let mut car = Drive::new();
+        let edge = 1.0 - RUMBLE_FRACTION;
+
+        for (x, want) in [
+            (0.0f32, Surface::Road),
+            (edge - 0.01, Surface::Road),
+            (edge + 0.01, Surface::Rumble),
+            (0.999, Surface::Rumble),
+            (1.01, Surface::Grass),
+            (-1.01, Surface::Grass),
+            (-(edge + 0.01), Surface::Rumble),
+        ] {
+            car.x = x;
+            assert_eq!(car.surface(), want, "at x={x}");
+        }
+    }
+
+    /// Grass costs real speed. THE BUG THIS EXISTS FOR: `off_road()` was
+    /// written and then read by nothing, so leaving the road was free and
+    /// the MAX_STRAY clamp was the only thing suggesting the verge
+    /// mattered at all.
+    #[test]
+    fn grass_slows_the_car_down() {
+        let road = straight();
+        let tuning = Tuning::from_corner(&road, 1.5);
+
+        let mut car = Drive::new();
+        car.speed = tuning.top_speed;
+        car.x = 1.2;
+        for _ in 0..(2.0 / (1.0 / 240.0)) as usize {
+            car.update(1.0 / 240.0, 1.0, 0.0, 0.0, &road, &tuning);
+        }
+
+        let cap = tuning.top_speed * Surface::Grass.speed_cap();
+        assert!(
+            (car.speed - cap).abs() < tuning.top_speed * 0.01,
+            "on grass at full throttle the car should settle at {cap}, sat at {}",
+            car.speed,
+        );
+        assert!(car.speed < tuning.top_speed * 0.5, "grass barely slowed the car");
+    }
+
+    /// The rumble strip is a warning, not a punishment: it costs less
+    /// than the grass does, or there is no reason to draw a distinction
+    /// between clipping a verge and leaving the road.
+    #[test]
+    fn the_rumble_strip_costs_less_than_the_grass() {
+        let road = straight();
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let dt = 1.0 / 240.0;
+
+        let settle = |x: f32| {
+            let mut car = Drive::new();
+            car.speed = tuning.top_speed;
+            car.x = x;
+            for _ in 0..(2.0 / dt) as usize {
+                car.update(dt, 1.0, 0.0, 0.0, &road, &tuning);
+            }
+            car.speed
+        };
+
+        let on_road = settle(0.0);
+        let on_rumble = settle(0.95);
+        let on_grass = settle(1.2);
+
+        assert!(on_rumble < on_road, "the rumble strip cost nothing");
+        assert!(on_grass < on_rumble, "the grass was no worse than the rumble strip");
+        assert_eq!(on_road, tuning.top_speed, "the road itself should cost nothing");
+    }
+
+    /// Leaving the road costs TIME, which is the penalty that matters in
+    /// a game scored on it. Asserting the consequence a player feels, not
+    /// the mechanism that produces it (L022).
+    #[test]
+    fn going_off_costs_distance() {
+        let road = straight();
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let dt = 1.0 / 240.0;
+
+        let run = |x: f32| {
+            let mut car = Drive::new();
+            car.speed = tuning.top_speed;
+            car.x = x;
+            let start = car.z;
+            for _ in 0..(3.0 / dt) as usize {
+                car.update(dt, 1.0, 0.0, 0.0, &road, &tuning);
+            }
+            car.z - start
+        };
+
+        let clean = run(0.0);
+        let excursion = run(1.2);
+        assert!(
+            excursion < clean * 0.6,
+            "three seconds on the grass covered {excursion} against {clean} on the road \
+             — leaving the track has to cost real ground",
+        );
     }
 
     /// `centrifugal` is SOLVED, not chosen: ask for a limit bend and the
@@ -819,6 +1038,19 @@ mod tests {
     /// what "normalised curve" meant. A pinned lean makes every corner
     /// look identical, which is worse than no lean at all because it
     /// implies information that is not there.
+    ///
+    /// ⚠️ EACH BEND IS DRIVEN AT A SPEED IT CAN BE HELD AT, and that is
+    /// not fussiness. Driven flat out, the two hardest bends here both
+    /// put the car onto the rumble strip, where the surface cap pins
+    /// speed — and lean is scaled by speed, so both came back at 0.551
+    /// and this test failed. Nothing was wrong with lean: a car scrubbing
+    /// a verge at 67% genuinely is not cornering harder than one holding
+    /// the road at 100%, and lean said so correctly.
+    ///
+    /// But a car that has fallen off the road is not demonstrating
+    /// cornering, so measuring it there asks the wrong question. Braking
+    /// through the hard ones keeps every sample ON the road, which is
+    /// where the property under test lives.
     #[test]
     fn lean_varies_across_bends_instead_of_pinning() {
         let dt = 1.0 / 120.0;
@@ -828,10 +1060,39 @@ mod tests {
             let road = Road::new(vec![Segment::curving(raw); 400], 200.0, 2200.0);
             let tuning = Tuning::from_corner(&road, 1.5);
             let mut d = Drive::new();
+            // A driver who slows for the bend: hold the fastest speed
+            // this corner can be taken at, rather than braking for a
+            // fixed amount. Braking is an INPUT, not a speed target —
+            // holding the brake down for six seconds simply stops the
+            // car, and a stationary car has no lean at all, which is how
+            // the first attempt at this produced a 0.0.
+            //
+            // The holdable speed is FOUND, not derived. Solving
+            // `curve * authority^2 * centrifugal = steer_rate` gives the
+            // answer for a driver holding FULL LOCK, and this driver does
+            // not: `(-x * 3.0)` only saturates once the car is a third of
+            // the way to a verge, so it settles wherever push balances a
+            // partial correction — measurably slower than the formula
+            // predicts (0.70 against 0.82 on the hardest bend here).
+            //
+            // Fitting a second formula to this particular driver would be
+            // a constant calibrated against something that moves the
+            // moment the driver or the physics changes, which is the
+            // mistake this module keeps a lesson about. Searching for it
+            // stays correct through both.
+            let target = fastest_holdable(&road, &tuning);
             for _ in 0..(6.0 / dt) as usize {
                 let correction = (-d.x * 3.0).clamp(-1.0, 1.0);
-                d.update(dt, 1.0, 0.0, correction, &road, &tuning);
+                let (throttle, brake) =
+                    if d.speed > target { (0.0, 1.0) } else { (1.0, 0.0) };
+                d.update(dt, throttle, brake, correction, &road, &tuning);
             }
+            assert_eq!(
+                d.surface(),
+                Surface::Road,
+                "the sample for curve {raw} left the tarmac; lean measured there \
+                 reports the surface cap, not the bend",
+            );
             let lean = d.cornering(&road, &tuning).abs();
             assert!(
                 lean < 1.0,

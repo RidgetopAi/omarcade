@@ -253,7 +253,10 @@ pub fn draw_road_into(
             c.fill_rect_f(fx, sy, fw, bh, grass_flat);
             c.fill_rect_f(cx - hw, sy, hw * 2.0, bh, road_flat);
 
-            let rumble = (hw * 0.13).max(0.7);
+            // `.max(0.7)`: a screen minimum so the strip never vanishes at
+            // distance. The FRACTION is shared with physics — the width
+            // drawn here is the width that drags there.
+            let rumble = (hw * crate::drive::RUMBLE_FRACTION).max(0.7);
             let rc = if mark { rumble_a } else { rumble_b };
             c.fill_rect_f(cx - hw, sy, rumble, bh, rc);
             c.fill_rect_f(cx + hw - rumble, sy, rumble, bh, rc);

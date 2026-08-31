@@ -132,4 +132,26 @@ fn main() {
     }
     println!("\n    'off' = left the road. A bend is a SKILL when flat-out goes off");
     println!("    and braking does not — that is the row where the brake earns its\n    place.\n");
+
+    // ---- what leaving the road costs ---------------------------------
+    println!("  surfaces: what leaving the road costs\n");
+    println!("    rumble strip occupies the outer {:.0}% of each half-width",
+        drive::RUMBLE_FRACTION * 100.0);
+    println!("    so: road |x| < {:.2} · rumble to 1.00 · grass beyond",
+        1.0 - drive::RUMBLE_FRACTION);
+    println!();
+    println!("    {:<10} {:>10} {:>14} {:>16}", "surface", "cap", "settles at", "3s covers");
+    for (label, x) in [("road", 0.0f32), ("rumble", 0.95), ("grass", 1.2)] {
+        let mut car = Drive::new();
+        car.speed = tuning.top_speed;
+        car.x = x;
+        let start = car.z;
+        for _ in 0..(3.0 / DT) as usize {
+            car.update(DT, 1.0, 0.0, 0.0, &track, &tuning);
+        }
+        println!("    {label:<10} {:>9.0}% {:>13.0} {:>15.0}",
+            car.surface().speed_cap() * 100.0, car.speed, car.z - start);
+    }
+    println!("\n    A mistake costs GROUND, and stays recoverable. The fail state in");
+    println!("    this game is a collision, not a wheel on the verge.\n");
 }

@@ -72,6 +72,30 @@ impl Color {
         }
     }
 
+    /// Pull a colour toward grey, keeping its perceived brightness.
+    ///
+    /// `amount` is 0.0 (unchanged) to 1.0 (fully neutral). The grey it
+    /// moves toward is the colour's own **luminance**, not the average of
+    /// its channels: the eye is far more sensitive to green than to blue,
+    /// so a naive average sends greens noticeably darker and blues
+    /// lighter. Preserving luminance means desaturating changes the hue
+    /// without changing how bright the surface reads.
+    ///
+    /// This exists because theme-derived surfaces can be far more
+    /// saturated than their role wants. Measured across the installed
+    /// Omarchy themes, road tarmac derived from theme slots ranged from
+    /// chroma 0.000 to 0.273 — some themes put a vividly coloured road on
+    /// screen. Capping saturation keeps every theme recolouring the scene
+    /// while stopping a surface that should read as tarmac from reading as
+    /// paint.
+    pub fn desaturated(self, amount: f32) -> Color {
+        let amount = amount.clamp(0.0, 1.0);
+        // Rec. 709 luma, the same weighting used to judge contrast.
+        let y = 0.2126 * self.r as f32 + 0.7152 * self.g as f32 + 0.0722 * self.b as f32;
+        let mix = |c: u8| (c as f32 + (y - c as f32) * amount).round().clamp(0.0, 255.0) as u8;
+        Color { r: mix(self.r), g: mix(self.g), b: mix(self.b), a: self.a }
+    }
+
     /// Pack into softbuffer's pixel layout: `0x00RRGGBB`.
     ///
     /// The high byte stays zero: softbuffer presents opaque buffers, so
@@ -326,6 +350,74 @@ pub trait Backend {
 
 #[cfg(test)]
 mod tests {
+
+    fn chroma(c: Color) -> f32 {
+        let (r, g, b) = (c.r as f32, c.g as f32, c.b as f32);
+        let mx = r.max(g).max(b);
+        let mn = r.min(g).min(b);
+        if mx == 0.0 { 0.0 } else { (mx - mn) / mx }
+    }
+
+    fn luma(c: Color) -> f32 {
+        0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * c.b as f32
+    }
+
+    #[test]
+    fn desaturating_removes_hue() {
+        let green = Color::rgb(0xa7, 0xc0, 0x80);
+        assert!(chroma(green) > 0.3);
+        assert!(chroma(green.desaturated(0.75)) < chroma(green) * 0.3);
+        assert!(chroma(green.desaturated(1.0)) < 0.01, "fully desaturated must be grey");
+    }
+
+    #[test]
+    fn desaturating_by_zero_changes_nothing() {
+        let c = Color::rgb(0xa7, 0xc0, 0x80);
+        let d = c.desaturated(0.0);
+        assert_eq!((c.r, c.g, c.b), (d.r, d.g, d.b));
+    }
+
+    /// The reason this greys toward LUMINANCE rather than the channel
+    /// average: the eye weights green ~10x more than blue, so a naive
+    /// average sends greens darker and blues lighter. A road that changed
+    /// brightness when it was desaturated would trade one artefact for
+    /// another.
+    #[test]
+    fn desaturating_preserves_perceived_brightness() {
+        for c in [
+            Color::rgb(0xa7, 0xc0, 0x80), // green
+            Color::rgb(0x7f, 0xbb, 0xb3), // teal
+            Color::rgb(0xe6, 0x7e, 0x80), // red
+            Color::rgb(0x21, 0x27, 0x2c), // near-black
+        ] {
+            let before = luma(c);
+            for amount in [0.25f32, 0.5, 0.75, 1.0] {
+                let after = luma(c.desaturated(amount));
+                assert!(
+                    (after - before).abs() < 1.5,
+                    "desaturating {c:?} by {amount} moved luma {before:.1} -> {after:.1}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn desaturating_leaves_alpha_alone() {
+        let c = Color::rgba(0xa7, 0xc0, 0x80, 0x40);
+        assert_eq!(c.desaturated(1.0).a, 0x40);
+    }
+
+    /// Out-of-range input is clamped rather than producing nonsense, the
+    /// same as `lerp` does.
+    #[test]
+    fn desaturation_amount_is_clamped() {
+        let c = Color::rgb(0xa7, 0xc0, 0x80);
+        assert_eq!(
+            (c.desaturated(4.0).r, c.desaturated(4.0).g),
+            (c.desaturated(1.0).r, c.desaturated(1.0).g),
+        );
+        assert_eq!(c.desaturated(-2.0).g, c.g);
+    }
     use super::*;
 
     const RED: Color = Color::rgb(255, 0, 0);

@@ -19,6 +19,15 @@ use crate::drive::{Drive, Tuning};
 use crate::road::{Camera, Road, Segment};
 use crate::scenery;
 
+/// How much hue the road surface gives up, 0.0 to 1.0.
+///
+/// Not 1.0: a road pinned to pure grey stops belonging to the theme at
+/// all, and the suite is theme-reactive on purpose. 0.75 leaves every
+/// theme's road recognisably tinted — measured, it brings the worst
+/// offenders from chroma 0.27 down to about 0.07 — while none of them
+/// reads as a coloured surface any more.
+const ROAD_DESATURATION: f32 = 0.75;
+
 /// How tall a roadside prop stands, in road half-widths.
 ///
 /// A ratio against the road rather than a pixel size, so props keep their
@@ -114,10 +123,25 @@ pub fn draw_road_into(
     // two surfaces. Mixing further both restores the hue and widens the
     // road-to-grass edge.
     let grass_flat = theme.background.lerp(theme.green, 0.57);
-    // One shade each. The midpoint of the pairs these replace, so the
-    // scene keeps its overall value while losing the pattern that could
-    // only ever alias, toggle or wave.
-    let road_flat = theme.dark_background.lerp(theme.foreground, 0.16);
+    // One shade, desaturated so it reads as TARMAC rather than as paint.
+    //
+    // Measured across the installed Omarchy themes, a road derived
+    // straight from the theme slots ranged from chroma 0.000 to 0.273 —
+    // catppuccin, lumon, tokyo-night and retro-82 all put a vividly
+    // coloured "road" on screen, and even a mild theme like everforest
+    // gave enough hue that the contrast against its much more saturated
+    // grass (0.047 road vs 0.258 grass) read as green striping on the
+    // track.
+    //
+    // Capping the road's saturation keeps every theme recolouring the
+    // scene — grass, sky, props and cars are untouched — while stopping
+    // the one surface that should look like asphalt from taking the
+    // theme's hue at full strength. `desaturated` preserves luminance, so
+    // this changes the road's colour without changing how bright it reads.
+    let road_flat = theme
+        .dark_background
+        .lerp(theme.foreground, 0.16)
+        .desaturated(ROAD_DESATURATION);
     let rumble_a = theme.red.lerp(Color::WHITE, 0.15);
     let rumble_b = theme.foreground.lerp(Color::WHITE, 0.4);
     let line = theme.foreground.lerp(Color::WHITE, 0.5);

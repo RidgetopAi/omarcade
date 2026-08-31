@@ -205,6 +205,21 @@
         Actual size, 2x, 4x &mdash; how it reads at distance.
         Dark tyres vanish on a dark ground; check against <b>road</b>.
       </p>
+      <div class="row" style="align-items:center">
+        <label class="hint" for="scalerole" style="margin:0">world scale as</label>
+        <select id="scalerole">
+          <option value="prop" selected>prop / billboard</option>
+          <option value="gantry">spans the road</option>
+          <option value="car">a car</option>
+        </select>
+      </div>
+      <canvas id="scalecheck" width="288" height="140"
+              style="border-radius:6px;margin-top:8px"></canvas>
+      <p class="hint">
+        Your sprite at the size the game will draw it, next to the car on
+        the road. Pixel count never sets world size &mdash; the <b>role</b>
+        does; the grid only sets aspect ratio and detail.
+      </p>
     </div>
 
     <div class="panel">
@@ -536,6 +551,9 @@ let bg = BACKGROUNDS[0][1];
 
 let grid = Array.from({length: ROWS}, () => Array(COLS).fill('.'));
 let cur = 'B';
+/// The seeded car frozen with its own recipes — the scale check's ruler.
+/// Assigned at boot, before any work-in-progress replaces the palette.
+let CAR_REF = null;
 let editing = null;          // which palette letter has the editor open
 /// Names the most recent load could not resolve. Read by the Load
 /// handler so a partial paste explains itself rather than going magenta.
@@ -617,7 +635,99 @@ function drawPreview() {
     }
     ox += COLS * s + 12;
   }
+  drawScaleCheck();
 }
+
+// --- the scale check -------------------------------------------------
+//
+// The game never reads a sprite's pixel count as a size: render assigns
+// every sprite a WORLD dimension and scales the art to it. What an
+// artist controls is the aspect ratio and the detail budget. The numbers
+// here mirror the racer's:
+//   road          2.0 half-widths verge to verge     (road.rs)
+//   rumble strip  outer 13% of each half-width       (render.rs)
+//   prop height   0.38 half-widths                   (PROP_HEIGHT_IN_HALF_WIDTHS)
+//   prop lane     props stand at ±1.3 half-widths    (scenery.rs)
+//   car width     0.69 half-widths (48px art at 70px per half-width)
+//   road spanner  2.6 half-widths — the road plus a post on each verge
+// If those constants move in the Rust, move them here or the check lies.
+
+const SCALE_ROLES = {
+  prop:   {hwHeight: 0.38},
+  gantry: {hwWidth: 2.6},
+  car:    {hwWidth: 0.69},
+};
+
+/// Resolve colours against a palette that is not the live one — the
+/// reference car must keep its own recipes whatever the current sprite
+/// has done to the letters.
+function withPalette(palette, fixed, fn) {
+  const P = PALETTE, F = FIXED;
+  PALETTE = palette; FIXED = fixed;
+  try { return fn(); } finally { PALETTE = P; FIXED = F; }
+}
+
+function colorMapFor(rows) {
+  const m = {};
+  for (const r of rows)
+    for (const ch of r)
+      if (ch !== '.' && !(ch in m)) m[ch] = colorOf(ch);
+  return m;
+}
+
+/// Paint rows sitting ON baseY — sprites in the game stand on the road,
+/// so the check anchors them by their feet, not their top-left.
+function drawGridInto(g, rows, colors, x, baseY, s) {
+  const h = rows.length;
+  for (let y = 0; y < h; y++)
+    for (let xx = 0; xx < rows[y].length; xx++) {
+      const ch = rows[y][xx];
+      if (ch === '.') continue;
+      g.fillStyle = colors[ch] || '#ff00ff';
+      g.fillRect(x + xx*s, baseY - (h - y)*s, s, s);
+    }
+}
+
+function drawScaleCheck() {
+  const sc = $('scalecheck');
+  if (!sc || !CAR_REF) return;
+  const g = sc.getContext('2d');
+  const W = sc.width, H = sc.height;
+  const pphw = W / 3.2;                  // 3.2 half-widths in frame
+  const cx = W / 2, base = H - 8;
+
+  // Grass, road, rumble — the proportions render.rs draws.
+  g.fillStyle = '#4a5a48'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#3e4449'; g.fillRect(cx - pphw, 0, pphw * 2, H);
+  g.fillStyle = '#a05a52';
+  const rw = pphw * 0.13;
+  g.fillRect(cx - pphw, 0, rw, H);
+  g.fillRect(cx + pphw - rw, 0, rw, H);
+
+  // The car at its true width, in the right lane — the ruler.
+  const carRows = CAR_REF.grid;
+  const carS = SCALE_ROLES.car.hwWidth * pphw / carRows[0].length;
+  const carColors = withPalette(CAR_REF.palette, CAR_REF.fixed,
+    () => colorMapFor(carRows));
+  drawGridInto(g, carRows, carColors,
+    cx + pphw * 0.5 - carRows[0].length * carS / 2, base, carS);
+
+  // The sprite being drawn, at the size its role earns it. A spanner
+  // sits centred over the road; a prop stands on the left verge; a car
+  // takes the left lane beside the reference.
+  const rows = grid.map(r => r.join(''));
+  const role = SCALE_ROLES[$('scalerole').value] || SCALE_ROLES.prop;
+  const s = role.hwWidth != null
+    ? role.hwWidth * pphw / COLS
+    : role.hwHeight * pphw / ROWS;
+  const w = COLS * s;
+  const x = role === SCALE_ROLES.gantry ? cx - w / 2
+          : role === SCALE_ROLES.prop   ? cx - pphw * 1.3 - w / 2
+          :                               cx - pphw * 0.5 - w / 2;
+  drawGridInto(g, rows, colorMapFor(rows), x, base, s);
+}
+
+$('scalerole').onchange = drawScaleCheck;
 
 function pushUndo() {
   undoStack.push(grid.map(r => r.slice()));
@@ -1626,6 +1736,14 @@ const SEED = [
   "................................................",
   "................................................",
 ].map(r => r.split(''));
+
+// Freeze the car with the palette as declared above, BEFORE any restore
+// swaps the live palette out from under it.
+CAR_REF = {
+  grid: SEED.map(r => r.join('')),
+  palette: PALETTE.map(e => ({...e})),
+  fixed: FIXED.map(f => ({...f})),
+};
 
 // Boot: pick up last session's work in progress when there is one.
 let wip = null;

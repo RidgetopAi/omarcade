@@ -51,6 +51,17 @@ pub struct Tuning {
     pub steer_rate: f32,
     /// Seconds to reach top speed from a standstill.
     pub accel_time: f32,
+    /// How hard a bend throws the car toward its outside, in half-widths
+    /// per second per unit of curve at full speed.
+    ///
+    /// SOLVED, not chosen — see [`BRAKE_BEND`]. It is the one number in
+    /// the module that decides whether corners are a skill or scenery,
+    /// and it was a bare `0.9` that nobody could judge: the question
+    /// "is 0.9 a lot?" has no answer without doing the arithmetic against
+    /// the steer rate, which is exactly the kind of constant L019 is
+    /// about. Stated as "the bend you must brake for", it can be checked
+    /// against `Road::curve_at` by reading.
+    pub centrifugal: f32,
     /// Seconds from top speed to a dead stop under full braking.
     ///
     /// Stated as a DURATION, not as a deceleration, for the same reason
@@ -99,6 +110,7 @@ impl Tuning {
             // Free knob. Chosen by feel, and safe to change: no geometry
             // depends on it under this derivation.
             steer_rate: 1.6,
+            centrifugal: 1.6 / BRAKE_BEND,
             accel_time: 4.0,
             brake_time: BRAKE_TIME,
             derived: Derivation::FromCorner,
@@ -139,6 +151,12 @@ impl Tuning {
             // "bends are easy, traffic is the challenge" tuning.
             top_speed: visible / RELAXED_REACTION,
             steer_rate: 2.0 / crossing_seconds,
+            // Solved from the SAME bend, so B's stronger steering buys a
+            // proportionally stronger push and the limit bend stays put.
+            // Pinning the push instead would mean B's quicker hands made
+            // every corner free, which is a different game than "traffic
+            // is the challenge" — it would be "there is no challenge".
+            centrifugal: (2.0 / crossing_seconds) / BRAKE_BEND,
             accel_time: 4.0,
             brake_time: BRAKE_TIME,
             derived: Derivation::FromCrossing,
@@ -267,12 +285,20 @@ impl Drive {
         // something to watch go by, and it is why steering into a bend at
         // speed is not free.
         //
-        // Scaled by speed as a fraction of top, so it is a ratio and means
-        // the same thing under either tuning.
+        // ⚠️ THE SQUARE IS LOAD-BEARING. Push goes as authority², steering
+        // as authority, and that asymmetry is the entire reason braking
+        // helps. Halve your speed and the push falls to a quarter while
+        // your steering only falls to a half — so slowing buys back twice
+        // the grip it costs you in hands. Make both linear and the ratio
+        // is constant at every speed: a bend you cannot hold at full
+        // throttle is equally unholdable at walking pace, the brake stops
+        // being an answer, and the only strategy left is to never go fast.
+        // (It is also the physics: centrifugal force goes as v².)
+        //
         // NOT segment_at().curve — that is the renderer's raw authoring
         // number. See Road::curve_at.
         let curve = road.curve_at(self.z);
-        self.x -= curve * authority * authority * CENTRIFUGAL * dt;
+        self.x -= curve * authority * authority * tuning.centrifugal * dt;
 
         self.x = self.x.clamp(-MAX_STRAY, MAX_STRAY);
     }
@@ -330,11 +356,30 @@ const BRAKE_TIME: f32 = 1.2;
 /// far above A's 1.5s so the two tunings are visibly different games.
 const RELAXED_REACTION: f32 = 2.6;
 
-/// How hard a bend throws the car toward its outside, in half-widths per
-/// second at full speed per unit of curve.
+/// The bend you must brake for.
 ///
-/// A ratio, so it means the same on any road (L019).
-const CENTRIFUGAL: f32 = 0.9;
+/// The normalised curve at which the centrifugal push exactly cancels
+/// full counter-steer at full speed. Below it, a bend can be held flat
+/// out by steering alone; above it, no amount of steering saves the car
+/// and the only way through is to shed speed.
+///
+/// This is the constant that decides whether cornering is a skill, and
+/// it replaces a bare `CENTRIFUGAL = 0.9` that could not be judged
+/// without arithmetic. Measured against that value, the hardest bend on
+/// the demo track (normalised curve 1.488) sat at 84% of what full
+/// counter-steer could hold: the player rounded it at top speed, never
+/// touching the brake, straying a quarter of the way to the verge. The
+/// corner was scenery.
+///
+/// At 1.0 that same bend is roughly 1.5x past the limit — genuinely
+/// unholdable flat out, and the brake becomes the answer rather than an
+/// alternative to it.
+///
+/// Stated in the units of `Road::curve_at`, so a reader can compare it
+/// to a track by reading rather than by deriving (L019). The push is
+/// solved FROM it per tuning, which is what keeps the limit bend fixed
+/// when steering changes.
+const BRAKE_BEND: f32 = 1.0;
 
 /// The normalised curve at which the car reaches FULL lean.
 ///
@@ -374,6 +419,134 @@ mod tests {
                 "asked for {wanted}s to react, got {got}s",
             );
         }
+    }
+
+    /// A road bent to a given normalised curve, all the way along.
+    ///
+    /// `Segment::curving` takes the RENDERER's raw authoring number, so
+    /// this solves backwards through `curve_at` to land on a wanted
+    /// normalised curve. Doing it by hand in each test is how the two
+    /// kinds got mixed up before (see `Road::curve_at`).
+    fn bent_to(normalised: f32) -> Road {
+        let probe = Road::straight(400);
+        let n = probe.draw_distance() as f32;
+        let raw = normalised * (n * (n + 1.0) / 2.0) / n;
+        let segs = std::iter::repeat_n(Segment::curving(raw), 400).collect();
+        Road::new(segs, 200.0, 2200.0)
+    }
+
+    /// Drive a bend with a CORRECTIVE driver and report how far the car
+    /// strays. 1.0 is the verge.
+    ///
+    /// ⚠️ The driver steers toward the centre line, as much as is needed
+    /// and no more — it does NOT hold full lock. Holding full lock
+    /// forever does not measure "can this bend be held": under the limit
+    /// the steering overpowers the push and the car leaves by the
+    /// INSIDE, which reads as a stray of 1.35 and looks identical to
+    /// being thrown off the outside. That mistake is already documented
+    /// on `a_corner_can_be_held_by_steering_into_it`, and this helper
+    /// walked into it anyway.
+    ///
+    /// What a corrective driver cannot do is beat physics: if the push at
+    /// this speed exceeds what full steering can cancel, the correction
+    /// saturates at full lock and the car goes off the outside regardless.
+    /// So this measures the bend, not the driver.
+    fn stray_holding_flat_out(road: &Road, tuning: &Tuning, brake: f32) -> f32 {
+        let mut car = Drive::new();
+        car.speed = tuning.top_speed;
+        let dt = 1.0 / 240.0;
+        let mut worst = 0.0f32;
+        for _ in 0..(4.0 / dt) as usize {
+            let correction = (-car.x * 3.0).clamp(-1.0, 1.0);
+            car.update(dt, 1.0 - brake, brake, correction, road, tuning);
+            worst = worst.max(car.x.abs());
+        }
+        worst
+    }
+
+    /// `centrifugal` is SOLVED, not chosen: ask for a limit bend and the
+    /// limit bend is what you get back.
+    ///
+    /// The same shape as the two derivation tests above, and the reason
+    /// the constant is stated as a bend rather than as a push.
+    #[test]
+    fn the_push_is_solved_from_the_bend_you_must_brake_for() {
+        let road = Road::straight(400);
+        for tuning in [Tuning::from_corner(&road, 1.5), Tuning::from_crossing(&road, 1.2)] {
+            let limit = tuning.steer_rate / tuning.centrifugal;
+            assert!(
+                (limit - BRAKE_BEND).abs() < 0.001,
+                "BRAKE_BEND is {BRAKE_BEND} but the tuning's limit bend is {limit}",
+            );
+        }
+    }
+
+    /// Below the limit, a bend is holdable flat out.
+    ///
+    /// Two jobs. First: it stops the harder push turning EVERY corner
+    /// into a wall — a game where no bend can be taken at speed is as
+    /// skill-free as one where every bend can.
+    ///
+    /// Second, and the reason it is driven flat out rather than braked:
+    /// THIS IS THE UNITS GUARD. Physics once read `segment_at().curve` —
+    /// the renderer's raw authoring number, ~90 — instead of the
+    /// normalised `curve_at`, producing a push of 81 half-widths per
+    /// second against 1.6 of steering, and the car crossed the whole road
+    /// in 25ms. A test that BRAKES cannot catch that, because the push
+    /// scales with authority² and a braking car has almost none; it
+    /// passes against the bug. Only a car at full speed, on a bend that
+    /// must be holdable, fails when the units are wrong. Verified by
+    /// re-introducing the bug. (L015, and L022 rule 3: two quantities
+    /// sharing a name are not the same kind of thing.)
+    #[test]
+    fn a_gentle_bend_can_be_held_at_full_speed() {
+        let road = bent_to(BRAKE_BEND * 0.6);
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let stray = stray_holding_flat_out(&road, &tuning, 0.0);
+        assert!(
+            stray < 1.0,
+            "a bend at 60% of the limit should be holdable flat out, strayed {stray}",
+        );
+    }
+
+    /// THE BUG THIS CHANGE EXISTS FOR.
+    ///
+    /// Past the limit, full counter-steer at full speed is not enough and
+    /// the car leaves the road. Against the old `CENTRIFUGAL = 0.9` the
+    /// hardest bend the demo track contained sat at 84% of what steering
+    /// could hold, so this test fails against that version — which is the
+    /// only reason it is worth having (L017).
+    #[test]
+    fn a_hard_bend_cannot_be_held_at_full_speed() {
+        let road = bent_to(BRAKE_BEND * 1.5);
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let stray = stray_holding_flat_out(&road, &tuning, 0.0);
+        assert!(
+            stray > 1.0,
+            "a bend 50% past the limit must NOT be holdable flat out, strayed only {stray}",
+        );
+    }
+
+    /// And the brake is the answer to it.
+    ///
+    /// The pair above says a hard bend is unholdable; without this one
+    /// that is merely a bend nobody can take, which is not a skill. What
+    /// makes it a skill is that slowing down works — and it works only
+    /// because the push goes as authority² while steering goes as
+    /// authority.
+    #[test]
+    fn braking_gets_you_through_a_bend_you_cannot_hold() {
+        let road = bent_to(BRAKE_BEND * 1.5);
+        let tuning = Tuning::from_corner(&road, 1.5);
+
+        let flat_out = stray_holding_flat_out(&road, &tuning, 0.0);
+        let braking = stray_holding_flat_out(&road, &tuning, 1.0);
+
+        assert!(flat_out > 1.0, "the premise: flat out should go off, strayed {flat_out}");
+        assert!(
+            braking < 1.0,
+            "braking into the same bend should keep the car on the road, strayed {braking}",
+        );
     }
 
     /// The brake delivers the stopping time it was stated as.
@@ -676,8 +849,32 @@ mod tests {
         }
     }
 
-    /// A corner must be SURVIVABLE: steering has to be able to beat the
-    /// centrifugal push, or the bend is unwinnable by construction.
+    /// A corner must be SURVIVABLE: a driver who slows for it has to be
+    /// able to hold it, or the bend is unwinnable by construction.
+    ///
+    /// ⚠️ This used to assert the bend was holdable AT FULL THROTTLE, and
+    /// it was — the old `CENTRIFUGAL = 0.9` left this curve (normalised
+    /// 1.488) at 84% of what full counter-steer could cancel, so the
+    /// player rounded it flat out without touching the brake. Deriving
+    /// the push from `BRAKE_BEND` deliberately ended that: this bend is
+    /// now half again past the limit and full throttle WILL put the car
+    /// off. That is the feature, so the test now drives it the way it is
+    /// meant to be driven.
+    ///
+    /// ⚠️ AND THE GUARD MOVED, because braking DISSOLVES it. The push
+    /// goes as authority², so a braking car drives authority toward zero
+    /// and the push vanishes no matter how wrong its units are — a
+    /// braking test passes happily against the raw-curve bug. Verified by
+    /// re-introducing it. The units guard therefore lives in
+    /// [`a_gentle_bend_can_be_held_at_full_speed`], which drives flat out
+    /// at a bend that must be holdable: there, a push in the wrong units
+    /// pins the car at MAX_STRAY instantly and the test fails, exactly as
+    /// it did when the bug shipped.
+    ///
+    /// What THIS test now guards is the other half: that a bend past the
+    /// limit is not merely hard but actually winnable by a driver who
+    /// slows for it. Without it, "corners are a skill" could be satisfied
+    /// by a corner nobody can take.
     ///
     /// This is the bug that shipped. Physics read `segment_at().curve`
     /// directly — the renderer's raw authoring number, around 90 at a
@@ -690,7 +887,7 @@ mod tests {
     /// L015 again, and L022 rule 3: two quantities sharing a name are not
     /// necessarily the same kind of thing.
     #[test]
-    fn a_corner_can_be_held_by_steering_into_it() {
+    fn a_corner_can_be_held_by_slowing_for_it() {
         // A hard bend, at the strength the visual scenes actually use.
         let road = Road::new(vec![Segment::curving(90.0); 400], 1000.0, 2200.0);
         for tuning in [Tuning::from_corner(&road, 1.5), Tuning::from_crossing(&road, 1.2)] {
@@ -707,10 +904,12 @@ mod tests {
             // hold a line through it, which is what this asserts.
             for _ in 0..1200 {
                 let correction = (-d.x * 3.0).clamp(-1.0, 1.0);
-                d.update(0.016, 1.0, 0.0, correction, &road, &tuning);
+                // Braking through it, which is what this bend now asks
+                // for. A driver who slows appropriately holds the line.
+                d.update(0.016, 0.0, 1.0, correction, &road, &tuning);
                 assert!(
                     !d.off_road(),
-                    "a driver holding the line still went off at x={} ({:?})",
+                    "a driver who slowed for the bend still went off at x={} ({:?})",
                     d.x,
                     tuning.derived,
                 );

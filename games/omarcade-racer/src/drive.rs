@@ -459,7 +459,7 @@ const RELAXED_REACTION: f32 = 2.6;
 /// to a track by reading rather than by deriving (L019). The push is
 /// solved FROM it per tuning, which is what keeps the limit bend fixed
 /// when steering changes.
-const BRAKE_BEND: f32 = 1.0;
+pub const BRAKE_BEND: f32 = 1.0;
 
 /// The normalised curve at which the car reaches FULL lean.
 ///

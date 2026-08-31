@@ -15,6 +15,7 @@ mod drive;
 mod render;
 mod road;
 mod scenery;
+mod track;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::{Backend, Canvas, Game, InputEvent, Key, Roll, Theme};
@@ -77,7 +78,11 @@ struct Racer {
 impl Racer {
     fn new(theme: Theme) -> Self {
         let art = Art::load(&theme);
-        let road = render::demo_track();
+        // The shipped course. `render::demo_track()` is still there and is
+        // still what the visual scenes use — it is one bend, sized to be
+        // LOOKED at, and every dump_art render is calibrated against it.
+        // This is the one that is meant to be driven.
+        let road = track::grand_prix().build();
         let tuning = Tuning::from_corner(&road, REACTION_SECONDS);
 
         let pixels_per_unit = WHEEL_PIXELS * WHEEL_TURNS_PER_SECOND / tuning.top_speed;

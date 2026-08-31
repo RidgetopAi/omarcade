@@ -13,6 +13,7 @@
 //!   lean    one car swept through the full range of poses
 //!   roll    consecutive frames of the tread scrolling
 //!   drive   the two speed tunings side by side, as a filmstrip over time
+//!   gantry  the start gantry: raw pixels, over the road, and a size ladder
 //!
 //! Never screenshot a window for this — the render is deterministic and
 //! the window is not.
@@ -33,7 +34,7 @@ use std::io::Write;
 use art::Art;
 use drive::{Drive, Tuning};
 use omarcade_core::{Canvas, Pose, Theme};
-use road::Road;
+use road::{Camera, Road};
 
 const W: u32 = 960;
 const H: u32 = 720;
@@ -57,8 +58,11 @@ fn main() {
             "lean" => draw_lean(&mut c, &art, &theme),
             "roll" => draw_roll(&mut c, &art, &theme),
             "drive" => draw_drive(&mut c, &art, &theme),
+            "gantry" => draw_gantry(&mut c, &art, &theme),
             other => {
-                eprintln!("unknown scene {other:?} — try: sheet | road | curve | lean | roll | drive");
+                eprintln!(
+                    "unknown scene {other:?} — try: sheet | road | curve | lean | roll | drive | gantry"
+                );
                 std::process::exit(2);
             }
         }
@@ -404,4 +408,148 @@ fn draw_roll(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
         }
         let _ = row;
     }
+}
+
+/// The start/finish gantry, three ways.
+///
+/// This exists to answer "what does it look like" before any placement
+/// code is written, so the art's real needs are visible rather than
+/// guessed at. Three panels, because a road-spanning structure fails in
+/// three different ways and one view hides two of them:
+///
+///   TOP LEFT   the raw pixels, big, on neutral ground — are the shapes
+///              right at all
+///   TOP RIGHT  the measured facts, printed to stdout, not drawn
+///   BOTTOM     over the real road at the real projection, then a size
+///              ladder as it approaches
+///
+/// ⚠️ The grid is 160 wide but the INK spans columns 17..=142. Scaling
+/// the grid width to the road would leave the structure ~79% of the road
+/// wide, floating clear of both verges. Everything here scales by ink.
+fn draw_gantry(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
+    c.clear(theme.darker_background);
+
+    let g = &art.gantry;
+
+    // The ink bounds, measured from the art rather than hardcoded — if
+    // Brian redraws the gantry with different padding this follows it.
+    let (ink_x0, ink_x1) = ink_columns(art::GANTRY);
+    let ink_w = (ink_x1 - ink_x0 + 1) as f32;
+    let grid_w = g.width() as f32;
+    // Where the ink's centre sits relative to the grid's centre, in grid
+    // pixels. Nonzero if the padding is lopsided, and then every "centre
+    // it on the road" would be off by exactly this much.
+    let ink_cx = (ink_x0 + ink_x1 + 1) as f32 / 2.0;
+    let centre_bias = ink_cx - grid_w / 2.0;
+
+    println!("\n  the gantry, measured:\n");
+    println!("    grid            {} x {}", g.width(), g.height());
+    println!("    ink columns     {ink_x0}..={ink_x1}  ({ink_w} wide)");
+    println!("    padding         {ink_x0} left, {} right", grid_w as usize - 1 - ink_x1);
+    println!("    ink / grid      {:.3}", ink_w / grid_w);
+    println!("    centre bias     {centre_bias:+.1} px  (0 = ink is centred in the grid)");
+    println!("    lit pixels      {}", g.ink());
+
+    // ---- panel 1: the raw pixels, on neutral ground -------------------
+    //
+    // Big enough that individual pixels are visible. This is the panel
+    // that answers "is the lattice right", which the road view cannot.
+    let top_h = 300u32;
+    c.fill_rect(0, 0, W, top_h, theme.background);
+    c.fill_rect(0, top_h as i32 - 2, W, 2, theme.dark_foreground);
+
+    let flat_s = ((W as f32 - 40.0) / grid_w).min((top_h as f32 - 40.0) / g.height() as f32);
+    g.draw_ground(
+        c,
+        W as f32 / 2.0 - centre_bias * flat_s,
+        top_h as f32 - 20.0,
+        flat_s,
+    );
+
+    // ---- panel 2: over the real road ----------------------------------
+    //
+    // The game's own renderer draws the road, then the gantry is placed
+    // through the SAME projection the renderer uses. Placing it by eye
+    // here would prove nothing about whether it can be placed for real.
+    let road = Road::straight(400);
+    let tuning = Tuning::from_corner(&road, 1.5);
+    let mut car = Drive::new();
+    let dt = 1.0 / 120.0;
+    for _ in 0..(6.0 / dt) as usize {
+        let correction = (-car.x * 3.0).clamp(-1.0, 1.0);
+        car.update(dt, 1.0, 0.0, correction, &road, &tuning);
+    }
+    car.z = road.segment_length() * 3.0;
+
+    let road_y = top_h;
+    let road_h = H - top_h;
+    render::draw_road_into(
+        c, &art, theme, &road, &tuning, &car, 0.0, &[], 0, road_y, W, road_h,
+    );
+
+    // A size ladder: the same structure at four distances up the visible
+    // depth, so how fast it grows on approach is visible. A single
+    // placement cannot show that, and growth rate is the thing most
+    // likely to feel wrong.
+    // 0.85 — the SAME fill the renderer uses (render.rs:196). A different
+    // value here would project the gantry against a camera the drawn road
+    // was never rendered with, and it would sit convincingly in the wrong
+    // place.
+    let camera = Camera::for_road(&road, 0.85);
+    let visible = road.draw_distance() as f32 * road.segment_length();
+    // Nearest last, so closer structures paint over further ones — the
+    // same order the renderer draws traffic in.
+    for frac in [0.42f32, 0.26, 0.15, 0.075] {
+        let z = car.z + visible * frac;
+        let Some(p) = road.project(
+            &camera,
+            car.z,
+            car.x * road.width() / 2.0,
+            z,
+            W as f32,
+            road_h as f32,
+        ) else {
+            continue;
+        };
+
+        // THE SIZE RULE: the gantry spans the road, so its scale comes
+        // from the projected road WIDTH — not from a height in
+        // half-widths the way a roadside prop does. A prop is beside the
+        // road and its height is the free parameter; this thing's width
+        // is pinned by the thing it straddles.
+        let span_half_widths = 2.6;
+        let scale = p.half_width * span_half_widths / ink_w;
+
+        // The legs must land ON the verges, so the sprite is centred on
+        // the road's centre line corrected for the ink's own offset.
+        let x = p.x - centre_bias * scale;
+        // And it must stand ON the road surface: the projected y IS the
+        // road at this distance, so that is the sprite's ground line.
+        let y = road_y as f32 + p.y;
+
+        g.draw_ground(c, x, y, scale);
+    }
+
+    println!("\n  drawn over the road at 2.6 half-widths of span, scaled by INK width");
+    println!("  four distances, 7.5% to 42% of the visible depth\n");
+}
+
+/// The first and last columns of a grid that contain any ink.
+///
+/// Measured rather than hardcoded so a redraw with different padding is
+/// followed automatically — a hardcoded 17 would silently go wrong the
+/// first time the art changed.
+fn ink_columns(rows: &[&str]) -> (usize, usize) {
+    let w = rows[0].len();
+    let mut lo = w;
+    let mut hi = 0usize;
+    for row in rows {
+        for (i, ch) in row.chars().enumerate() {
+            if ch != '.' {
+                lo = lo.min(i);
+                hi = hi.max(i);
+            }
+        }
+    }
+    (lo, hi)
 }

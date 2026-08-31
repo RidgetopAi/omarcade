@@ -85,6 +85,117 @@ pub const PLAYER_CAR: &[&str] = &[
 ];
 
 
+/// The start/finish gantry — the structure that spans the road.
+///
+/// 160 wide by 60 tall, drawn in the sprite playground. Unlike a prop
+/// this does not stand *beside* the road, it stands *over* it: two
+/// lattice legs at the verges carrying a banner across the full width,
+/// with a chequered band and a signal bar on it.
+///
+/// ⚠️ The ink does not fill the grid. It occupies columns 17..=142 and
+/// rows 0..=56 — 17 blank columns each side and 3 blank rows below. A
+/// caller that scales this by GRID width to span the road will draw a
+/// structure only ~79% of the road wide. Scale by the ink, or trim the
+/// padding, but do not scale the raw width and assume it spans.
+///
+/// Legend (these letters are NOT the car's — see `gantry_palette`):
+///   E leg lattice, main     C leg lattice, shadow
+///   J leg upright, darker   A banner field
+///   F banner red            I banner red, shadowed
+///   K chequer white         T chequer dark
+pub const GANTRY: &[&str] = &[
+    ".................EEEEEEEFFFFFFFFFFFFFTTKKTTKKTTKKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKKTTKKTTKKTTFFFFFFFFFFFFFEEEEEEE.................",
+    ".................EC...EEFFF........FFTTKKTTKKTTKKFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFKKTTKKTTKKTTFF........FFFEE...CE.................",
+    ".................E.C.E.EFIFIIIIIIIFFFKKTTKKTTKKTTFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFTTKKTTKKTTKKFFFIIIIIIIFIFE.E.C.E.................",
+    ".................E..E..EFI.F.....FFIFKKTTKKTTKKTTFAAAAAFFFFFFAAAAFFFFFFFFAAAAAFFFFFAAAAAFFFFFFFAAAFFFFFFFFAAAAFTTKKTTKKTTKKFIFF.....F.IFE..E..E.................",
+    ".................E.E.C.EFI..F...FF.IFTTKKTTKKTTKKFAAAAAFAAAAFFAAAFFFFFFFFAAAAAFAAFFAAAAAFAAAAFFAAAFFFFFFFFAAAAFKKTTKKTTKKTTFI.FF...F..IFE.C.E.E.................",
+    ".................EE...CEFI...F.FFII.FTTKKTTKKTTKKFAAAAAFAAAAAFAAAAAAFFAAAAAAAAFAAAFAAAAAFAAAAAFAAAAAAFFAAAAAAAFKKTTKKTTKKTTF.IIFF.F...IFEC...EE.................",
+    ".................EEC..CEFI...FFFII..FKKTTKKTTKKTTFAAAAAFFAAAAAAAAAAAFFAAAAAAAFFAAAFAAAAAFAAAAAFAAAAAAFFAAAAAAAFTTKKTTKKTTKKF..IIFFF...IFEC..CEE.................",
+    ".................EEEEEEEFI..FF.FI...FKKTTKKTTKKTTFAAAAAFFFFFFFAAAAAAFFAAAAAAAFFFFFFAAAAAFFFFFFFAAAAAAFFAAAAAAAFTTKKTTKKTTKKF...IF.FF..IFEEEEEEE.................",
+    ".................EC...EEFI.FF..IF...FTTKKTTKKTTKKFAAAAAAAAAAAFAAAAAAFFAAAAAAFFFFFFFFAAAAFAAAFFAAAAAAAFFAAAAAAAFKKTTKKTTKKTTF...FI..FF.IFEE...CE.................",
+    ".................E.C.E.EFI.F..II.F..FTTKKTTKKTTKKFAAAAAFFAAAAFAAAAAAFFAAAAAAFFFFFFFFAAAAFAAAAFAAAAAAAFFAAAAAAAFKKTTKKTTKKTTF..F.II..F.IFE.E.C.E.................",
+    ".................E..E..EFIF..II...F.FKKTTKKTTKKTTFAAAAAFFFFFFFAAAAAAFFAAAAAFFAAAAAAFFAAAFAAAAFFAAAAAAFFAAAAAAAFTTKKTTKKTTKKF.F...II..FIFE..E..E.................",
+    ".................E.E.C.EFFF.I......FFKKTTKKTTKKTTFAAAAAAFFFFFFAAAAAAFFAAAAAFFAAAAAAAFAAAFAAAAFFAAAAAAFFAAAAAAAFTTKKTTKKTTKKFF......I.FFFE.C.E.E.................",
+    ".................EE...CEFFFFFFFFFFFFFTTKKTTKKTTKKFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFKKTTKKTTKKTTFFFFFFFFFFFFFEC...EE.................",
+    ".................EE....EJJIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIJJE....EE.................",
+    ".................EEEEEEEJJ............................................................................................................JJEEEEEEE.................",
+    ".................EC...EEJJ............................................................................................................JJEE...CE.................",
+    ".................E.C.E.EJJ............................................................................................................JJE.E.C.E.................",
+    ".................E..E..EJJ............................................................................................................JJE..E..E.................",
+    ".................E.E.C.EJJ............................................................................................................JJE.C.E.E.................",
+    ".................EE...CEJJ............................................................................................................JJEC...EE.................",
+    ".................EE....EJC............................................................................................................CJE....EE.................",
+    ".................EEEEEEEJJ............................................................................................................JJEEEEEEE.................",
+    ".................EC...EEJJ............................................................................................................JJEE...CE.................",
+    ".................ECC.E.EJJ............................................................................................................JJE.E.CCE.................",
+    ".................ECCE..EJJ............................................................................................................JJE..ECCE.................",
+    ".................E.E.C.EJJ............................................................................................................JJE.C.E.E.................",
+    ".................EE...CEJJ............................................................................................................JJEC...EE.................",
+    ".................EE....EJC............................................................................................................CJE....EE.................",
+    ".................EEEEEEEJJ............................................................................................................JJEEEEEEE.................",
+    ".................EC...EEJJ............................................................................................................JJEE...CE.................",
+    ".................ECC.E.EJJ............................................................................................................JJE.E.CCE.................",
+    ".................E..E..EJJ............................................................................................................JJE..E..E.................",
+    ".................E.E.C.EJJ............................................................................................................JJE.C.E.E.................",
+    ".................EE...CEJJ............................................................................................................CJEC...EE.................",
+    ".................EEEEEEEJC............................................................................................................JJEEEEEEE.................",
+    ".................EC...EEJJ............................................................................................................JJEE...CE.................",
+    ".................ECC.E.EJJ............................................................................................................JJE.E.CCE.................",
+    ".................EC.E..EJJ............................................................................................................JJE..E.CE.................",
+    ".................E.E.C.EJJ............................................................................................................JJE.C.E.E.................",
+    ".................EE...CEJJ............................................................................................................JJEC...EE.................",
+    ".................EEEEEEEJC............................................................................................................CJEEEEEEE.................",
+    ".................EC...EEJJ............................................................................................................JJEE...CE.................",
+    ".................ECC.E.EJJ............................................................................................................JJE.E.CCE.................",
+    ".................E..E..EJJ............................................................................................................JJE..E..E.................",
+    ".................E.E.C.EJJ............................................................................................................JJE.C.E.E.................",
+    ".................EE...CEJJ............................................................................................................JJEC...EE.................",
+    ".................EEEEEEEJC............................................................................................................CJEEEEEEE.................",
+    ".................ECC..EEJJ............................................................................................................JJEE...CE.................",
+    ".................ECCCE.EJJ............................................................................................................JJEEE.C.E.................",
+    ".................E.EE..EJJ............................................................................................................JJE..E..E.................",
+    ".................E.E.C.EJJ............................................................................................................JJE.C.E.E.................",
+    ".................EE...CEJJ............................................................................................................JJEC...EE.................",
+    ".................EEEEEEEJJ............................................................................................................JJEEEEEEE.................",
+    ".................EC....EJJ............................................................................................................JJE.....E.................",
+    ".................EC....EJJ............................................................................................................JJE.....E.................",
+    ".................EC....EJJ............................................................................................................JJE.....E.................",
+    ".................E.....EJ..............................................................................................................JE.....E.................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+];
+
+/// A palette for the gantry.
+///
+/// Separate from [`car_palette`] on purpose, and not merged into it:
+/// this art re-uses letters the car already owns with different
+/// meanings — `E` is the car's vent red but the gantry's lattice, `F`
+/// is the car's near-black but the gantry's banner red, `T` is a tyre
+/// but here a chequer square. One shared palette would silently repaint
+/// one of the two.
+///
+/// The structure is a fixed livery, like a car body: a start gantry that
+/// changed colour with the desktop would stop reading as the same
+/// landmark lap after lap. Only the lattice takes the theme, and only
+/// through `theme.green`, so it sits in the scene's light.
+pub fn gantry_palette(theme: &Theme) -> Vec<PaletteEntry> {
+    let lattice_shadow = Color::rgb(0x2a, 0x49, 0xe5);
+    let lattice = lattice_shadow.lerp(theme.green, 0.59);
+    let red = Color::rgb(0xaf, 0x12, 0x12);
+
+    vec![
+        ('E', lattice),                          // lattice, lit
+        ('C', lattice_shadow),                   // lattice, shadowed
+        ('J', lattice.lerp(Color::BLACK, 0.21)), // upright, darker still
+        ('A', theme.foreground),                 // banner field
+        ('F', red),                              // banner red
+        ('I', red.lerp(Color::BLACK, 0.35)),     // banner red, shadowed
+        ('K', Color::WHITE),                     // chequer, light
+        ('T', Color::rgb(0x1a, 0x1a, 0x1a)),     // chequer, dark
+    ]
+}
+
 /// A roadside marker post — the cheapest thing that sells speed.
 ///
 /// Small, high-contrast, and passing constantly. The eye reads speed
@@ -211,6 +322,9 @@ pub struct Art {
     /// The traffic. Same chassis as the player, different liveries.
     pub rivals: Vec<Sprite>,
     pub post: Sprite,
+    /// The start/finish gantry. Not a prop: it spans the road and wants a
+    /// FIXED track position, so `scenery.rs` must never pick it up.
+    pub gantry: Sprite,
     /// Roadside scenery — what actually carries the sense of motion.
     ///
     /// A list rather than named fields so adding a shape drawn in the
@@ -289,6 +403,7 @@ impl Art {
             player: Sprite::new_with_tread(PLAYER_CAR, &player_pal, TREAD),
             rivals,
             post: Sprite::new(MARKER_POST, &post_palette(theme)),
+            gantry: Sprite::new(GANTRY, &gantry_palette(theme)),
             props: vec![
                 Sprite::new(MARKER_POST, &post_palette(theme)),
                 Sprite::new(TALL_POLE, &post_palette(theme)),

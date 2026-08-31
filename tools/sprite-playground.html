@@ -6,13 +6,16 @@
     --warn: #e67e80;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--fg);
     font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; overflow: hidden;
   }
   header {
     padding: 14px 20px; border-bottom: 1px solid var(--edge);
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    flex: none;
   }
   header .controls {
     display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
@@ -20,10 +23,23 @@
   h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .04em; }
   header p { margin: 0; color: var(--muted); font-size: 12px; }
   main {
+    flex: 1; min-height: 0;
     display: grid; grid-template-columns: minmax(0,1fr) 340px;
-    gap: 20px; padding: 20px; align-items: start;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 20px; padding: 20px;
   }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  /* Each column scrolls by itself: the canvas and its tools stay in
+     frame while the sidebar is browsed. The page never scrolls. */
+  .col {
+    min-height: 0; min-width: 0; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .col > .panel { flex: none; }
+  @media (max-width: 900px) {
+    body { display: block; overflow: auto; height: auto; }
+    main { grid-template-columns: 1fr; }
+    .col { height: auto; overflow: visible; }
+  }
   .panel {
     background: var(--panel); border: 1px solid var(--edge);
     border-radius: 8px; padding: 16px;
@@ -109,6 +125,24 @@
     font-size: 11px; color: var(--muted); overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
   }
+
+  /* The asset library — one row per saved sprite. */
+  .asset {
+    display: flex; align-items: center; gap: 10px; padding: 6px 8px;
+    border: 1px solid var(--edge); border-radius: 5px; margin-bottom: 6px;
+    cursor: pointer; background: #1e2326;
+  }
+  .asset:hover { border-color: var(--accent); }
+  .asset img {
+    image-rendering: pixelated; width: 44px; height: auto; flex: none;
+    border-radius: 3px; background: #10141f;
+  }
+  .asset .meta { min-width: 0; flex: 1; }
+  .asset .meta b {
+    display: block; font-size: 12px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .asset .meta span { color: var(--muted); font-size: 11px; }
 </style>
 
 <header>
@@ -128,16 +162,41 @@
 </header>
 
 <main>
-  <div class="panel">
-    <h2>Canvas</h2>
-    <div id="gridwrap"><canvas id="grid"></canvas></div>
-    <p class="hint">
-      <kbd>drag</kbd> paint &nbsp; <kbd>right-drag</kbd> erase &nbsp;
-      <kbd>alt+click</kbd> pick colour &nbsp; <kbd>ctrl+z</kbd> undo
-    </p>
+  <div class="col">
+    <div class="panel">
+      <h2>Canvas</h2>
+      <div class="row" style="margin:0 0 10px">
+        <button id="mirror">Mirror L&rarr;R</button>
+        <button id="undo">Undo</button>
+        <button id="clear">Clear</button>
+        <button id="up">Shift up</button>
+        <button id="down">Shift down</button>
+      </div>
+      <div id="gridwrap"><canvas id="grid"></canvas></div>
+      <p class="hint">
+        <kbd>drag</kbd> paint &nbsp; <kbd>right-drag</kbd> erase &nbsp;
+        <kbd>alt+click</kbd> pick colour &nbsp; <kbd>ctrl+z</kbd> undo
+      </p>
+    </div>
+
+    <div class="panel">
+      <h2>Rust &mdash; paste into art.rs</h2>
+      <textarea id="out" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="copy">Copy</button>
+        <button id="load">Load from textarea</button>
+        <span class="hint" id="status"></span>
+      </div>
+      <p class="hint">
+        The grid and its palette are emitted <b>together</b> &mdash; they are the
+        pair that has to stay in sync, and a grid carrying a letter the palette
+        does not know is a <code>Sprite::new</code> panic.
+        <b>Load</b> reads both back.
+      </p>
+    </div>
   </div>
 
-  <div>
+  <div class="col">
     <div class="panel">
       <h2>Preview</h2>
       <div class="swatches" id="bgs" style="margin-bottom:10px"></div>
@@ -148,7 +207,7 @@
       </p>
     </div>
 
-    <div class="panel" style="margin-top:16px">
+    <div class="panel">
       <h2>Palette <span class="hint" style="margin:0">click paints &middot; &#9881; edits</span></h2>
       <div class="swatches" id="swatches"></div>
       <div class="row">
@@ -161,7 +220,25 @@
       </p>
     </div>
 
-    <div class="panel" style="margin-top:16px">
+    <div class="panel">
+      <h2>Assets <span class="hint" style="margin:0">saved in this browser</span></h2>
+      <div class="row" style="margin-top:0">
+        <input type="text" id="assetname" spellcheck="false"
+               placeholder="name &mdash; e.g. checkpoint arch"
+               style="flex:1;min-width:0">
+        <button id="saveasset">Save</button>
+      </div>
+      <div class="row"><span class="hint" id="assetstatus" style="margin:0"></span></div>
+      <div id="assets" style="margin-top:10px"></div>
+      <p class="hint">
+        Grid + palette together, under a name &mdash; click to load, &times; to
+        delete. The name becomes the Rust const. Unsaved work is auto-restored
+        when you reopen the page. <code>art.rs</code> stays the real archive;
+        this shelf lives only in this browser.
+      </p>
+    </div>
+
+    <div class="panel">
       <h2>Livery &amp; custom</h2>
       <div class="swatches" id="livery"></div>
       <div class="row">
@@ -173,7 +250,7 @@
       </p>
     </div>
 
-    <div class="panel" style="margin-top:16px">
+    <div class="panel">
       <h2>Theme</h2>
       <div class="swatches" id="themeswatches"></div>
       <div class="row">
@@ -191,37 +268,8 @@
         before committing to it.
       </p>
     </div>
-
-    <div class="panel" style="margin-top:16px">
-      <h2>Tools</h2>
-      <div class="row">
-        <button id="mirror">Mirror L&rarr;R</button>
-        <button id="clear">Clear</button>
-        <button id="undo">Undo</button>
-      </div>
-      <div class="row">
-        <button id="up">Shift up</button>
-        <button id="down">Shift down</button>
-      </div>
-    </div>
   </div>
 </main>
-
-<div class="panel" style="margin:0 20px 20px">
-  <h2>Rust &mdash; paste into art.rs</h2>
-  <textarea id="out" spellcheck="false"></textarea>
-  <div class="row">
-    <button id="copy">Copy</button>
-    <button id="load">Load from textarea</button>
-    <span class="hint" id="status"></span>
-  </div>
-  <p class="hint">
-    The grid and its palette are emitted <b>together</b> &mdash; they are the
-    pair that has to stay in sync, and a grid carrying a letter the palette
-    does not know is a <code>Sprite::new</code> panic.
-    <b>Load</b> reads both back.
-  </p>
-</div>
 
 <script>
 // ---------------------------------------------------------------------
@@ -546,6 +594,7 @@ function draw() {
   ctx.stroke();
   drawPreview();
   emit();
+  autosaveWip();
 }
 
 function drawPreview() {
@@ -1326,6 +1375,163 @@ function pinCustom(obj, customs) {
   return key;
 }
 
+// --- asset library --------------------------------------------------
+//
+// Saved sprites live in localStorage under a name Brian chooses, grid
+// and palette TOGETHER — the same pairing rule the Rust emit enforces,
+// for the same reason. This browser is the only place the shelf exists;
+// art.rs remains the real archive.
+
+const LIB_KEY = 'omarcade-sprite-library';
+const WIP_KEY = 'omarcade-sprite-wip';
+
+function snapshot() {
+  return {
+    grid: grid.map(r => r.join('')),
+    palette: PALETTE.map(e => ({...e})),
+    fixed: FIXED.map(f => ({...f})),
+    name: $('assetname').value.trim(),
+  };
+}
+
+/// The Rust const a name becomes: 'checkpoint arch' -> CHECKPOINT_ARCH.
+function constName(name) {
+  let slug = name.trim().toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  if (!slug) return 'SPRITE';
+  if (/^[0-9]/.test(slug)) slug = 'SPRITE_' + slug;
+  return slug;
+}
+
+function applySnapshot(s) {
+  pushUndo();
+  grid = s.grid.map(r => r.split(''));
+  ROWS = grid.length; COLS = grid[0].length;
+  PALETTE = s.palette.map(e => ({...e}));
+  FIXED = s.fixed.map(f => ({...f}));
+  if (!PALETTE.some(p => p.ch === cur)) cur = PALETTE[1] ? PALETTE[1].ch : '.';
+  editing = null;
+  $('assetname').value = s.name || '';
+  $('out').dataset.name = s.name ? constName(s.name) : 'PLAYER_CAR';
+  const sel = $('size');
+  const key = `${COLS}x${ROWS}`;
+  if ([...sel.options].some(o => o.value === key)) sel.value = key;
+  fitZoom();
+  refreshColors();
+}
+
+// localStorage can be absent or full; a save that cannot happen must say
+// so rather than throw, and a library that cannot be read is empty.
+function readLibrary() {
+  try { return JSON.parse(localStorage.getItem(LIB_KEY)) || {}; }
+  catch { return {}; }
+}
+function writeLibrary(lib) {
+  try { localStorage.setItem(LIB_KEY, JSON.stringify(lib)); return true; }
+  catch { return false; }
+}
+
+/// Thumbnails are rendered AT SAVE TIME under the live theme and stored
+/// as pixels. Re-resolving every saved palette on each list render would
+/// buy nothing a 44px image can show.
+function thumbnail() {
+  const t = document.createElement('canvas');
+  t.width = COLS; t.height = ROWS;
+  const tc = t.getContext('2d');
+  for (let y = 0; y < ROWS; y++)
+    for (let x = 0; x < COLS; x++) {
+      const ch = grid[y][x];
+      if (ch === '.') continue;
+      tc.fillStyle = colorOf(ch);
+      tc.fillRect(x, y, 1, 1);
+    }
+  return t.toDataURL();
+}
+
+$('saveasset').onclick = () => {
+  const name = $('assetname').value.trim();
+  const st = $('assetstatus');
+  if (!name) {
+    st.innerHTML = '<span class="warn">name it first</span>';
+    $('assetname').focus();
+    return;
+  }
+  const lib = readLibrary();
+  const existed = name in lib;
+  lib[name] = {...snapshot(), name,
+               thumb: thumbnail(), savedAt: new Date().toISOString()};
+  if (!writeLibrary(lib)) {
+    st.innerHTML = '<span class="warn">could not save &mdash; storage blocked or full</span>';
+    return;
+  }
+  $('out').dataset.name = constName(name);
+  emit();
+  st.innerHTML = `<span class="ok">${existed ? 'updated' : 'saved'}</span>`;
+  setTimeout(() => { st.textContent = ''; }, 1600);
+  renderAssets();
+};
+
+function renderAssets() {
+  const el = $('assets');
+  const lib = readLibrary();
+  const names = Object.keys(lib).sort((a, b) =>
+    (lib[b].savedAt || '').localeCompare(lib[a].savedAt || ''));
+  el.innerHTML = '';
+  for (const name of names) {
+    const a = lib[name];
+    const row = document.createElement('div');
+    row.className = 'asset';
+    row.title = 'load ' + name;
+
+    const img = document.createElement('img');
+    img.src = a.thumb || '';
+    img.alt = '';
+    row.appendChild(img);
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const size = a.grid ? `${a.grid[0].length}×${a.grid.length}` : '';
+    const when = a.savedAt ? a.savedAt.slice(0, 10) : '';
+    meta.innerHTML = `<b></b><span>${size} &middot; ${when}</span>`;
+    meta.querySelector('b').textContent = name;
+    row.appendChild(meta);
+
+    // Deleting is the one destructive act here — it asks once, inline.
+    const del = document.createElement('span');
+    del.className = 'gear';
+    del.textContent = '×';
+    del.title = 'delete';
+    del.onclick = ev => {
+      ev.stopPropagation();
+      if (del.dataset.armed) {
+        const lib2 = readLibrary();
+        delete lib2[name];
+        writeLibrary(lib2);
+        renderAssets();
+      } else {
+        del.dataset.armed = '1';
+        del.textContent = 'sure?';
+        setTimeout(() => { delete del.dataset.armed; del.textContent = '×'; }, 2200);
+      }
+    };
+    row.appendChild(del);
+
+    row.onclick = () => applySnapshot(a);
+    el.appendChild(row);
+  }
+}
+
+/// Work-in-progress autosave, debounced off draw(). Closing the tab
+/// mid-sprite costs nothing: the page reopens where it left off.
+let wipTimer = null;
+function autosaveWip() {
+  clearTimeout(wipTimer);
+  wipTimer = setTimeout(() => {
+    try { localStorage.setItem(WIP_KEY, JSON.stringify(snapshot())); }
+    catch { /* storage blocked — the page still works, it just forgets */ }
+  }, 400);
+}
+
 // --- tools ----------------------------------------------------------
 
 $('mirror').onclick = () => {
@@ -1387,8 +1593,8 @@ addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); doUndo(); }
 });
 
-// Seed with the car as it stands in art.rs today.
-grid = [
+// The car as it stands in art.rs today — the seed when nothing is saved.
+const SEED = [
   "................................................",
   "................................................",
   "................................................",
@@ -1421,14 +1627,31 @@ grid = [
   "................................................",
 ].map(r => r.split(''));
 
+// Boot: pick up last session's work in progress when there is one.
+let wip = null;
+try { wip = JSON.parse(localStorage.getItem(WIP_KEY)); } catch { wip = null; }
+if (wip && Array.isArray(wip.grid) && wip.grid.length
+    && Array.isArray(wip.palette) && Array.isArray(wip.fixed)) {
+  grid = wip.grid.map(r => r.split(''));
+  PALETTE = wip.palette.map(e => ({...e}));
+  FIXED = wip.fixed.map(f => ({...f}));
+  if (!PALETTE.some(p => p.ch === cur)) cur = PALETTE[1] ? PALETTE[1].ch : '.';
+  $('assetname').value = wip.name || '';
+  if (wip.name) $('out').dataset.name = constName(wip.name);
+} else {
+  grid = SEED;
+}
+
 COLS = grid[0].length;
 ROWS = grid.length;
-$('size').value = `${COLS}x${ROWS}`;
+const bootSize = `${COLS}x${ROWS}`;
+if ([...$('size').options].some(o => o.value === bootSize)) $('size').value = bootSize;
 fitZoom();
 
 renderSwatches();
 renderFixed();
 renderTheme();
 renderBackgrounds();
+renderAssets();
 draw();
 </script>

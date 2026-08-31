@@ -19,6 +19,46 @@ use crate::drive::{Drive, Tuning};
 use crate::road::{Camera, Road, Segment};
 use crate::scenery;
 
+/// The most the grass may differ from the road in luminance.
+///
+/// A ratio-free absolute in luminance units, which is the one place an
+/// absolute is right: it is a statement about human contrast perception,
+/// not about any theme's palette. Above roughly 40 the road edge starts
+/// reading as a hard stripe rather than as a verge.
+const MAX_GRASS_ROAD_LUMA_GAP: f32 = 34.0;
+
+/// The strongest grass mix worth using when the gap allows it.
+///
+/// Light themes can take a lot of green before the gap closes; this stops
+/// the grass going lurid just because it is allowed to.
+const MAX_GRASS_MIX: f32 = 0.62;
+
+/// Solve the grass mix so it sits within `MAX_GRASS_ROAD_LUMA_GAP` of the
+/// road, taking as much of the theme's green as that permits.
+///
+/// Walking candidate mixes rather than solving algebraically because
+/// `lerp` is per-channel and luminance is a weighted sum — the inverse is
+/// not worth deriving for a value computed once per frame.
+fn grass_for(theme: &Theme, road: Color) -> Color {
+    let road_luma = luma(road);
+    let mut best = theme.background.lerp(theme.green, 0.0);
+    let mut mix = 0.0f32;
+    while mix <= MAX_GRASS_MIX {
+        let candidate = theme.background.lerp(theme.green, mix);
+        if (luma(candidate) - road_luma).abs() <= MAX_GRASS_ROAD_LUMA_GAP {
+            best = candidate;
+        }
+        mix += 0.01;
+    }
+    best
+}
+
+/// Rec. 709 luminance — the same weighting `Color::desaturated` uses, so
+/// "how bright does this read" means one thing across the renderer.
+fn luma(c: Color) -> f32 {
+    0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * c.b as f32
+}
+
 /// How much hue the road surface gives up, 0.0 to 1.0.
 ///
 /// Not 1.0: a road pinned to pure grey stops belonging to the theme at
@@ -101,28 +141,6 @@ pub fn draw_road_into(
         Color::rgb(sky.r, neutral_g, sky.b)
     };
 
-    // Grass and road stripe INDEPENDENTLY, and by different amounts.
-    //
-    // Measured on the shipped theme, the old pairs had grass alternating
-    // by 16.0 luminance and road by only 6.9 — so the road read as static
-    // while the grass flickered hard beside it. Worse, both were driven by
-    // the same band index, which put a strong light/dark boundary straight
-    // across the full width of the screen in one unbroken line. Moving,
-    // that reads as a rolling scanline: a bad video feed rather than
-    // ground going past.
-    //
-    // So: the grass stripe is softened, the road stripe is strengthened,
-    // and the two are offset from each other (see `road_phase`) so their
-    // boundaries never coincide. Ground texture should read as two
-    // surfaces moving, not as one horizontal bar sweeping the screen.
-    // Mixed well toward the theme's own green rather than barely away
-    // from the background. At 0.36 the grass landed at chroma 0.184
-    // against the theme green's 0.333 — a muddy grey-green sitting close
-    // enough to the grey road that the two blended into each other, which
-    // is a large part of why the ground read as one wash rather than as
-    // two surfaces. Mixing further both restores the hue and widens the
-    // road-to-grass edge.
-    let grass_flat = theme.background.lerp(theme.green, 0.57);
     // One shade, desaturated so it reads as TARMAC rather than as paint.
     //
     // Measured across the installed Omarchy themes, a road derived
@@ -142,6 +160,22 @@ pub fn draw_road_into(
         .dark_background
         .lerp(theme.foreground, 0.16)
         .desaturated(ROAD_DESATURATION);
+    // Grass, mixed to hold a fixed LUMINANCE GAP against the road rather
+    // than to a fixed amount of green.
+    //
+    // A constant mix was the bug. At 0.57 the grass came out BRIGHT while
+    // the road on a dark theme is dark, so the road edge became a hard
+    // high-contrast boundary — measured, a luminance gap of 62 on
+    // everforest and 56 on gruvbox against only 31 on flexoki-light.
+    // That is exactly why the striping was obvious on dark themes and
+    // barely there on light ones, and why chasing it as a HUE problem
+    // through four attempts never landed: the hue was a symptom and the
+    // contrast was the cause.
+    //
+    // A single mix cannot serve both: dark themes need a small one (0.33
+    // to 0.41) and light themes a large one (0.60+). So the gap is the
+    // constant and the mix is solved for it — L015, one more time.
+    let grass_flat = grass_for(theme, road_flat);
     let rumble_a = theme.red.lerp(Color::WHITE, 0.15);
     let rumble_b = theme.foreground.lerp(Color::WHITE, 0.4);
     let line = theme.foreground.lerp(Color::WHITE, 0.5);

@@ -66,17 +66,31 @@ pub fn draw_road_into(
     w: u32,
     h: u32,
 ) {
-    // The sky, and the colour distance hazes TOWARD.
+    // The sky keeps its colour; the HAZE does not.
     //
-    // `theme.blue` is a teal on this theme (#7fbbb3 — its green channel is
-    // higher than its blue), so hazing the grey road toward it pushed the
-    // road visibly GREEN, strongest near the horizon where the haze is
-    // thickest. Reported as "green striping on the track", and measured at
-    // a green excess of +10 to +25 on a surface that should sit near 0.
+    // These were one colour and had to be split. `theme.blue` is a teal on
+    // this theme (#7fbbb3, green channel above blue, green excess +34), so
+    // hazing grey tarmac toward the sky tinted the road green — worst near
+    // the horizon where the haze is thickest, and reported as green
+    // striping on the track.
     //
-    // Desaturating toward the background before mixing keeps the sky's
-    // value without dragging the road's hue along with it.
-    let sky = theme.background.lerp(theme.blue.lerp(theme.background, 0.45), 0.55);
+    // A first attempt desaturated the sky toward `theme.background` and
+    // achieved nothing: background is itself near-neutral, so mixing
+    // toward it lowers saturation without touching the blue's hue
+    // dominance. Measured, that "fix" moved the sky's green excess from
+    // +10.5 to +11.5 — very slightly WORSE. It only looked better because
+    // the same change softened the haze alpha, applying less of it.
+    //
+    // The haze colour is now neutralised outright: green forced to the
+    // mean of red and blue, which holds the hazed road at a green excess
+    // of ~0 at every depth. The sky keeps its own tone because it is a
+    // separate colour now — a sky should look like sky, and distance
+    // should not repaint the road.
+    let sky = theme.background.lerp(theme.blue, 0.30);
+    let haze_tint = {
+        let neutral_g = ((sky.r as u16 + sky.b as u16) / 2) as u8;
+        Color::rgb(sky.r, neutral_g, sky.b)
+    };
 
     // Grass and road stripe INDEPENDENTLY, and by different amounts.
     //
@@ -192,7 +206,7 @@ pub fn draw_road_into(
             // should say "far away", not "gone".
             let a = (ht.powf(1.5) * 175.0) as u8;
             if a > 2 {
-                c.fill_rect_f(fx, sy, fw, bh, sky.with_alpha(a));
+                c.fill_rect_f(fx, sy, fw, bh, haze_tint.with_alpha(a));
             }
             y += bh;
         }
@@ -246,7 +260,7 @@ pub fn draw_road_into(
             fx + p.x + prop.lane * p.half_width - w / 2.0,
             fy + p.y - h,
             s,
-            Some((sky, haze)),
+            Some((haze_tint, haze)),
         );
     }
 
@@ -273,7 +287,7 @@ pub fn draw_road_into(
             fx + p.x + lane * p.half_width - w / 2.0,
             fy + p.y - h,
             s,
-            Some((sky, haze)),
+            Some((haze_tint, haze)),
         );
     }
 

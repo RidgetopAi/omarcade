@@ -17,6 +17,13 @@ use omarcade_core::{Canvas, Color, Pose, Theme};
 use crate::art::Art;
 use crate::drive::{Drive, Tuning};
 use crate::road::{Camera, Road, Segment};
+use crate::scenery;
+
+/// How tall a roadside prop stands, in road half-widths.
+///
+/// A ratio against the road rather than a pixel size, so props keep their
+/// apparent size at any resolution and any road width (L019).
+const PROP_HEIGHT_IN_HALF_WIDTHS: f32 = 0.38;
 
 pub fn demo_track() -> Road {
     let mut segs = Vec::new();
@@ -82,14 +89,11 @@ pub fn draw_road_into(
     // is a large part of why the ground read as one wash rather than as
     // two surfaces. Mixing further both restores the hue and widens the
     // road-to-grass edge.
-    let grass_a = theme.background.lerp(theme.green, 0.68);
-    let grass_b = theme.background.lerp(theme.green, 0.46);
-    // Wider apart than the hard-band version could afford. A step of this
-    // size would have flashed; a gradient of it just reads as a stronger
-    // sense of ground going past, because the change per frame stays
-    // proportional to speed.
-    let road_a = theme.dark_background.lerp(theme.foreground, 0.26);
-    let road_b = theme.dark_background.lerp(theme.foreground, 0.06);
+    let grass_flat = theme.background.lerp(theme.green, 0.57);
+    // One shade each. The midpoint of the pairs these replace, so the
+    // scene keeps its overall value while losing the pattern that could
+    // only ever alias, toggle or wave.
+    let road_flat = theme.dark_background.lerp(theme.foreground, 0.16);
     let rumble_a = theme.red.lerp(Color::WHITE, 0.15);
     let rumble_b = theme.foreground.lerp(Color::WHITE, 0.4);
     let line = theme.foreground.lerp(Color::WHITE, 0.5);
@@ -107,7 +111,7 @@ pub fn draw_road_into(
         let t = y as f32 / horizon;
         c.fill_rect(ox as i32, (oy + y) as i32, w, 1, sky.lerp(theme.background, 1.0 - t * 0.7));
     }
-    c.fill_rect(ox as i32, (oy + horizon as u32) as i32, w, h - horizon as u32, grass_b);
+    c.fill_rect(ox as i32, (oy + horizon as u32) as i32, w, h - horizon as u32, grass_flat);
 
     let bands = road.visible(&camera, car.z, x_offset, fw, fh);
 
@@ -134,43 +138,25 @@ pub fn draw_road_into(
             // raw divide by segment_length — that is what aliased.
             let z_here = dist + car.z;
 
-            // Ground shade is a CONTINUOUS function of distance, not two
-            // flat shades toggling at a hard boundary.
+            // FLAT. No band, no gradient, no wave.
             //
-            // This is the fix for the whole surface appearing to flash.
-            // A band is 800 world units, and the nearest band alone covers
-            // ~270 screen rows — so at most one or two road bands are
-            // visible at a time. A pattern you can only see one period of
-            // cannot scroll; it can only toggle, and a single brief press
-            // of the throttle flipped the entire road between two shades.
-            // That reads as flashing, not as travel.
+            // Three attempts to get motion out of this surface all failed:
+            // fine bands aliased into running backwards, coarse bands
+            // toggled the whole screen at once, and a smooth cosine read
+            // as ocean swells — because a smooth luminance gradient along
+            // z is exactly the image a corrugated surface makes under
+            // diffuse light, and vision reads gradients as curvature. The
+            // corrugation was in the still frame; motion only animated it.
             //
-            // The band could not simply be made finer: the Nyquist floor
-            // is 533 units at 30fps and the band is already 800.
-            //
-            // A cosine of distance has no step to jump across. The surface
-            // shades smoothly as it approaches, so the eye reads motion
-            // from a gradient sliding rather than from a boundary
-            // snapping — and there is no sharp edge left to alias into
-            // running backwards.
-            let cycle = road.segment_length() * Road::SEGMENTS_PER_BAND * 2.0;
-            let wave = (z_here / cycle * std::f32::consts::TAU).cos() * 0.5 + 0.5;
-            // The markings stay a hard alternation on purpose: they are
-            // thin high-contrast detail where a crisp edge is the point,
-            // and they are what carries the fine sense of speed.
+            // Pole Position, this game's lineage, had no ground banding
+            // either. Large surfaces carry speed MAGNITUDE; discrete
+            // world-anchored objects carry motion DIRECTION. The markings
+            // below and the props in `scenery.rs` are the motion channel.
             let mark = road.marking_index(z_here) % 2 == 0;
             let sy = fy + y;
 
-            // Grass and road are offset a quarter cycle from each other,
-            // so no single shade boundary ever runs across the full width
-            // of the screen — the rolling-scanline artefact.
-            let grass_wave =
-                ((z_here / cycle + 0.25) * std::f32::consts::TAU).cos() * 0.5 + 0.5;
-            let grass = grass_b.lerp(grass_a, grass_wave);
-            c.fill_rect_f(fx, sy, fw, bh, grass);
-
-            let surface = road_b.lerp(road_a, wave);
-            c.fill_rect_f(cx - hw, sy, hw * 2.0, bh, surface);
+            c.fill_rect_f(fx, sy, fw, bh, grass_flat);
+            c.fill_rect_f(cx - hw, sy, hw * 2.0, bh, road_flat);
 
             let rumble = (hw * 0.13).max(0.7);
             let rc = if mark { rumble_a } else { rumble_b };
@@ -197,6 +183,52 @@ pub fn draw_road_into(
     // height. Tying it to height made the car swamp a narrow panel while
     // the road (which comes from panel width) stayed thin — the two
     // disagreed about how big the world was.
+    // Roadside props. THIS is the motion channel — see scenery.rs for why
+    // the ground surfaces are not.
+    //
+    // Placement follows the rival cars exactly, and that is deliberate:
+    // an object owns a `z` and is projected. Two earlier attempts at
+    // roadside detail positioned it as a function of the SCANLINE instead
+    // — a fraction of verge screen-width, then a multiple of the road's
+    // screen half-width — and both smeared into diagonal rays converging
+    // on the horizon, because both shrink with distance.
+    let mut props = scenery::visible_props(road, car.z, art.prop_kinds());
+    props.sort_by(|a, b| b.z.total_cmp(&a.z));
+    for prop in &props {
+        let Some(p) = road.project(&camera, car.z, x_offset, prop.z, fw, fh) else {
+            continue;
+        };
+        if p.y <= horizon + 1.0 || p.y > fh + 200.0 {
+            continue;
+        }
+        let sprite = art.prop(prop.kind);
+        // Scale so a prop stands a sensible fraction of the ROAD's width,
+        // rather than at a factor copied from elsewhere.
+        //
+        // A post should read as roughly waist-high next to a car: the car
+        // is 64px of art covering about 0.9 of a half-width, so one unit
+        // of half-width is ~71px of art. A post 8 rows tall wants to be
+        // about a third of a half-width, which puts its scale at
+        // half_width * 0.33 / 8.
+        //
+        // The previous value (half_width / 105.0 * 1.6) was inherited from
+        // the old post-drawing code and derived from nothing; at that
+        // scale a post was a couple of pixels and never registered.
+        let s = p.half_width * PROP_HEIGHT_IN_HALF_WIDTHS / sprite.height() as f32;
+        let w = sprite.width() as f32 * s;
+        let h = sprite.height() as f32 * s;
+        let haze = (p.distance / (road.draw_distance() as f32 * road.segment_length()))
+            .clamp(0.0, 1.0)
+            * 0.85;
+        sprite.draw_tinted(
+            c,
+            fx + p.x + prop.lane * p.half_width - w / 2.0,
+            fy + p.y - h,
+            s,
+            Some((sky, haze)),
+        );
+    }
+
     // Rivals, placed by track position and lane, drawn far-to-near so a
     // nearer car occludes a further one.
     let mut traffic: Vec<&(f32, f32, usize)> = rivals.iter().collect();

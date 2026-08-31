@@ -14,6 +14,7 @@ mod art;
 mod drive;
 mod render;
 mod road;
+mod scenery;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::{Backend, Canvas, Game, InputEvent, Key, Roll, Theme};

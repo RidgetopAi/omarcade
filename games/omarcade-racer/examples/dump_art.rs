@@ -25,6 +25,8 @@ mod road;
 mod drive;
 #[path = "../src/render.rs"]
 mod render;
+#[path = "../src/scenery.rs"]
+mod scenery;
 
 use std::io::Write;
 
@@ -126,7 +128,9 @@ fn draw_road(c: &mut Canvas<'_>, art: &Art, theme: &Theme, road: Road) {
         let correction = (-car.x * 3.0).clamp(-1.0, 1.0);
         car.update(dt, 1.0, correction, &road, &tuning);
     }
-    car.z = road.segment_length() * 8.0;
+    // Placed so the roadside props are mid-stream rather than all bunched
+    // at the horizon — this scene exists to judge them.
+    car.z = road.segment_length() * 3.0;
 
     // Placed as a FRACTION of the visible road, not in segments. At a
     // draw distance of 120 segments, "nine segments ahead" is still 7% of

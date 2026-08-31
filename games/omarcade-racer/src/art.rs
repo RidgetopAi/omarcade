@@ -101,6 +101,34 @@ pub const MARKER_POST: &[&str] = &[
     "..DD..",
 ];
 
+/// A taller roadside pole. Same language as the marker post, twice the
+/// height, so the two read as a set rather than as one thing repeated.
+pub const TALL_POLE: &[&str] = &[
+    "..LL..",
+    "..LL..",
+    "..HH..",
+    "..DD..",
+    "..DD..",
+    "..DD..",
+    "..DD..",
+    "..DD..",
+    "..DD..",
+    "..DD..",
+    "..DD..",
+    "..DD..",
+];
+
+/// A low marker block — a kerb stone or bollard.
+///
+/// Deliberately short. A field of props all the same height reads as a
+/// fence; mixed heights read as scenery.
+pub const MARKER_BLOCK: &[&str] = &[
+    "LLLL",
+    "HHHH",
+    "DDDD",
+    "DDDD",
+];
+
 /// A palette for one car livery.
 ///
 /// `body` is the car's own colour and does NOT follow the theme: a car
@@ -161,9 +189,15 @@ pub fn car_palette(theme: &Theme, body: Color, accent: Color) -> Vec<PaletteEntr
 
 /// Palette for the roadside markers.
 pub fn post_palette(theme: &Theme) -> Vec<PaletteEntry> {
+    let dark = theme.red.lerp(theme.darker_background, 0.25);
     vec![
         ('L', theme.foreground),
-        ('D', theme.red.lerp(theme.darker_background, 0.25)),
+        ('D', dark),
+        // A mid-tone between the two, derived from `dark` rather than from
+        // a theme slot directly — the same chaining the car palette uses,
+        // which is what keeps the shades related to each other when the
+        // theme changes rather than merely each related to the theme.
+        ('H', dark.lerp(theme.foreground, 0.30)),
     ]
 }
 
@@ -177,6 +211,13 @@ pub struct Art {
     /// The traffic. Same chassis as the player, different liveries.
     pub rivals: Vec<Sprite>,
     pub post: Sprite,
+    /// Roadside scenery — what actually carries the sense of motion.
+    ///
+    /// A list rather than named fields so adding a shape drawn in the
+    /// sprite playground is one entry in `Art::load` and nothing else.
+    /// `scenery.rs` picks from it by index and never needs to know what
+    /// is in it.
+    pub props: Vec<Sprite>,
 }
 
 /// The grid characters that ROLL.
@@ -248,6 +289,11 @@ impl Art {
             player: Sprite::new_with_tread(PLAYER_CAR, &player_pal, TREAD),
             rivals,
             post: Sprite::new(MARKER_POST, &post_palette(theme)),
+            props: vec![
+                Sprite::new(MARKER_POST, &post_palette(theme)),
+                Sprite::new(TALL_POLE, &post_palette(theme)),
+                Sprite::new(MARKER_BLOCK, &post_palette(theme)),
+            ],
         }
     }
 
@@ -259,6 +305,18 @@ impl Art {
     /// pick per frame would not.
     pub fn rival(&self, n: usize) -> &Sprite {
         &self.rivals[n % self.rivals.len()]
+    }
+
+    /// A roadside prop by index, wrapping.
+    pub fn prop(&self, n: usize) -> &Sprite {
+        &self.props[n % self.props.len()]
+    }
+
+    /// How many kinds of roadside art exist. `scenery.rs` spreads its
+    /// placement across this, so a new sprite appears on the track with
+    /// no other change.
+    pub fn prop_kinds(&self) -> usize {
+        self.props.len()
     }
 }
 

@@ -74,6 +74,19 @@ const ROAD_DESATURATION: f32 = 0.75;
 /// apparent size at any resolution and any road width (L019).
 const PROP_HEIGHT_IN_HALF_WIDTHS: f32 = 0.38;
 
+/// How many pixels of car art cover one road half-width.
+///
+/// ONE number, shared by the player and every rival — they are the same
+/// car, so at the same distance they must be the same size on screen.
+/// They used not to share it: the player drew at `probe / 105.0 * 1.5`
+/// and a rival at `half_width / 105.0`, which is this same constant with
+/// the 1.5 dropped — so a rival alongside the player rendered at
+/// two-thirds size. Brian spotted it on the test track while passing.
+///
+/// 48px of car art / 70 ≈ 0.69 half-widths of road covered by a car.
+/// The playground's scale check assumes this value; move them together.
+const CAR_ART_PIXELS_PER_HALF_WIDTH: f32 = 70.0;
+
 pub fn demo_track() -> Road {
     let mut segs = Vec::new();
     // Only the first ~15 segments occupy real screen height; past that a
@@ -333,7 +346,7 @@ pub fn draw_road_into(
         if p.y <= horizon + 1.0 || p.y > fh + 200.0 {
             continue;
         }
-        let s = p.half_width / 105.0;
+        let s = p.half_width / CAR_ART_PIXELS_PER_HALF_WIDTH;
         let haze = (p.distance / (road.draw_distance() as f32 * road.segment_length()))
             .clamp(0.0, 1.0)
             * 0.8;
@@ -359,7 +372,7 @@ pub fn draw_road_into(
         .project(&camera, car.z, x_offset, car.z + road.segment_length(), fw, fh)
         .map(|p| p.half_width)
         .unwrap_or(fw * 0.4);
-    let scale = probe / 105.0 * 1.5;
+    let scale = probe / CAR_ART_PIXELS_PER_HALF_WIDTH;
 
     // The player sits where the camera is — dead centre — because the
     // camera IS the car. Steering moves the world, not the sprite.

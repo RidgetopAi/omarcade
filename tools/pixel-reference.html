@@ -1,0 +1,582 @@
+<title>Omarcade Pixel Reference</title>
+<style>
+  :root {
+    --bg: #1e2326; --panel: #272e33; --edge: #3a4248;
+    --fg: #d3c6aa; --muted: #859289; --accent: #83c092;
+    --warn: #e67e80; --yellow: #dbbc7f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.65 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  header {
+    padding: 18px 28px; border-bottom: 1px solid var(--edge);
+    display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+    position: sticky; top: 0; background: var(--bg); z-index: 5;
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .04em; }
+  header a { color: var(--accent); font-size: 13px; }
+  .wrap {
+    max-width: 900px; margin: 0 auto; padding: 28px 28px 120px;
+  }
+  nav {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 32px;
+  }
+  nav a {
+    font-size: 12px; padding: 6px 11px; border: 1px solid var(--edge);
+    border-radius: 5px; color: var(--muted); text-decoration: none;
+  }
+  nav a:hover { border-color: var(--accent); color: var(--accent); }
+  section { margin-bottom: 44px; scroll-margin-top: 80px; }
+  h2 {
+    font-size: 13px; color: var(--accent); text-transform: uppercase;
+    letter-spacing: .09em; margin: 0 0 4px; font-weight: 600;
+  }
+  h2 + .sub {
+    color: var(--muted); font-size: 13px; margin: 0 0 18px;
+  }
+  h3 {
+    font-size: 14px; margin: 26px 0 8px; color: var(--fg); font-weight: 600;
+  }
+  p { margin: 0 0 14px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 8px; padding: 18px 20px; margin: 18px 0;
+  }
+  .panel.key { border-color: var(--accent); }
+  .panel.key .lead {
+    color: var(--accent); font-weight: 600; margin: 0 0 10px;
+  }
+  table {
+    width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px;
+  }
+  th, td {
+    text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--edge);
+    vertical-align: top;
+  }
+  th {
+    color: var(--muted); font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .07em;
+  }
+  td b { color: var(--yellow); font-weight: 600; }
+  code {
+    background: #10141f; padding: 1px 5px; border-radius: 3px;
+    font-size: .92em; color: var(--yellow);
+  }
+  pre {
+    background: #10141f; border: 1px solid var(--edge); border-radius: 6px;
+    padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.5;
+    margin: 14px 0;
+  }
+  pre code { background: none; padding: 0; color: var(--fg); }
+  kbd {
+    background: #1e2326; border: 1px solid var(--edge); border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 6px; font-size: 12px; color: var(--fg);
+  }
+  ul { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 7px; }
+  .muted { color: var(--muted); }
+  .warn { color: var(--warn); }
+  .ok { color: var(--accent); }
+  figure { margin: 20px 0; }
+  figcaption {
+    color: var(--muted); font-size: 12px; margin-top: 8px; line-height: 1.5;
+  }
+  canvas { image-rendering: pixelated; border-radius: 6px; max-width: 100%; }
+  .demo-row {
+    display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start;
+  }
+  .demo-row > div { flex: 1; min-width: 200px; }
+  .demo-row h4 {
+    font-size: 12px; color: var(--muted); margin: 0 0 8px;
+    text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
+  }
+</style>
+
+<header>
+  <h1>Omarcade Pixel Reference</h1>
+  <a href="sprite-playground.html">&larr; back to the playground</a>
+  <span class="muted" style="font-size:12px">the concepts behind the tool</span>
+</header>
+
+<div class="wrap">
+
+<nav>
+  <a href="#three">The three numbers</a>
+  <a href="#bits">Bit depth vs resolution</a>
+  <a href="#grid">Picking a grid size</a>
+  <a href="#recipes">Why colours are recipes</a>
+  <a href="#technique">Drawing technique</a>
+  <a href="#keys">Tools &amp; keys</a>
+</nav>
+
+<!-- ================================================================ -->
+<section id="three">
+  <h2>The three numbers</h2>
+  <p class="sub">Grid size, zoom, and world scale are independent. Confusing
+  them is why sizing feels slippery.</p>
+
+  <p>There are three different "how big is it" numbers in play, and they
+  control completely different things. Nothing in the game reads a sprite's
+  pixel count as a size.</p>
+
+  <table>
+    <tr><th>Number</th><th>Controls</th><th>Set where</th><th>Affects the game?</th></tr>
+    <tr>
+      <td><b>Grid size</b><br><span class="muted">48 &times; 30</span></td>
+      <td>How much <b>detail</b> you can express. Your detail budget.</td>
+      <td>The size dropdown</td>
+      <td class="ok">Yes &mdash; detail and aspect ratio</td>
+    </tr>
+    <tr>
+      <td><b>Zoom</b><br><span class="muted">15 px/cell</span></td>
+      <td>How big the grid looks <b>while you edit</b>. A magnifying glass.</td>
+      <td>The zoom slider</td>
+      <td class="warn">No &mdash; none at all</td>
+    </tr>
+    <tr>
+      <td><b>World scale</b><br><span class="muted">prop / gantry / car</span></td>
+      <td>How big the sprite actually is <b>in the game</b>.</td>
+      <td>The role dropdown &mdash; and really, the Rust</td>
+      <td class="ok">Yes &mdash; this is the real size</td>
+    </tr>
+  </table>
+
+  <div class="panel key">
+    <p class="lead">The one sentence that resolves the confusion</p>
+    <p style="margin:0">A billboard drawn at 32&times;32 and a billboard drawn
+    at 128&times;128 come out <b>the same physical size on screen</b>. The 128
+    version just has 16&times; as many pixels packed into that same space, so
+    each one is smaller &mdash; which is what "smoother" means.</p>
+  </div>
+
+  <h3>See it</h3>
+  <p>The same shape, same world size, at three grid densities. Only the
+  pixel <em>density</em> changes &mdash; the object does not get bigger.</p>
+
+  <figure>
+    <canvas id="density" width="860" height="200"></canvas>
+    <figcaption>
+      Identical world footprint. Left is a coarse grid &mdash; big chunky
+      pixels. Right is a fine grid &mdash; small pixels, more detail, same
+      size on screen. <b>That is your retro-to-modern dial.</b>
+    </figcaption>
+  </figure>
+
+  <h3>Zoom, by contrast, changes nothing</h3>
+  <p>Dragging the zoom slider is exactly like leaning closer to the monitor.
+  The output bytes are identical. It exists so you can see what you are
+  doing while placing individual cells &mdash; nothing more. If you zoom out
+  and the sprite "looks worse", that is not the zoom: that is the sprite
+  telling you the truth about how it reads at real size.</p>
+
+  <p>Which is what the <b>Preview</b> and <b>Scale check</b> panels are for.
+  Preview shows the art at three sizes on your chosen background. Scale check
+  shows it standing on the road next to the reference car, at the size the
+  game will actually draw it. <span class="ok">Judge your work in the scale
+  check, not on the big editing grid.</span> The grid always flatters.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="bits">
+  <h2>Bit depth vs resolution</h2>
+  <p class="sub">"8-bit" bundles several ideas that are technically separate.</p>
+
+  <p>When people say a game is "8-bit" they usually mean the whole
+  <em>look</em> of that console generation. Technically the term only ever
+  meant the CPU's word size. The two things that actually shape the art are
+  separate dials:</p>
+
+  <table>
+    <tr><th></th><th>What it means</th><th>Historical example</th></tr>
+    <tr>
+      <td><b>Bit depth</b></td>
+      <td>How many <b>colours</b> can exist. 4-bit = 16 colours,
+          8-bit = 256, 24-bit = 16.7 million.</td>
+      <td>NES: 4 colours per tile, 25 on screen</td>
+    </tr>
+    <tr>
+      <td><b>Resolution</b></td>
+      <td>How many <b>pixels</b> across the screen.</td>
+      <td>NES 256&times;240, SNES 256&times;224</td>
+    </tr>
+  </table>
+
+  <div class="panel">
+    <p style="margin:0"><b>Omarcade has neither limit.</b> Softbuffer hands
+    the game a raw 32-bit pixel per screen pixel &mdash; full 24-bit colour,
+    at whatever the window resolution is. No palette cap, no sprite count
+    limit, no scanline budget, no tile memory.</p>
+  </div>
+
+  <p>So every constraint in the art is a <b>choice</b>, not a limit. That is
+  worth knowing in both directions: nothing stops you going smoother, and
+  nothing forces you to. Chunkiness in Pole Position is deliberate period
+  character, not the engine's ceiling.</p>
+
+  <p>The one constraint worth <em>adopting</em> voluntarily: a shared,
+  limited palette across the whole suite. Not for technical reasons &mdash;
+  because it is what will make eight games look like one product rather than
+  eight unrelated hobby projects. Constraint is what makes a suite read as a
+  suite.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="grid">
+  <h2>Picking a grid size</h2>
+  <p class="sub">Detail budget per asset, and how it maps to feel.</p>
+
+  <p>Pick the grid from <b>how much detail the object needs</b>, never from
+  how big it is in the world. A distant billboard and a full-screen boss can
+  want the same grid.</p>
+
+  <table>
+    <tr><th>Grid</th><th>Feel</th><th>Good for</th></tr>
+    <tr><td><b>16&times;16</b></td><td>Classic arcade, very chunky</td>
+        <td>Space Invaders aliens as originally drawn, small icons, bullets</td></tr>
+    <tr><td><b>24&times;24 &ndash; 32&times;32</b></td><td>NES-era readable</td>
+        <td>Player ship, pickups, small props</td></tr>
+    <tr><td><b>48&times;30</b></td><td>Detailed but still clearly pixel art</td>
+        <td>The Pole Position car (current default)</td></tr>
+    <tr><td><b>64&times;64</b></td><td>Modern pixel art &mdash; shading, glow</td>
+        <td>A Space Invaders alien with a modern twist</td></tr>
+    <tr><td><b>96&times;64 &ndash; 128&times;96</b></td><td>Rich, near-smooth</td>
+        <td>Billboards with lettering, detailed structures</td></tr>
+    <tr><td><b>160&times;60</b></td><td>Wide structure</td>
+        <td>Full-span gantry</td></tr>
+  </table>
+
+  <h3>The retro-to-modern dial, stated as a rule</h3>
+  <div class="panel key">
+    <p class="lead">Retro silhouette + modern density</p>
+    <p style="margin:0">Keep the <b>shape</b> faithful &mdash; the crab, the
+    squid, the octopus are iconic because of their outlines. Then author that
+    outline at 4&ndash;8&times; the original pixel density and spend the extra
+    pixels on shading, rim light, and animation. The silhouette says
+    <em>retro</em>; the rendering says <em>2026</em>. That is how Shovel
+    Knight and Celeste read as both at once.</p>
+  </div>
+
+  <h3>Per-game guidance</h3>
+  <ul>
+    <li><b>Pole Position</b> &mdash; stay chunky. It is a 1982 arcade cabinet
+    and the blockiness <em>is</em> the aesthetic. Clean, smooth signage will
+    feel wrong in a way that is hard to name.</li>
+    <li><b>Space Invaders</b> &mdash; this is the testbed for the modern
+    twist. 64&times;64 aliens, real shading, subtle animation.</li>
+  </ul>
+
+  <h3>Aspect ratio is the other half</h3>
+  <p>The grid also fixes the sprite's shape. A 48&times;30 grid is 1.6:1 wide
+  no matter what world size it is drawn at &mdash; the game scales it to fit
+  its role, it never stretches it to a different ratio. So a billboard wants
+  a roughly square or 4:3 grid; a gantry wants something very wide. Get the
+  ratio right first, then worry about density.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="recipes">
+  <h2>Why colours are recipes</h2>
+  <p class="sub">The palette is not hex &mdash; it is instructions, and that
+  is what makes theme-reactivity work.</p>
+
+  <p>Most pixel editors store a fixed hex per palette slot. This one stores a
+  <b>recipe</b>: a base colour, something to mix toward, and how far.</p>
+
+  <pre><code>shadow   = body.lerp(theme.darker_background, 0.45)
+tyre_top = tyre.lerp(theme.foreground, 0.14)</code></pre>
+
+  <p>That second line derives from <em>another derived tone</em>, not from a
+  theme slot. That chaining is the point: when the desktop theme moves, every
+  tone moves together and stays related. Freeze them as hex and the sprite
+  looks right under Everforest and subtly wrong under every other theme,
+  silently.</p>
+
+  <p>A recipe's base can name: a <b>fixed colour</b> (livery), a
+  <b>theme slot</b> (<code>theme.foreground</code>), or <b>another palette
+  letter</b> (<code>@T</code>). The <code>lerp</code> here is byte-for-byte
+  the one in <code>core/src/backend/mod.rs</code>, so what you see is what
+  the game draws.</p>
+
+  <h3>The exception: livery</h3>
+  <p>Fixed colours exist for things that must <b>not</b> follow the theme.
+  A red car that turns green with the desktop stops being a recognisable
+  object. Livery, team colours, and anything the player identifies by colour
+  belong in the fixed list.</p>
+
+  <h3>Magenta means broken</h3>
+  <p><span class="warn">A cell that renders magenta</span> is a recipe that
+  could not resolve &mdash; usually a dependency cycle, or a name the palette
+  no longer knows. It is deliberately loud, in the same spirit as
+  <code>Sprite::new</code> panicking rather than leaving a hole nobody
+  notices until it is in a screenshot.</p>
+
+  <h3>Named palettes</h3>
+  <p>Save a palette by name and reload it on the next asset. This is what
+  keeps eight billboards looking like they belong to the same roadside
+  instead of eight separate art passes. Build the palette once, deliberately,
+  then draw against it.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="technique">
+  <h2>Drawing technique</h2>
+  <p class="sub">The handful of things that separate pixel art that reads
+  from pixel art that mushes.</p>
+
+  <h3>Silhouette first</h3>
+  <p>Block the whole shape in one flat colour before any detail. If it does
+  not read as the object in solid black at real size, no amount of shading
+  will save it. This is the single highest-leverage habit &mdash; and it is
+  why the Scale check panel matters more than the editing grid.</p>
+
+  <figure>
+    <canvas id="silhouette" width="860" height="150"></canvas>
+    <figcaption>
+      Silhouette &rarr; base tones &rarr; shading &rarr; highlight. Each pass
+      goes over the whole sprite. Never finish one corner and move on.
+    </figcaption>
+  </figure>
+
+  <h3>Fewer colours than you think</h3>
+  <p>Three tones per material &mdash; shadow, base, light &mdash; carries
+  almost anything. A fourth for a rim highlight on the hero object. More than
+  that and the shape gets noisy and stops reading at distance. The current car
+  palette does the whole vehicle in eleven tones total.</p>
+
+  <h3>Dithering</h3>
+  <p>A checkerboard of two colours reads as an intermediate shade at
+  distance. It is the classic way to get a gradient with a small palette, and
+  it is strongly period-correct for the era Pole Position lives in. Use it for
+  sky gradients and large flat panels. Do not use it on small sprites &mdash;
+  below about 32px it just reads as noise.</p>
+
+  <figure>
+    <canvas id="dither" width="860" height="120"></canvas>
+    <figcaption>
+      Left: hard two-tone step. Middle: dithered transition. Right: how the
+      dither reads at actual game size &mdash; as a third shade that is not
+      in the palette.
+    </figcaption>
+  </figure>
+
+  <h3>Light from one direction</h3>
+  <p>Pick a light source &mdash; conventionally upper-left &mdash; and be
+  ruthlessly consistent. Every top-and-left face lighter, every
+  bottom-and-right face darker. Inconsistent lighting is the most common
+  reason art looks amateur without the viewer being able to say why.</p>
+
+  <h3>Avoid pure black outlines everywhere</h3>
+  <p>A hard black outline on every edge flattens the sprite. Outline the
+  outer silhouette if you need it to pop against a busy background, but let
+  interior boundaries be handled by tone contrast instead.</p>
+
+  <h3>Work at the size it will be seen</h3>
+  <p>Zoom in to place cells, then zoom out constantly to check. The most
+  common mistake is detail that is invisible at real size &mdash; hours spent
+  on a cockpit that occupies four pixels in the game. The preview strip is
+  there to catch exactly this.</p>
+</section>
+
+<!-- ================================================================ -->
+<section id="keys">
+  <h2>Tools &amp; keys</h2>
+  <p class="sub">Everything the playground can do.</p>
+
+  <h3>Drawing tools</h3>
+  <table>
+    <tr><th>Tool</th><th>Key</th><th>What it does</th></tr>
+    <tr><td><b>Pencil</b></td><td><kbd>P</kbd></td>
+        <td>Paint single cells. Drag to draw.</td></tr>
+    <tr><td><b>Fill</b></td><td><kbd>F</kbd></td>
+        <td>Flood-fill a connected region of one colour. The big one for
+        billboards and flat panels.</td></tr>
+    <tr><td><b>Line</b></td><td><kbd>L</kbd></td>
+        <td>Drag from start to end. Straight edges without hand-counting.</td></tr>
+    <tr><td><b>Rectangle</b></td><td><kbd>R</kbd></td>
+        <td>Drag a box outline. Hold <kbd>shift</kbd> for a filled box.</td></tr>
+    <tr><td><b>Select</b></td><td><kbd>S</kbd></td>
+        <td>Drag a region, then drag inside it to move. Copy, cut, paste,
+        stamp repeated shapes.</td></tr>
+    <tr><td><b>Eyedropper</b></td><td><kbd>I</kbd> or <kbd>alt</kbd>+click</td>
+        <td>Pick the colour under the cursor.</td></tr>
+  </table>
+
+  <h3>Keys</h3>
+  <table>
+    <tr><th>Key</th><th>Does</th></tr>
+    <tr><td><kbd>1</kbd>&ndash;<kbd>9</kbd>, <kbd>0</kbd></td>
+        <td>Select palette colour by position &mdash; no mousing to the swatch panel</td></tr>
+    <tr><td><kbd>right-drag</kbd></td><td>Erase, with any tool</td></tr>
+    <tr><td><kbd>ctrl</kbd>+<kbd>z</kbd></td><td>Undo</td></tr>
+    <tr><td><kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>z</kbd> / <kbd>ctrl</kbd>+<kbd>y</kbd></td><td>Redo</td></tr>
+    <tr><td><kbd>ctrl</kbd>+<kbd>c</kbd> / <kbd>x</kbd> / <kbd>v</kbd></td><td>Copy / cut / paste a selection</td></tr>
+    <tr><td><kbd>esc</kbd></td><td>Drop the selection</td></tr>
+    <tr><td><kbd>shift</kbd> (with Rectangle)</td><td>Filled instead of outline</td></tr>
+  </table>
+
+  <h3>Panels</h3>
+  <ul>
+    <li><b>Canvas</b> &mdash; the editing grid. Flatters everything; do not
+    judge here.</li>
+    <li><b>Preview</b> &mdash; the sprite at 1&times;, 2&times;, 4&times; on a
+    chosen background. Check dark tyres against <code>road</code>.</li>
+    <li><b>Scale check</b> &mdash; the sprite on the road, at the size the
+    game will draw it, next to the reference car. <span class="ok">This is
+    the panel that tells the truth.</span></li>
+    <li><b>Palette</b> &mdash; recipes. Click paints, the gear edits.</li>
+    <li><b>Assets</b> &mdash; saved sprites, grid and palette together, in
+    this browser only. <code>art.rs</code> remains the real archive.</li>
+    <li><b>Livery &amp; custom</b> &mdash; fixed colours that must not follow
+    the theme.</li>
+    <li><b>Theme</b> &mdash; paste a <code>colors.toml</code> to preview the
+    sprite under any Omarchy theme before committing.</li>
+  </ul>
+
+  <h3>Onion skin</h3>
+  <p>Load a saved asset as a faint underlay to trace or match against. Use it
+  to keep a second billboard consistent with the first, or to line up frame 2
+  of an animation with frame 1.</p>
+</section>
+
+</div>
+
+<script>
+// The figures are drawn rather than shipped as images: they must follow
+// the same palette as the rest of the page, and a canvas is smaller than
+// three PNGs.
+
+const INK    = '#d3c6aa';
+const GROUND = '#272e33';
+const EDGE   = '#3a4248';
+const MUTED  = '#859289';
+
+/// A dome-and-base shape sampled analytically, so the SAME object can be
+/// rasterised at any grid density. This is the whole point of the figure:
+/// one shape, three sampling rates, identical footprint.
+function sampleShape(u, v) {
+  // u,v in 0..1 across the shape's bounding box.
+  const dx = (u - 0.5) * 2, dy = (v - 0.35) * 2.2;
+  if (v > 0.72) return Math.abs(u - 0.5) < 0.34 ? 2 : 0;   // base block
+  const r = dx*dx + dy*dy;
+  if (r > 1) return 0;
+  return (dx - dy > 0.35) ? 1 : 2;   // lit face vs body, one light source
+}
+
+function drawDensity() {
+  const c = document.getElementById('density');
+  if (!c) return;
+  const g = c.getContext('2d');
+  g.fillStyle = GROUND; g.fillRect(0, 0, c.width, c.height);
+
+  const tones = [null, '#a7c080', '#5c7a52'];
+  // One world footprint, three grids. box is IDENTICAL for all three.
+  const box = 150, top = 26;
+  [8, 20, 56].forEach((n, i) => {
+    const x0 = 60 + i * 270;
+    const s = box / n;
+    for (let gy = 0; gy < n; gy++)
+      for (let gx = 0; gx < n; gx++) {
+        const t = sampleShape((gx + 0.5) / n, (gy + 0.5) / n);
+        if (!t) continue;
+        g.fillStyle = tones[t];
+        g.fillRect(x0 + gx * s, top + gy * s, Math.ceil(s), Math.ceil(s));
+      }
+    // The footprint each one occupies — drawn to prove they match.
+    g.strokeStyle = EDGE;
+    g.setLineDash([3, 3]);
+    g.strokeRect(x0 - .5, top - .5, box + 1, box + 1);
+    g.setLineDash([]);
+
+    g.fillStyle = MUTED;
+    g.font = '12px ui-monospace, Menlo, monospace';
+    g.fillText(`${n}×${n}`, x0, top + box + 20);
+    g.fillText(['chunky', 'balanced', 'smooth'][i], x0 + 62, top + box + 20);
+  });
+}
+
+function drawSilhouette() {
+  const c = document.getElementById('silhouette');
+  if (!c) return;
+  const g = c.getContext('2d');
+  g.fillStyle = GROUND; g.fillRect(0, 0, c.width, c.height);
+
+  const n = 20, s = 5, box = n * s, top = 20;
+  const labels = ['silhouette', 'base tones', 'shading', 'highlight'];
+  // Each stage reveals one more tone; earlier stages collapse the tones
+  // they have not introduced yet down onto the flat silhouette.
+  const stages = [
+    {1: '#4f585e', 2: '#4f585e'},
+    {1: '#a7c080', 2: '#a7c080'},
+    {1: '#a7c080', 2: '#5c7a52'},
+    {1: '#c9dba4', 2: '#5c7a52'},
+  ];
+  stages.forEach((map, i) => {
+    const x0 = 60 + i * 200;
+    for (let gy = 0; gy < n; gy++)
+      for (let gx = 0; gx < n; gx++) {
+        const t = sampleShape((gx + 0.5) / n, (gy + 0.5) / n);
+        if (!t) continue;
+        g.fillStyle = map[t];
+        g.fillRect(x0 + gx * s, top + gy * s, s, s);
+      }
+    g.fillStyle = MUTED;
+    g.font = '12px ui-monospace, Menlo, monospace';
+    g.fillText(labels[i], x0, top + box + 20);
+  });
+}
+
+function drawDither() {
+  const c = document.getElementById('dither');
+  if (!c) return;
+  const g = c.getContext('2d');
+  g.fillStyle = GROUND; g.fillRect(0, 0, c.width, c.height);
+
+  const A = '#3a5c7a', B = '#7fbbb3';
+  const s = 6, cols = 30, rows = 10, top = 16;
+
+  // Hard step.
+  let x0 = 60;
+  for (let y = 0; y < rows; y++)
+    for (let x = 0; x < cols; x++) {
+      g.fillStyle = x < cols / 2 ? A : B;
+      g.fillRect(x0 + x*s, top + y*s, s, s);
+    }
+  label(g, 'hard step', x0, top + rows*s + 20);
+
+  // Dithered transition: checkerboard density ramps across the middle.
+  x0 = 320;
+  for (let y = 0; y < rows; y++)
+    for (let x = 0; x < cols; x++) {
+      const t = x / (cols - 1);
+      const checker = (x + y) % 2 === 0;
+      // Below 1/3 all A, above 2/3 all B, checkerboard between.
+      g.fillStyle = t < 0.33 ? A : t > 0.66 ? B : (checker ? A : B);
+      g.fillRect(x0 + x*s, top + y*s, s, s);
+    }
+  label(g, 'dithered', x0, top + rows*s + 20);
+
+  // The same dither at game size — the band reads as a third colour.
+  x0 = 580;
+  const s2 = 2;
+  for (let y = 0; y < rows; y++)
+    for (let x = 0; x < cols; x++) {
+      const t = x / (cols - 1);
+      const checker = (x + y) % 2 === 0;
+      g.fillStyle = t < 0.33 ? A : t > 0.66 ? B : (checker ? A : B);
+      g.fillRect(x0 + x*s2, top + y*s2, s2, s2);
+    }
+  label(g, 'at game size', x0, top + rows*s + 20);
+}
+
+function label(g, text, x, y) {
+  g.fillStyle = MUTED;
+  g.font = '12px ui-monospace, Menlo, monospace';
+  g.fillText(text, x, y);
+}
+
+drawDensity();
+drawSilhouette();
+drawDither();
+</script>

@@ -77,6 +77,41 @@
   }
   button:hover { border-color: var(--accent); color: var(--accent); }
   button.ghost { border-style: dashed; color: var(--muted); }
+  /* A tool button is a mode, so the active one stays lit — a pressed-and-
+     released button that silently changed the pointer's meaning is how you
+     end up flood-filling when you meant to draw a line. */
+  button.tool.on {
+    border-color: var(--accent); background: #2d3b33; color: var(--accent);
+  }
+  button.tool { display: flex; align-items: center; gap: 6px; }
+  button.tool small { color: var(--muted); font-size: 10px; }
+  button.tool.on small { color: var(--accent); }
+  /* One row per saved palette, mirroring .asset without the thumbnail. */
+  .palrow {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+    border: 1px solid var(--edge); border-radius: 5px; margin-bottom: 5px;
+    cursor: pointer; background: #1e2326; font-size: 12px;
+  }
+  .palrow:hover { border-color: var(--accent); }
+  .palrow .tones { display: flex; gap: 2px; flex: none; }
+  .palrow .tones i {
+    width: 10px; height: 14px; border-radius: 2px; display: block;
+    border: 1px solid rgba(255,255,255,.12);
+  }
+  .palrow b { flex: 1; min-width: 0; font-weight: 600;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The three-numbers strip under the scale check — the concept Brian is
+     working out, kept visible while working rather than only in the docs. */
+  .nums { display: flex; gap: 6px; font-size: 11px; }
+  .nums div {
+    flex: 1; padding: 6px 8px; border: 1px solid var(--edge);
+    border-radius: 5px; background: #1e2326; line-height: 1.35;
+  }
+  .nums div span { display: block; color: var(--muted); font-size: 10px;
+                   text-transform: uppercase; letter-spacing: .05em; }
+  .nums div b { font-size: 12px; font-weight: 600; }
+  .nums div.live b { color: var(--accent); }
+  .nums div.inert b { color: var(--muted); }
   textarea {
     width: 100%; min-height: 300px; background: #10141f; color: var(--fg);
     border: 1px solid var(--edge); border-radius: 6px; padding: 10px;
@@ -147,19 +182,45 @@
 
 <header>
   <h1>Omarcade Sprite Playground</h1>
-  <p>Paint pixels &rarr; copy the Rust back into <code>art.rs</code>. Drag to draw, right-click erases.</p>
+  <p>Paint pixels &rarr; copy the Rust back into <code>art.rs</code>.
+     <a href="pixel-reference.html" style="color:var(--accent)">reference &amp; help</a></p>
   <span class="controls">
     <label class="hint" for="size">grid</label>
     <select id="size">
-      <option value="32x20">32 &times; 20 &mdash; chunky</option>
-      <option value="48x30" selected>48 &times; 30 &mdash; detailed</option>
-      <option value="64x40">64 &times; 40 &mdash; fine</option>
-      <option value="96x40">96 &times; 40 &mdash; big prop</option>
-      <option value="128x48">128 &times; 48 &mdash; structure</option>
-      <option value="160x60">160 &times; 60 &mdash; full-span gantry</option>
+      <optgroup label="wide — vehicles &amp; structures">
+        <option value="32x20">32 &times; 20 &mdash; chunky</option>
+        <option value="48x30" selected>48 &times; 30 &mdash; detailed</option>
+        <option value="64x40">64 &times; 40 &mdash; fine</option>
+        <option value="96x40">96 &times; 40 &mdash; big prop</option>
+        <option value="128x48">128 &times; 48 &mdash; structure</option>
+        <option value="160x60">160 &times; 60 &mdash; full-span gantry</option>
+      </optgroup>
+      <optgroup label="square — invaders, icons, sign faces">
+        <option value="16x16">16 &times; 16 &mdash; classic invader</option>
+        <option value="24x24">24 &times; 24 &mdash; small sprite</option>
+        <option value="32x32">32 &times; 32 &mdash; NES-era</option>
+        <option value="48x48">48 &times; 48 &mdash; detailed</option>
+        <option value="64x64">64 &times; 64 &mdash; modern pixel art</option>
+        <option value="96x96">96 &times; 96 &mdash; rich</option>
+      </optgroup>
+      <optgroup label="billboard — 4:3 sign faces">
+        <option value="32x24">32 &times; 24 &mdash; coarse sign</option>
+        <option value="64x48">64 &times; 48 &mdash; sign with lettering</option>
+        <option value="96x72">96 &times; 72 &mdash; detailed sign</option>
+        <option value="128x96">128 &times; 96 &mdash; near-smooth sign</option>
+      </optgroup>
+      <option value="custom">custom&hellip;</option>
     </select>
+    <span id="customsize" style="display:none; gap:5px; align-items:center">
+      <input type="number" id="cw" min="4" max="512" step="1" value="48"
+             style="width:62px" title="width in cells">
+      <span class="hint">&times;</span>
+      <input type="number" id="chh" min="4" max="512" step="1" value="30"
+             style="width:62px" title="height in cells">
+      <button id="applysize" style="padding:5px 10px">Apply</button>
+    </span>
     <label class="hint" for="zoom">zoom</label>
-    <input id="zoom" type="range" min="6" max="28" value="15" style="width:110px">
+    <input id="zoom" type="range" min="4" max="40" value="15" style="width:110px">
     <button id="fit" style="padding:5px 10px">Fit</button>
   </span>
 </header>
@@ -167,18 +228,23 @@
 <main>
   <div class="col">
     <div class="panel">
-      <h2>Canvas</h2>
+      <h2>Canvas <span class="hint" id="selinfo" style="margin:0"></span></h2>
+      <div class="row" id="tools" style="margin:0 0 8px"></div>
       <div class="row" style="margin:0 0 10px">
         <button id="mirror">Mirror L&rarr;R</button>
         <button id="undo">Undo</button>
+        <button id="redo">Redo</button>
         <button id="clear">Clear</button>
         <button id="up">Shift up</button>
         <button id="down">Shift down</button>
+        <button id="onion" class="ghost">Onion skin</button>
       </div>
       <div id="gridwrap"><canvas id="grid"></canvas></div>
       <p class="hint">
-        <kbd>drag</kbd> paint &nbsp; <kbd>right-drag</kbd> erase &nbsp;
-        <kbd>alt+click</kbd> pick colour &nbsp; <kbd>ctrl+z</kbd> undo
+        <kbd>drag</kbd> draw &nbsp; <kbd>right-drag</kbd> erase &nbsp;
+        <kbd>alt+click</kbd> pick &nbsp; <kbd>1</kbd>&ndash;<kbd>0</kbd> colour &nbsp;
+        <kbd>ctrl+z</kbd> undo &nbsp; <kbd>ctrl+shift+z</kbd> redo &nbsp;
+        <a href="pixel-reference.html" style="color:var(--muted)">all keys &rarr;</a>
       </p>
     </div>
 
@@ -200,15 +266,11 @@
   </div>
 
   <div class="col">
-    <div class="panel">
-      <h2>Preview</h2>
-      <div class="swatches" id="bgs" style="margin-bottom:10px"></div>
-      <canvas id="preview" width="288" height="180"></canvas>
-      <p class="hint">
-        Actual size, 2x, 4x &mdash; how it reads at distance.
-        Dark tyres vanish on a dark ground; check against <b>road</b>.
-      </p>
-      <div class="row" style="align-items:center">
+    <div class="panel" style="border-color:var(--accent)">
+      <h2 style="color:var(--accent)">Scale check
+        <span class="hint" style="margin:0">the panel that tells the truth</span>
+      </h2>
+      <div class="row" style="align-items:center;margin:0 0 10px">
         <label class="hint" for="scalerole" style="margin:0">world scale as</label>
         <select id="scalerole">
           <option value="prop" selected>prop / billboard</option>
@@ -216,12 +278,24 @@
           <option value="car">a car</option>
         </select>
       </div>
-      <canvas id="scalecheck" width="288" height="140"
-              style="border-radius:6px;margin-top:8px"></canvas>
+      <canvas id="scalecheck" width="308" height="210"
+              style="border-radius:6px"></canvas>
+      <div id="threenums" style="margin-top:10px"></div>
       <p class="hint">
-        Your sprite at the size the game will draw it, next to the car on
-        the road. Pixel count never sets world size &mdash; the <b>role</b>
-        does; the grid only sets aspect ratio and detail.
+        Your sprite at the size the game will draw it, on the road beside
+        the reference car. <b>Pixel count never sets world size</b> &mdash;
+        the role does. The grid buys detail and aspect ratio, nothing more.
+        <a href="pixel-reference.html#three" style="color:var(--accent)">why &rarr;</a>
+      </p>
+    </div>
+
+    <div class="panel">
+      <h2>Preview</h2>
+      <div class="swatches" id="bgs" style="margin-bottom:10px"></div>
+      <canvas id="preview" width="288" height="180"></canvas>
+      <p class="hint">
+        Actual size, 2x, 4x &mdash; how it reads at distance.
+        Dark tyres vanish on a dark ground; check against <b>road</b>.
       </p>
     </div>
 
@@ -235,7 +309,23 @@
       <p class="hint">
         Tones are <b>recipes</b>, not fixed hex &mdash; the same
         <code>lerp</code> the game does, so they follow the theme.
+        <a href="pixel-reference.html#recipes" style="color:var(--muted)">why &rarr;</a>
       </p>
+      <div style="border-top:1px solid var(--edge);margin-top:14px;padding-top:12px">
+        <h2 style="margin-bottom:8px">Saved palettes</h2>
+        <div class="row" style="margin-top:0">
+          <input type="text" id="palname" spellcheck="false"
+                 placeholder="name &mdash; e.g. billboard"
+                 style="flex:1;min-width:0">
+          <button id="savepal">Save</button>
+        </div>
+        <div id="pallist" style="margin-top:8px"></div>
+        <p class="hint">
+          The palette <b>alone</b>, without a sprite &mdash; so eight
+          billboards can share one set of colours. Loading a palette keeps
+          your current art; letters it does not define stay as they were.
+        </p>
+      </div>
     </div>
 
     <div class="panel">
@@ -563,6 +653,12 @@ let editing = null;          // which palette letter has the editor open
 let LAST_UNRESOLVED = [];
 let painting = false, erasing = false;
 const undoStack = [];
+const redoStack = [];
+/// A saved asset's rows, drawn faintly under the art as a tracing guide.
+/// Null when off. Stored as rows of characters plus the colours they
+/// resolved to at load time — the underlay must not shift when the live
+/// palette is edited, or it stops being a stable reference.
+let onion = null;
 
 const cv = document.getElementById('grid');
 const ctx = cv.getContext('2d');
@@ -608,11 +704,46 @@ function draw() {
       ctx.strokeRect(x*CELL + .5, y*CELL + .5, CELL - 1, CELL - 1);
     }
   }
+
+  // Onion skin sits ABOVE the checkerboard but below nothing else: it
+  // has to be visible through transparent cells, which is the whole
+  // point, while never being mistaken for real art. Low alpha does that
+  // job better than a colour shift would.
+  if (onion) {
+    ctx.save();
+    ctx.globalAlpha = 0.30;
+    for (let y = 0; y < onion.rows.length && y < ROWS; y++)
+      for (let x = 0; x < onion.rows[y].length && x < COLS; x++) {
+        const ch = onion.rows[y][x];
+        if (ch === '.' || grid[y][x] !== '.') continue;
+        ctx.fillStyle = onion.colors[ch] || '#ffffff';
+        ctx.fillRect(x*CELL, y*CELL, CELL, CELL);
+      }
+    ctx.restore();
+  }
+
   // Centre line — symmetry is most of what makes a vehicle read right.
   ctx.strokeStyle = 'rgba(131,192,146,.35)';
   ctx.beginPath();
   ctx.moveTo(COLS/2 * CELL, 0); ctx.lineTo(COLS/2 * CELL, cv.height);
   ctx.stroke();
+
+  // The selection marquee. Drawn as a dark line under a dashed light one
+  // so it stays visible over both a pale sprite and the dark
+  // checkerboard — a single-colour dashed rect disappears over one or
+  // the other.
+  if (sel) {
+    const x = sel.x*CELL, y = sel.y*CELL, w = sel.w*CELL, h = sel.h*CELL;
+    ctx.save();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(0,0,0,.65)';
+    ctx.strokeRect(x + .5, y + .5, w - 1, h - 1);
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = '#d3c6aa';
+    ctx.strokeRect(x + .5, y + .5, w - 1, h - 1);
+    ctx.restore();
+  }
+
   drawPreview();
   emit();
   autosaveWip();
@@ -728,25 +859,247 @@ function drawScaleCheck() {
           : role === SCALE_ROLES.prop   ? cx - pphw * 1.3 - w / 2
           :                               cx - pphw * 0.5 - w / 2;
   drawGridInto(g, rows, colorMapFor(rows), x, base, s);
+  renderThreeNums();
 }
 
-$('scalerole').onchange = drawScaleCheck;
+$('scalerole').onchange = () => { drawScaleCheck(); renderThreeNums(); };
 
+/// Undo and redo share one history. Any new edit invalidates the redo
+/// stack — the alternative is a branching history, which nobody wants in
+/// a sprite editor and which would make ctrl+z mean two different things
+/// depending on what came before it.
 function pushUndo() {
   undoStack.push(grid.map(r => r.slice()));
   if (undoStack.length > 100) undoStack.shift();
+  redoStack.length = 0;
 }
 
 function cellAt(ev) {
   const r = cv.getBoundingClientRect();
   const x = Math.floor((ev.clientX - r.left) / (r.width / COLS));
   const y = Math.floor((ev.clientY - r.top) / (r.height / ROWS));
-  return (x >= 0 && x < COLS && y >= 0 && y < ROWS) ? [x, y] : null;
+  return [x, y];                        // may be outside; callers clamp
+}
+
+function inBounds(x, y) {
+  return x >= 0 && x < COLS && y >= 0 && y < ROWS;
+}
+
+function setCell(x, y, ch) {
+  if (inBounds(x, y)) grid[y][x] = ch;
+}
+
+// --- the tools -------------------------------------------------------
+//
+// Every tool is one of two shapes:
+//
+//   FREEHAND (pencil)  — commits on each pointer move.
+//   DRAG-SHAPE (line, rect, select) — the drag only ever previews; the
+//     grid is not touched until pointerup.
+//
+// The drag-shape tools work against `preGrid`, a copy taken at
+// pointerdown. Each move restores from it and re-applies the shape, so
+// dragging a line back and forth does not leave a trail of earlier
+// attempts baked into the art. That copy is also exactly what the undo
+// entry should contain, which is why pushUndo happens at pointerdown.
+
+const TOOLS = [
+  {id: 'pencil', label: 'Pencil', key: 'P'},
+  {id: 'fill',   label: 'Fill',   key: 'F'},
+  {id: 'line',   label: 'Line',   key: 'L'},
+  {id: 'rect',   label: 'Rect',   key: 'R'},
+  {id: 'select', label: 'Select', key: 'S'},
+  {id: 'pick',   label: 'Pick',   key: 'I'},
+];
+let tool = 'pencil';
+
+/// The grid as it was when the current drag started. Null when not
+/// dragging a shape.
+let preGrid = null;
+/// Where the current drag began, in cells.
+let dragStart = null;
+/// Live shape modifier, sampled per move so shift can be pressed or
+/// released mid-drag.
+let dragShift = false;
+
+/// The selection rectangle {x, y, w, h}, or null. Kept in cells.
+let sel = null;
+/// While dragging a selection's contents: the cells lifted out, the
+/// grid with the hole already punched, and the grab offset.
+let selDrag = null;
+/// The clipboard — a 2-D array of characters, or null.
+let clip = null;
+
+function renderTools() {
+  const el = $('tools');
+  el.innerHTML = '';
+  for (const t of TOOLS) {
+    const b = document.createElement('button');
+    b.className = 'tool' + (tool === t.id ? ' on' : '');
+    b.innerHTML = `${t.label} <small>${t.key}</small>`;
+    b.onclick = () => setTool(t.id);
+    el.appendChild(b);
+  }
+}
+
+function setTool(id) {
+  tool = id;
+  // Leaving select drops the marquee: a selection outline that survives
+  // into the pencil is a lie, since none of the selection keys apply.
+  if (id !== 'select') { commitSelDrag(); sel = null; }
+  renderTools();
+  updateSelInfo();
+  draw();
+}
+
+function updateSelInfo() {
+  const el = $('selinfo');
+  if (!el) return;
+  if (sel) {
+    el.textContent = `selection ${sel.w}×${sel.h}` +
+      (clip ? `  ·  clipboard ${clip[0].length}×${clip.length}` : '');
+  } else if (clip) {
+    el.textContent = `clipboard ${clip[0].length}×${clip.length} — ctrl+v to paste`;
+  } else {
+    el.textContent = '';
+  }
+}
+
+/// Flood fill, 4-connected, over the region sharing the clicked cell's
+/// character. Iterative rather than recursive: a 128×96 grid of one
+/// colour is 12,288 cells and would blow the call stack.
+function floodFill(sx, sy, ch) {
+  const target = grid[sy][sx];
+  if (target === ch) return;
+  const stack = [[sx, sy]];
+  while (stack.length) {
+    const [x, y] = stack.pop();
+    if (!inBounds(x, y) || grid[y][x] !== target) continue;
+    grid[y][x] = ch;
+    stack.push([x+1, y], [x-1, y], [x, y+1], [x, y-1]);
+  }
+}
+
+/// Bresenham. The obvious float-stepping alternative drops cells on
+/// near-vertical lines, which in pixel art shows up as a dotted edge.
+function lineCells(x0, y0, x1, y1) {
+  const out = [];
+  let dx = Math.abs(x1-x0), dy = -Math.abs(y1-y0);
+  let sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    out.push([x0, y0]);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+  return out;
+}
+
+function rectOf(a, b) {
+  const x = Math.min(a[0], b[0]), y = Math.min(a[1], b[1]);
+  return {
+    x, y,
+    w: Math.abs(a[0] - b[0]) + 1,
+    h: Math.abs(a[1] - b[1]) + 1,
+  };
+}
+
+/// Re-apply the in-progress shape over a clean copy of the pre-drag grid.
+function previewShape(to) {
+  grid = preGrid.map(r => r.slice());
+  const ch = erasing ? '.' : cur;
+  if (tool === 'line') {
+    for (const [x, y] of lineCells(dragStart[0], dragStart[1], to[0], to[1]))
+      setCell(x, y, ch);
+  } else if (tool === 'rect') {
+    const r = rectOf(dragStart, to);
+    for (let y = r.y; y < r.y + r.h; y++)
+      for (let x = r.x; x < r.x + r.w; x++) {
+        const edge = x === r.x || x === r.x + r.w - 1
+                  || y === r.y || y === r.y + r.h - 1;
+        if (dragShift || edge) setCell(x, y, ch);
+      }
+  }
+  draw();
+}
+
+/// Lift the selected cells out of the grid so they can be dragged. The
+/// hole is punched immediately — a move that left the original behind
+/// would be a copy, and there is a separate key for that.
+function beginSelDrag(at) {
+  const cells = [];
+  for (let y = 0; y < sel.h; y++) {
+    const row = [];
+    for (let x = 0; x < sel.w; x++) {
+      const gx = sel.x + x, gy = sel.y + y;
+      row.push(inBounds(gx, gy) ? grid[gy][gx] : '.');
+      if (inBounds(gx, gy)) grid[gy][gx] = '.';
+    }
+    cells.push(row);
+  }
+  selDrag = {cells, ox: at[0] - sel.x, oy: at[1] - sel.y,
+             base: grid.map(r => r.slice())};
+}
+
+/// Stamp the floating cells down at the selection's current position.
+function commitSelDrag() {
+  if (!selDrag) return;
+  grid = selDrag.base.map(r => r.slice());
+  stampAt(selDrag.cells, sel.x, sel.y);
+  selDrag = null;
+  draw();
+}
+
+/// Paste cells at a corner. Transparent cells in the source do not erase
+/// what is underneath — stamping a shape onto existing art should not
+/// punch a rectangular hole around it.
+function stampAt(cells, x0, y0) {
+  for (let y = 0; y < cells.length; y++)
+    for (let x = 0; x < cells[y].length; x++) {
+      const ch = cells[y][x];
+      if (ch !== '.') setCell(x0 + x, y0 + y, ch);
+    }
+}
+
+function copySelection(cut) {
+  if (!sel) return;
+  clip = [];
+  for (let y = 0; y < sel.h; y++) {
+    const row = [];
+    for (let x = 0; x < sel.w; x++) {
+      const gx = sel.x + x, gy = sel.y + y;
+      row.push(inBounds(gx, gy) ? grid[gy][gx] : '.');
+    }
+    clip.push(row);
+  }
+  if (cut) {
+    pushUndo();
+    for (let y = 0; y < sel.h; y++)
+      for (let x = 0; x < sel.w; x++) setCell(sel.x + x, sel.y + y, '.');
+    draw();
+  }
+  updateSelInfo();
+}
+
+/// Paste into the selection's corner when there is one, else top-left.
+/// The pasted region becomes the selection so it can be dragged into
+/// place immediately.
+function pasteClip() {
+  if (!clip) return;
+  pushUndo();
+  const x0 = sel ? sel.x : 0, y0 = sel ? sel.y : 0;
+  stampAt(clip, x0, y0);
+  sel = {x: x0, y: y0, w: clip[0].length, h: clip.length};
+  if (tool !== 'select') setTool('select');
+  updateSelInfo();
+  draw();
 }
 
 function paint(ev) {
-  const c = cellAt(ev); if (!c) return;
-  const [x, y] = c;
+  const [x, y] = cellAt(ev);
+  if (!inBounds(x, y)) return;
   const ch = erasing ? '.' : cur;
   if (grid[y][x] === ch) return;
   grid[y][x] = ch;
@@ -754,20 +1107,99 @@ function paint(ev) {
 }
 
 cv.addEventListener('contextmenu', e => e.preventDefault());
+
 cv.addEventListener('pointerdown', e => {
-  const c = cellAt(e); if (!c) return;
-  if (e.altKey) {                       // pick
+  const c = cellAt(e);
+  if (!inBounds(c[0], c[1])) return;
+  erasing = (e.button === 2);
+  dragShift = e.shiftKey;
+
+  // Alt is the eyedropper from any tool — the habit is universal enough
+  // that making it modal only would be a regression.
+  if (e.altKey || tool === 'pick') {
     const ch = grid[c[1]][c[0]];
     if (ch !== '.') { cur = ch; renderSwatches(); }
     return;
   }
-  pushUndo();
-  painting = true; erasing = (e.button === 2);
+
   cv.setPointerCapture(e.pointerId);
-  paint(e);
+
+  if (tool === 'pencil') {
+    pushUndo();
+    painting = true;
+    paint(e);
+    return;
+  }
+
+  if (tool === 'fill') {
+    pushUndo();
+    floodFill(c[0], c[1], erasing ? '.' : cur);
+    draw();
+    return;
+  }
+
+  if (tool === 'select') {
+    // Inside an existing selection, the drag moves its contents.
+    if (sel && c[0] >= sel.x && c[0] < sel.x + sel.w
+            && c[1] >= sel.y && c[1] < sel.y + sel.h) {
+      pushUndo();
+      beginSelDrag(c);
+      painting = true;
+      return;
+    }
+    commitSelDrag();
+    dragStart = c;
+    sel = {x: c[0], y: c[1], w: 1, h: 1};
+    painting = true;
+    updateSelInfo();
+    draw();
+    return;
+  }
+
+  // line, rect — preview against a frozen copy until release.
+  pushUndo();
+  preGrid = grid.map(r => r.slice());
+  dragStart = c;
+  painting = true;
+  previewShape(c);
 });
-cv.addEventListener('pointermove', e => { if (painting) paint(e); });
-cv.addEventListener('pointerup', () => { painting = false; });
+
+cv.addEventListener('pointermove', e => {
+  if (!painting) return;
+  dragShift = e.shiftKey;
+  const c = cellAt(e);
+
+  if (tool === 'pencil') { paint(e); return; }
+
+  if (tool === 'select') {
+    if (selDrag) {
+      // Move the floating cells: restore the punched grid, re-stamp.
+      sel.x = c[0] - selDrag.ox;
+      sel.y = c[1] - selDrag.oy;
+      grid = selDrag.base.map(r => r.slice());
+      stampAt(selDrag.cells, sel.x, sel.y);
+      draw();
+    } else {
+      const r = rectOf(dragStart, [
+        Math.max(0, Math.min(COLS - 1, c[0])),
+        Math.max(0, Math.min(ROWS - 1, c[1])),
+      ]);
+      sel = r;
+      updateSelInfo();
+      draw();
+    }
+    return;
+  }
+
+  if (preGrid) previewShape(c);
+});
+
+cv.addEventListener('pointerup', () => {
+  painting = false;
+  preGrid = null;
+  dragStart = null;
+  if (selDrag) commitSelDrag();
+});
 
 // --- swatches -------------------------------------------------------
 
@@ -1518,6 +1950,7 @@ function constName(name) {
 
 function applySnapshot(s) {
   pushUndo();
+  sel = null; selDrag = null;
   grid = s.grid.map(r => r.split(''));
   ROWS = grid.length; COLS = grid[0].length;
   PALETTE = s.palette.map(e => ({...e}));
@@ -1526,9 +1959,7 @@ function applySnapshot(s) {
   editing = null;
   $('assetname').value = s.name || '';
   $('out').dataset.name = s.name ? constName(s.name) : 'PLAYER_CAR';
-  const sel = $('size');
-  const key = `${COLS}x${ROWS}`;
-  if ([...sel.options].some(o => o.value === key)) sel.value = key;
+  syncSizeControl();
   fitZoom();
   refreshColors();
 }
@@ -1661,9 +2092,32 @@ $('clear').onclick = () => {
   draw();
 };
 $('undo').onclick = doUndo;
+$('redo').onclick = doRedo;
+
+/// Undo/redo move whole grids between two stacks. A selection cannot
+/// survive an undo — the cells it referred to may no longer exist — so
+/// it is dropped rather than left pointing at the wrong art.
 function doUndo() {
   if (!undoStack.length) return;
-  grid = undoStack.pop(); draw();
+  redoStack.push(grid.map(r => r.slice()));
+  grid = undoStack.pop();
+  ROWS = grid.length; COLS = grid[0].length;
+  sel = null; selDrag = null;
+  syncSizeControl();
+  fitZoom();
+  updateSelInfo();
+  draw();
+}
+function doRedo() {
+  if (!redoStack.length) return;
+  undoStack.push(grid.map(r => r.slice()));
+  grid = redoStack.pop();
+  ROWS = grid.length; COLS = grid[0].length;
+  sel = null; selDrag = null;
+  syncSizeControl();
+  fitZoom();
+  updateSelInfo();
+  draw();
 }
 $('up').onclick = () => {
   pushUndo();
@@ -1691,19 +2145,284 @@ function fitZoom() {
 $('fit').onclick = () => { fitZoom(); draw(); };
 addEventListener('resize', () => { fitZoom(); draw(); });
 
+/// Point the size control at the live grid. A dimension no preset covers
+/// selects 'custom…' and fills the two number fields, so the control
+/// always states the truth — a dropdown reading 48×30 over a 64×64 grid
+/// is worse than no dropdown.
+function syncSizeControl() {
+  const sel = $('size');
+  const key = `${COLS}x${ROWS}`;
+  const known = [...sel.options].some(o => o.value === key);
+  sel.value = known ? key : 'custom';
+  $('customsize').style.display = known ? 'none' : 'flex';
+  $('cw').value = COLS;
+  $('chh').value = ROWS;
+}
+
 $('size').onchange = e => {
+  if (e.target.value === 'custom') {
+    $('customsize').style.display = 'flex';
+    $('cw').value = COLS; $('chh').value = ROWS;
+    $('cw').focus();
+    return;
+  }
+  $('customsize').style.display = 'none';
   const [c, r] = e.target.value.split('x').map(Number);
   pushUndo();
   resize(c, r);
 };
+
+$('applysize').onclick = () => {
+  // Clamped rather than rejected: a typo should land somewhere sane, and
+  // 512 cells square is already past anything this suite needs.
+  const c = Math.max(4, Math.min(512, Number($('cw').value) || COLS));
+  const r = Math.max(4, Math.min(512, Number($('chh').value) || ROWS));
+  $('cw').value = c; $('chh').value = r;
+  if (c === COLS && r === ROWS) return;
+  pushUndo();
+  resize(c, r);
+  syncSizeControl();
+};
+// Enter in either field applies, so the mouse is optional.
+for (const id of ['cw', 'chh'])
+  $(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); $('applysize').click(); }
+  });
+
 $('zoom').oninput = e => {
   CELL = Number(e.target.value);
   cv.width = COLS * CELL; cv.height = ROWS * CELL;
   draw();
 };
 
+// --- onion skin ------------------------------------------------------
+
+/// Choose a saved asset to trace against. Colours are resolved once,
+/// under the asset's OWN palette, and frozen — an underlay that shifted
+/// when the live palette was edited would stop being a fixed reference.
+$('onion').onclick = () => {
+  if (onion) { onion = null; renderOnionButton(); draw(); return; }
+  const lib = readLibrary();
+  const names = Object.keys(lib);
+  if (!names.length) {
+    $('assetstatus').textContent = 'save an asset first — onion skin traces one';
+    $('assetstatus').className = 'hint warn';
+    return;
+  }
+  // A prompt is the honest control here: the list is short, and a custom
+  // modal would be more code than the feature.
+  const pick = prompt('Trace against which saved asset?\n\n' +
+    names.map((n, i) => `${i + 1}. ${n}`).join('\n'), '1');
+  if (pick === null) return;
+  const idx = Number(pick) - 1;
+  const name = names[idx] !== undefined ? names[idx]
+             : names.find(n => n.toLowerCase() === String(pick).toLowerCase());
+  const a = lib[name];
+  if (!a) return;
+  onion = {
+    name,
+    rows: a.grid,
+    colors: withPalette(a.palette, a.fixed, () => colorMapFor(a.grid)),
+  };
+  renderOnionButton();
+  draw();
+};
+
+function renderOnionButton() {
+  const b = $('onion');
+  if (onion) {
+    b.textContent = `Onion: ${onion.name} ×`;
+    b.className = '';
+  } else {
+    b.textContent = 'Onion skin';
+    b.className = 'ghost';
+  }
+}
+
+// --- the three numbers -----------------------------------------------
+
+/// A live restatement of grid / zoom / world-scale under the scale
+/// check. The distinction is the one thing about this tool that is not
+/// self-evident, and a strip that updates as the controls move teaches
+/// it better than the reference page can.
+function renderThreeNums() {
+  const el = $('threenums');
+  if (!el) return;
+  const role = $('scalerole').value;
+  const roleName = {prop: 'prop / billboard', gantry: 'spans road', car: 'car'}[role];
+  el.innerHTML = `
+    <div class="nums">
+      <div class="live"><span>grid — detail</span><b>${COLS}×${ROWS}</b></div>
+      <div class="inert"><span>zoom — view only</span><b>${CELL}px</b></div>
+      <div class="live"><span>world — real size</span><b>${roleName}</b></div>
+    </div>`;
+}
+
+// --- saved palettes --------------------------------------------------
+//
+// A palette saved WITHOUT a sprite. The asset shelf already stores the
+// two together, which is right for finishing a sprite and wrong for
+// starting eight that share a look: loading an asset to get its colours
+// also replaces the art. This shelf carries recipes only.
+
+const PAL_KEY = 'omarcade-palette-library';
+
+function readPalettes() {
+  try { return JSON.parse(localStorage.getItem(PAL_KEY)) || {}; }
+  catch { return {}; }
+}
+function writePalettes(lib) {
+  try { localStorage.setItem(PAL_KEY, JSON.stringify(lib)); return true; }
+  catch { return false; }
+}
+
+$('savepal').onclick = () => {
+  const name = $('palname').value.trim();
+  if (!name) { $('palname').focus(); return; }
+  const lib = readPalettes();
+  lib[name] = {
+    palette: PALETTE.map(e => ({...e})),
+    fixed: FIXED.map(f => ({...f})),
+    savedAt: new Date().toISOString(),
+  };
+  writePalettes(lib);
+  $('palname').value = '';
+  renderPalettes();
+};
+
+/// Load recipes over the current art.
+///
+/// Letters the incoming palette does not define are KEPT, not dropped —
+/// dropping them would turn every cell using one magenta, which is the
+/// failure this tool exists to prevent. The result is a merge: the
+/// saved palette wins where the two overlap.
+function applyPalette(p) {
+  const incoming = new Map(p.palette.map(e => [e.ch, e]));
+  const merged = p.palette.map(e => ({...e}));
+  for (const e of PALETTE)
+    if (!incoming.has(e.ch)) merged.push({...e});
+  PALETTE = merged;
+  // Fixed colours merge by key on the same rule.
+  const haveFixed = new Set(p.fixed.map(f => f.key));
+  FIXED = [
+    ...p.fixed.map(f => ({...f})),
+    ...FIXED.filter(f => !haveFixed.has(f.key)),
+  ];
+  if (!PALETTE.some(e => e.ch === cur)) cur = PALETTE[1] ? PALETTE[1].ch : '.';
+  editing = null;
+  refreshColors();
+}
+
+function renderPalettes() {
+  const el = $('pallist');
+  if (!el) return;
+  const lib = readPalettes();
+  const names = Object.keys(lib).sort((a, b) =>
+    (lib[b].savedAt || '').localeCompare(lib[a].savedAt || ''));
+  el.innerHTML = '';
+  if (!names.length) {
+    el.innerHTML = '<p class="hint" style="margin:0">none saved yet</p>';
+    return;
+  }
+  for (const name of names) {
+    const p = lib[name];
+    const row = document.createElement('div');
+    row.className = 'palrow';
+    row.title = 'load ' + name;
+
+    // Resolve the saved recipes under THEIR own fixed colours, so the
+    // chips show what that palette actually is rather than what the
+    // current one would make of its letters.
+    const tones = document.createElement('div');
+    tones.className = 'tones';
+    const swatchHexes = withPalette(p.palette, p.fixed, () =>
+      p.palette.filter(e => e.ch !== '.').slice(0, 8).map(e => resolve(e)));
+    for (const hex of swatchHexes) {
+      const i = document.createElement('i');
+      i.style.background = hex;
+      tones.appendChild(i);
+    }
+    row.appendChild(tones);
+
+    const b = document.createElement('b');
+    b.textContent = name;
+    row.appendChild(b);
+
+    const del = document.createElement('span');
+    del.className = 'gear';
+    del.textContent = '×';
+    del.title = 'delete';
+    del.onclick = ev => {
+      ev.stopPropagation();
+      if (del.dataset.armed) {
+        const lib2 = readPalettes();
+        delete lib2[name];
+        writePalettes(lib2);
+        renderPalettes();
+      } else {
+        del.dataset.armed = '1';
+        del.textContent = 'sure?';
+        setTimeout(() => { delete del.dataset.armed; del.textContent = '×'; }, 2200);
+      }
+    };
+    row.appendChild(del);
+
+    row.onclick = () => applyPalette(p);
+    el.appendChild(row);
+  }
+}
+
+// --- keys ------------------------------------------------------------
+
+/// True when a text field has focus. Without this, typing 'f' into the
+/// asset-name box would switch to the fill tool and swallow the letter.
+function typing() {
+  const t = document.activeElement;
+  return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+            || t.tagName === 'SELECT');
+}
+
 addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); doUndo(); }
+  const mod = e.ctrlKey || e.metaKey;
+
+  if (mod && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    e.shiftKey ? doRedo() : doUndo();
+    return;
+  }
+  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); return; }
+
+  if (mod && e.key.toLowerCase() === 'c' && sel && !typing()) {
+    e.preventDefault(); copySelection(false); return;
+  }
+  if (mod && e.key.toLowerCase() === 'x' && sel && !typing()) {
+    e.preventDefault(); copySelection(true); return;
+  }
+  if (mod && e.key.toLowerCase() === 'v' && clip && !typing()) {
+    e.preventDefault(); pasteClip(); return;
+  }
+
+  if (mod || e.altKey || typing()) return;
+
+  if (e.key === 'Escape') {
+    if (sel) { commitSelDrag(); sel = null; updateSelInfo(); draw(); }
+    return;
+  }
+
+  // Tool letters.
+  const byKey = TOOLS.find(t => t.key.toLowerCase() === e.key.toLowerCase());
+  if (byKey) { e.preventDefault(); setTool(byKey.id); return; }
+
+  // 1-9 then 0 select the first ten paintable colours by position.
+  if (/^[0-9]$/.test(e.key)) {
+    const idx = e.key === '0' ? 9 : Number(e.key) - 1;
+    const paintable = PALETTE.filter(p => p.ch !== '.');
+    if (paintable[idx]) {
+      e.preventDefault();
+      cur = paintable[idx].ch;
+      renderSwatches();
+    }
+  }
 });
 
 // The car as it stands in art.rs today — the seed when nothing is saved.
@@ -1765,8 +2484,6 @@ if (wip && Array.isArray(wip.grid) && wip.grid.length
 
 COLS = grid[0].length;
 ROWS = grid.length;
-const bootSize = `${COLS}x${ROWS}`;
-if ([...$('size').options].some(o => o.value === bootSize)) $('size').value = bootSize;
 fitZoom();
 
 renderSwatches();
@@ -1774,5 +2491,10 @@ renderFixed();
 renderTheme();
 renderBackgrounds();
 renderAssets();
+renderTools();
+renderPalettes();
+renderOnionButton();
+syncSizeControl();
+renderThreeNums();
 draw();
 </script>

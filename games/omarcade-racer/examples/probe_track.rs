@@ -19,6 +19,8 @@ mod drive;
 mod track;
 #[path = "../src/pace.rs"]
 mod pace;
+#[path = "../src/race.rs"]
+mod race;
 
 use drive::{Drive, Surface, Tuning};
 use pace::Pacer;
@@ -107,11 +109,26 @@ fn main() {
         }
     }
 
+    // The limits the game will derive from this same driver, and what
+    // they cost to derive: this runs at start-up, once, and must not be
+    // noticeable.
+    let visible = road.draw_distance() as f32 * road.segment_length();
+    let grid_z = road.wrap(-0.1 * visible);
+    let started = std::time::Instant::now();
+    let windows = race::Windows::derive(&road, &tuning, grid_z);
+    let derive_ms = started.elapsed().as_secs_f32() * 1000.0;
+
     println!("    distance covered  {:.2} of {:.2} miles", travelled/UNITS_PER_MILE, lap/UNITS_PER_MILE);
     println!("    lap time          {t:.2} s");
     println!("    time braking      {braking:.2} s  ({:.0}% of the lap)", braking/t*100.0);
     println!("    time off the road {off:.2} s");
     println!("    slowest point     {:.0} ({:.0}% of top)", slowest, slowest/tuning.top_speed*100.0);
+    println!();
+    println!("  the race, derived from that driver  ({derive_ms:.1} ms to derive)\n");
+    println!("    standing lap      {:.2} s  (grid to line, plus a lap)", windows.reference_standing);
+    println!("    qualifying cut    {:.2} s  (x{} allowance)", windows.qualify, race::QUAL_ALLOWANCE);
+    println!("    checkpoint window {:.2} s  ({} per lap, x{} allowance)",
+        windows.checkpoint, race::CHECKPOINTS_PER_LAP, race::CHECKPOINT_ALLOWANCE);
     println!();
     if off > 0.5 {
         println!("    ⚠️  a driver who slows for every corner still spent {off:.1}s off");

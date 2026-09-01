@@ -66,6 +66,29 @@ pub struct Placement {
     pub kind: Structure,
 }
 
+/// Where the car starts, as a fraction of the draw distance BEFORE the
+/// start line. Negative: it is a setback.
+///
+/// ⚠️ A start line you cannot see at the start is not a start line. The
+/// car began at track zero — the same place as the gantry — so it began
+/// standing inside it, the line was a whole lap ahead, and it appeared
+/// only in the last twentieth of a mile of each lap. Brian found this in
+/// a screenshot; five tests here missed it, because each asked whether
+/// the structure was placed correctly and none asked what you can see
+/// from where you start.
+///
+/// ⚠️ AND IT IS A TENTH, not most of a draw distance. The projection is
+/// hyperbolic, so distance and apparent size are nothing like
+/// proportional: at 0.8 the gantry is FOUR PIXELS of half-width —
+/// technically visible, practically not there. At 0.1 it is around
+/// thirty, which is a structure you are lined up under.
+///
+/// Lives here rather than in `main.rs` so the test that checks the line
+/// is visible from the grid reads the same number the game starts at. It
+/// was briefly two numbers, and the test passed against a value the game
+/// did not use (L022).
+pub const GRID_SETBACK: f32 = -0.1;
+
 /// How much of the road a gantry spans, in half-widths.
 ///
 /// The road is 2.0 half-widths across, so 2.6 means the legs land outside
@@ -80,12 +103,14 @@ const GANTRY_SPAN_HALF_WIDTHS: f32 = 2.6;
 /// comfortably readable without dominating the frame.
 const BILLBOARD_PANEL_HALF_WIDTHS: f32 = 0.95;
 
-/// How far off the centre line a billboard stands, in half-widths.
+/// Where a billboard's NEAR EDGE stands, in half-widths from the centre
+/// line.
 ///
-/// Past 1.0 by enough to clear the verge and the rumble strip. Further out
-/// than about 1.4 and it drifts toward the horizon fast enough to be
-/// unreadable before it is close.
-const BILLBOARD_OFFSET_HALF_WIDTHS: f32 = 1.25;
+/// Stated about the edge of the drawing nearest the road, not about the
+/// sprite's centre — see `draw_roadside`. Past 1.0 by enough to clear the
+/// verge and the rumble strip and read as standing off the track rather
+/// than on its shoulder.
+const BILLBOARD_OFFSET_HALF_WIDTHS: f32 = 1.15;
 
 /// Draw every structure that is currently visible.
 ///
@@ -115,28 +140,14 @@ pub fn draw(
             // A structure is somewhere on a looping track, so the one
             // ahead may be at a smaller z than the camera. `ahead_of`
             // resolves that to a distance rather than a position.
-            let d = ahead_of(road, camera_z, p.z);
-            let reach = road.draw_distance() as f32 * road.segment_length();
-            // `d >= 0.0`, NOT `> 0.0`. A structure the camera is standing
-            // exactly on is at distance zero, and excluding it means the
-            // start gantry blinks out at the precise moment you cross the
-            // line — the one frame it most needs to be there. `project`
-            // rejects a non-positive distance on its own, so the zero case
-            // is handled without a special case here.
-            (d >= 0.0 && d < reach).then_some((d, p))
+            visible_at(road, camera_z, p.z).map(|d| (d, p))
         })
         .collect();
     visible.sort_by(|a, b| b.0.total_cmp(&a.0));
 
-    for (_, placement) in visible {
-        let Some(p) = road.project(
-            camera,
-            camera_z,
-            x_offset,
-            camera_z + ahead_of(road, camera_z, placement.z),
-            fw,
-            fh,
-        ) else {
+    for (d, placement) in visible {
+        let Some(p) = road.project(camera, camera_z, x_offset, camera_z + d, fw, fh)
+        else {
             continue;
         };
 
@@ -159,11 +170,36 @@ pub fn draw(
 /// track looping.
 ///
 /// A structure at z=0 is not behind you on lap two; it is a whole lap
-/// ahead. Without this, the start gantry vanishes the moment it is passed
-/// and never returns.
+/// ahead. Without this the start gantry would go NEGATIVE the moment it
+/// was passed and be filtered out for the rest of the lap.
+///
+/// ⚠️ WRAPPING IS NECESSARY AND NOT SUFFICIENT, which is what the first
+/// version of this got wrong. It returned a correct distance — a whole
+/// lap, 1,309,799 units — and a structure that far away projects to a
+/// half-width of ZERO. The gantry was never drawn anywhere on the lap,
+/// and the test that was supposed to catch it asserted the DISTANCE was
+/// right without ever asking whether anything could be seen at it.
+/// Callers must check the result against the draw reach, and
+/// [`visible_at`] is the thing that does both.
 fn ahead_of(road: &Road, camera_z: f32, z: f32) -> f32 {
     let lap = road.segment_count() as f32 * road.segment_length();
     (z - camera_z).rem_euclid(lap)
+}
+
+/// How far ahead a structure is, if it is close enough to draw at all.
+///
+/// One place that knows both halves of the rule — wrapped for the lap,
+/// and inside the draw distance — so a caller cannot get one without the
+/// other.
+///
+/// The near bound is `> 0.0` rather than `>= 0.0`: at exactly zero the
+/// camera is standing in the structure, the projection divides by that
+/// distance, and there is nothing sensible to draw. A structure the car
+/// is inside is a structure it has passed.
+fn visible_at(road: &Road, camera_z: f32, z: f32) -> Option<f32> {
+    let d = ahead_of(road, camera_z, z);
+    let reach = road.draw_distance() as f32 * road.segment_length();
+    (d > 0.0 && d < reach).then_some(d)
 }
 
 /// A structure that spans the road: scaled so its INK covers a stated
@@ -200,8 +236,29 @@ fn draw_roadside(
     let panel_h = (panel_rows.1 - panel_rows.0 + 1) as f32;
     let scale = p.half_width * BILLBOARD_PANEL_HALF_WIDTHS / panel_h;
 
-    let x = fx + p.x + side.sign() * p.half_width * BILLBOARD_OFFSET_HALF_WIDTHS
-        - sprite.ink_centre_bias() * scale;
+    let Some((x0, _, x1, _)) = sprite.ink_bounds() else { return };
+
+    // ⚠️ THE OFFSET IS TO THE INK'S NEAR EDGE, NOT TO THE SPRITE CENTRE.
+    //
+    // Offsetting the sprite's centre by 1.25 half-widths sounds like it
+    // stands the sign a quarter of a half-width past the verge. It does
+    // not: the ink is 66 columns of a 160-wide grid, so half the SPRITE
+    // reaches far beyond half the DRAWING, and the sign overlapped the
+    // tarmac by 86 pixels at every distance — posts planted on the road.
+    //
+    // What has to clear the verge is the edge of the drawing nearest the
+    // road. So the near edge is placed, and the sprite's origin is solved
+    // backwards from it.
+    let ink_w = (x1 - x0 + 1) as f32 * scale;
+    // Where the ink's near edge must land, in screen pixels.
+    let near_edge = p.x + side.sign() * p.half_width * BILLBOARD_OFFSET_HALF_WIDTHS;
+    // `draw_ground` centres the SPRITE on x, so the ink's left edge sits
+    // at `x - width/2 + x0`. Solve for x given where the near edge goes.
+    let ink_left = match side {
+        Side::Right => near_edge,
+        Side::Left => near_edge - ink_w,
+    };
+    let x = fx + ink_left + sprite.width() as f32 * scale / 2.0 - x0 as f32 * scale;
     let y = fy + p.y + sprite.ink_foot_gap() * scale;
     sprite.draw_ground(c, x, y, scale);
 }
@@ -210,6 +267,101 @@ fn draw_roadside(
 mod tests {
     use super::*;
     use crate::track::{grand_prix, UNITS_PER_MILE};
+
+    /// Every structure is actually SEEN at some point on the lap.
+    ///
+    /// ⚠️ THE TEST THAT SHOULD HAVE EXISTED FIRST. Its neighbour below
+    /// asserts a passed structure comes round again — and it did, at a
+    /// correct distance of a whole lap, which projects to a half-width of
+    /// zero. The gantry was never drawn anywhere, the test passed, and it
+    /// took a screenshot from Brian to find it.
+    ///
+    /// Asserting a DISTANCE is asserting an intermediate. This drives the
+    /// whole lap and asserts the OUTPUT: that each structure spends real
+    /// time on screen at a size worth drawing (L022).
+    #[test]
+    fn every_structure_is_seen_on_the_lap() {
+        let road = grand_prix().build();
+        let lap = road.segment_count() as f32 * road.segment_length();
+        let camera = Camera::for_road(&road, 0.85);
+
+        for placement in shipped() {
+            let mut seen_frames = 0;
+            let mut biggest = 0.0f32;
+
+            // Walk the whole lap in draw-distance-sized steps, sampling
+            // finely enough that a structure cannot slip between samples.
+            let step = road.segment_length();
+            let mut camera_z = 0.0f32;
+            while camera_z < lap {
+                if let Some(d) = visible_at(&road, camera_z, placement.z) {
+                    if let Some(p) =
+                        road.project(&camera, camera_z, 0.0, camera_z + d, 960.0, 720.0)
+                    {
+                        seen_frames += 1;
+                        biggest = biggest.max(p.half_width);
+                    }
+                }
+                camera_z += step;
+            }
+
+            assert!(
+                seen_frames > 0,
+                "{:?} at z={} is never visible anywhere on the lap",
+                placement.kind,
+                placement.z,
+            );
+            assert!(
+                biggest > 20.0,
+                "{:?} never gets bigger than {biggest:.1}px of half-width — \
+                 it is on the track but never big enough to see",
+                placement.kind,
+            );
+        }
+    }
+
+    /// THE START LINE IS VISIBLE FROM THE STARTING GRID.
+    ///
+    /// ⚠️ THE BUG BRIAN FOUND IN A SCREENSHOT, and the one every other
+    /// test here missed. The gantry was correctly placed at track zero and
+    /// correctly drawn — and the car also began at track zero, standing
+    /// inside it. The line was then a whole lap ahead, fifty-five draw
+    /// distances away, and appeared only in the last twentieth of a mile
+    /// of each lap. Every test passed: it was on the track, it was on a
+    /// straight, it came round again, and walking the whole lap did see
+    /// it. None of them asked the actual question, which is whether you
+    /// can see the start line AT THE START.
+    ///
+    /// The lesson is the reusable part: a test that samples the whole
+    /// space cannot catch a bug about ONE POSITION in it. Test the
+    /// position the player is actually in.
+    #[test]
+    fn the_start_line_is_visible_from_the_grid() {
+        let road = grand_prix().build();
+        let camera = Camera::for_road(&road, 0.85);
+        let visible = road.draw_distance() as f32 * road.segment_length();
+
+        // Where main.rs puts the car at the green light.
+        let grid_z = road.wrap(GRID_SETBACK * visible);
+
+        let gantry = shipped()
+            .into_iter()
+            .find(|p| p.kind == Structure::Gantry)
+            .expect("there is a start line");
+
+        let d = visible_at(&road, grid_z, gantry.z)
+            .expect("the start line is not visible from the starting grid");
+        let p = road
+            .project(&camera, grid_z, 0.0, grid_z + d, 960.0, 720.0)
+            .expect("the start line does not project from the starting grid");
+
+        assert!(
+            p.half_width > 20.0,
+            "the start line is only {:.1}px of half-width from the grid — \
+             technically visible, practically not there",
+            p.half_width,
+        );
+    }
 
     /// A structure ahead stays ahead, and one just passed is a whole lap
     /// away rather than behind.

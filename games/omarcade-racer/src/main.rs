@@ -105,12 +105,17 @@ impl Racer {
             (visible * 2.60, -0.40, 4),
         ];
 
+        // Where the car sits at the green light. Computed before `road`
+        // moves into the struct.
+        let start_z = road.wrap(structures::GRID_SETBACK * visible);
+
         Racer {
             theme,
             art,
             road,
             tuning,
-            car: Drive::new(),
+            // On the grid, BEHIND the line. See `structures::GRID_SETBACK`.
+            car: Drive { z: start_z, ..Drive::new() },
             roll: Roll::new(),
             pixels_per_unit,
             rivals,

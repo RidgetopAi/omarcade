@@ -1020,7 +1020,9 @@ fn draw_lap(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
     let reach = road.draw_distance() as f32 * road.segment_length();
     let placements = structures::shipped();
     let stops = [
-        ("the start line", -0.05 * reach),
+        // Exactly where the game starts you, so the top-left panel is the
+        // first frame of a run rather than an arrangement near it.
+        ("the starting grid", structures::GRID_SETBACK * reach),
         ("first billboard", placements[1].z - 0.05 * reach),
         ("second billboard", placements[2].z - 0.05 * reach),
         ("back straight", placements[4].z - 0.05 * reach),
@@ -1048,6 +1050,6 @@ fn draw_lap(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
 
     c.fill_rect(pw as i32 - 1, 0, 2, H, theme.foreground);
     c.fill_rect(0, ph as i32 - 1, W, 2, theme.foreground);
-    println!("\n    top-left start line · top-right first billboards");
+    println!("\n    top-left THE STARTING GRID · top-right first billboards");
     println!("    bottom-left down the straight · bottom-right back straight pair\n");
 }

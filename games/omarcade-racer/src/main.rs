@@ -34,7 +34,9 @@ use hud::Flash;
 use race::{Event, Phase, Race, Windows};
 use road::Road;
 
-const TITLE: &str = "Omarcade Racer";
+// The plan's locked name (ref:omarcade-plan-2). The app_id stays "omarcade" —
+// that is the public surface Hyprland rules match; the title is not.
+const TITLE: &str = "Omaprix";
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 720;
 

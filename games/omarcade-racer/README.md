@@ -1,25 +1,39 @@
-# The racer
+# Omaprix
 
 A pseudo-3D driving game in the Pole Position lineage: a scanline road, sprites
-scaled by distance, traffic to overtake. The *technique* is borrowed and openly
-so; none of the art is.
+scaled by distance, traffic to overtake, a qualifying lap and a race against the
+clock. The *technique* is borrowed and openly so; none of the art is.
 
-**Status: art, rendering and the road model. No game yet.** There is no physics,
-no input, no collision, no scoring. What exists is the car, the traffic, the
-machinery that draws them convincingly, and the track they sit on. This document
-is the map of that machinery and, more usefully, the record of *why* each piece
-is shaped the way it is.
+**Status: a game.** Cornering that has to be braked for, traffic that drives and
+never sees you, collision and a crash that costs time, and the race structure —
+qualify, grid slot, three laps, checkpoints, out when the clock empties. Not yet:
+points and the marquee (S12), sound (S13). This document is the map of the
+machinery and, more usefully, the record of *why* each piece is shaped the way
+it is.
 
 ## The files
 
 | File | What it holds |
 |---|---|
+| `src/main.rs` | Wiring only: keys to intent, time to the simulation, state to the renderer |
+| `src/drive.rs` | The car: speed, steering, the centrifugal push, surfaces. Every number derived or a ratio |
+| `src/track.rs` | The track format (straights and bends in miles) and the grand prix course |
+| `src/road.rs` | Segments, and the projection from track-z to screen |
+| `src/pace.rs` | The reference driver: what a competent lap *is*, in one place |
+| `src/race.rs` | Qualifying, the grid, the clock, the laps. Every limit derived from `pace` |
+| `src/traffic.rs` | Cars that drive and never see the player; recycling; the split grid |
+| `src/collide.rs` | Swept car-to-car contact, measured through the projection |
+| `src/crash.rs` | The fireball, animated by transform |
+| `src/hud.rs` | Clock, lap, banners and flashes — composed as strings, then painted |
+| `src/render.rs` | The scene: road, structures, traffic, the car, the explosion |
+| `src/structures.rs` | Road-spanning fixtures: the gantry, billboards, the start line |
+| `src/scenery.rs` | Roadside props |
 | `src/art.rs` | The sprite grids as text, the palette recipes, and `Art::load` |
-| `src/road.rs` | The track as segments, and the projection from track-z to screen |
-| `src/main.rs` | Reports the sprite set. Exists so `art.rs`'s tests have a target to run in |
-| `examples/dump_art.rs` | Renders the scenes below to PNG. The whole feedback loop |
+| `examples/dump_art.rs` | Renders the scenes below to PNG. The visual feedback loop |
+| `examples/probe_*.rs` | The numeric feedback loops, listed below |
 | `examples/bench_sprites.rs` | What the real sprites cost at real resolution |
 | `../../core/src/sprite.rs` | `Sprite`, `Pose`, `Roll` — art-as-data, and the transforms |
+| `../../core/src/text.rs` | The 5x7 font every game's HUD uses |
 | `../../tools/sprite-playground.html` | Browser grid editor. Emits paste-ready Rust |
 
 ### Looking at it
@@ -32,6 +46,19 @@ cargo run -p omarcade-racer --example dump_art -- out.png lean    # the pose ran
 cargo run -p omarcade-racer --example dump_art -- out.png roll    # consecutive frames of tread
 cargo run --release -p omarcade-racer --example bench_sprites     # settles any "this is cheap" claim
 ```
+
+And the probes, which answer questions in numbers rather than pixels:
+
+```sh
+cargo run -p omarcade-racer --example probe_track     # the lap: what it demands, the reference time, the race windows
+cargo run -p omarcade-racer --example probe_traffic   # overtakes per lap, closing speed, where the field ends up
+cargo run -p omarcade-racer --example probe_brake     # stopping distance, what each surface costs
+cargo run -p omarcade-racer --example probe_contact   # where sprites actually touch, where the fireball lands
+```
+
+Every lap time in this project is produced by **one driver**, `pace::Pacer::EXACT`,
+and every probe says so. Two probes once carried their own drivers and disagreed
+by eighteen seconds on the same course; both differences were bugs (L030, L031).
 
 `road` is the scene that decides things. On the sheet a car sits in isolation; on
 the road it sits against grass, gets haze mixed over it, and is surrounded by
@@ -205,11 +232,39 @@ Hills are deliberately not built. `Segment` carries a `pitch` field that stays
 0.0, so adding them later is a change to `project` and not a migration of every
 track authored by then.
 
+## The race
+
+`src/race.rs` is the Pole Position structure on purpose: one qualifying lap
+against a cut; make it and your time brackets you onto the grid; then three
+laps in which the clock, not the traffic, is what ends you. A crash costs time —
+the car stops and burns while the clock runs — and nothing else. That division
+is the design: a crash is survivable, an empty clock is not.
+
+**No time limit is typed in.** At start-up the game drives the course with the
+reference driver, twice — a flying lap and a standing start from the grid slot —
+and the qualifying cut and the checkpoint window are those times under an
+allowance. On the grand prix that is a 89.7s standing lap, a 112s cut and a
+54.7s window, and it costs 16ms. Retune the course or the car and the limits
+follow. The two allowances (`QUAL_ALLOWANCE`, `CHECKPOINT_ALLOWANCE`) are the
+only chosen numbers, and they are the ones only driving can settle (L023).
+
+Progress is counted by **distance from signed z steps**, never by z wrapping:
+the grid sits behind the line, the road wraps wherever it likes, and a crash
+rewinds the car. All three fall out of a signed step; none out of a wrap counter.
+
+Time left at a checkpoint carries over, as in the original. That bank is what
+S12 will pay points for, and it is why the window is per checkpoint rather than
+per lap — a lap's worth of bank would make the clock a formality.
+
+A grid slot means that many cars ahead of you. The rest start behind, already
+"passed", and trickle back in over the first third of a lap
+(`traffic::Field::grid_split`).
+
 ## What is not built
 
-- Physics, input, collision, lap timing, scoring.
-- A name. "Pole Position" is Namco's; ours is unchosen.
-- Sound.
+- Points, the score record, the marquee (S12).
+- Sound (S13 — a core feature, all three games want it).
+- Hills. `Segment::pitch` exists and stays 0.0.
 
 ## If you change something here
 

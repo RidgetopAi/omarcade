@@ -6,9 +6,9 @@ Not emulation and not clones of anyone's ROMs — small games written from
 scratch in Rust, drawing straight into a pixel buffer, that read your active
 Omarchy theme and idle at roughly nothing when you're not playing.
 
-**Status:** early, but real. Two games (Breakout and Pong) are playable and
-tested, the shared engine underneath them is the actual work, and the
-cross-game marquee is live in the Omarchy bar.
+**Status:** early, but real. Three games (Breakout, Pong and Omaprix, a
+pseudo-3D racer) are playable and tested, the shared engine underneath them
+is the actual work, and the cross-game marquee is live in the Omarchy bar.
 
 ![Omarcade Breakout](docs/breakout.png)
 

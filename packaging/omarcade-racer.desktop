@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Omaprix
+GenericName=Arcade Game
+Comment=Qualify, take your grid slot, and race three laps against the clock and the traffic.
+Exec=@BINDIR@/omarcade-racer
+Icon=omarcade
+Terminal=false
+Categories=Game;ArcadeGame;
+Keywords=arcade;racing;pole position;retro;omarcade;game;
+StartupNotify=true
+StartupWMClass=omarcade

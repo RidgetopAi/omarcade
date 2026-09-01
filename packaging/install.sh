@@ -13,7 +13,11 @@ BINDIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 APPDIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONDIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
-GAMES=(omarcade-breakout omarcade-pong)
+# Every shipped title, by binary name. This list is the ONE place a new
+# game is registered: the cabinet and the marquee discover games from
+# what is installed and what has written a score, never from a list of
+# their own.
+GAMES=(omarcade-breakout omarcade-pong omarcade-racer)
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 say() { printf '  %s\n' "$*"; }

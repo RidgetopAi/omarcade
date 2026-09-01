@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn the_field_spreads() {
         let (road, tuning) = course();
-        let mut field = Field::grid(&road, 5);
+        let field = Field::grid(&road, 5);
 
         let spread_of = |f: &Field| -> f32 {
             let mut zs: Vec<f32> = f.cars.iter().map(|c| c.z).collect();

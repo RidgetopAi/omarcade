@@ -18,6 +18,10 @@
 //! Never screenshot a window for this — the render is deterministic and
 //! the window is not.
 
+#[path = "../src/collide.rs"]
+mod collide;
+#[path = "../src/traffic.rs"]
+mod traffic;
 #[path = "../src/crash.rs"]
 mod crash;
 #[path = "../src/art.rs"]
@@ -71,9 +75,10 @@ fn main() {
             "proportion" => draw_proportion(&mut c, &art, &theme),
             "lap" => draw_lap(&mut c, &art, &theme),
             "explosion" => draw_explosion(&mut c, &art, &theme),
+            "crash" => draw_crash_scene(&mut c, &art, &theme),
             other => {
                 eprintln!(
-                    "unknown scene {other:?} — try: sheet | road | curve | lean | roll | drive | gantry | heights | structures | proportion | lap | explosion"
+                    "unknown scene {other:?} — try: sheet | road | curve | lean | roll | drive | gantry | heights | structures | proportion | lap | explosion | crash"
                 );
                 std::process::exit(2);
             }
@@ -1171,4 +1176,71 @@ fn draw_explosion(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
     }
 
     println!("\n    ignition top-left, burnout bottom-right. The car is in every panel for scale.\n");
+}
+
+/// A crash as the GAME produces it: the real collision path, the real
+/// projection, the real fireball placement.
+///
+/// The `explosion` scene judges the ART. This judges the WIRING — that a
+/// collision lights a fireball where the car actually was, at a size and
+/// a position the road agrees with. Those are different questions and
+/// the first cannot answer the second.
+fn draw_crash_scene(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
+    use crash::Explosion;
+
+    let road = track::grand_prix().build();
+    let tuning = Tuning::from_corner(&road, 1.5);
+
+    let mut car = Drive::new();
+    car.z = road.wrap(road.segment_length() * 40.0);
+    car.speed = tuning.top_speed * 0.75;
+
+    // A car directly ahead, in the player's lane — the collision the
+    // probe reports as a "same line" pass.
+    let mut field = traffic::Field::grid(&road, 1);
+    field.cars[0].z = road.wrap(car.z + road.segment_length() * 2.0);
+    field.cars[0].x = car.x;
+
+    let hit = collide::check(&car, &field, &road);
+
+    let cols = 3u32;
+    let rows = 2u32;
+    let pw = W / cols;
+    let ph = H / rows;
+
+    println!("\n  a crash, through the real collision path\n");
+    match &hit {
+        Some(h) => println!(
+            "    contact with car {} at z={:.0}, lane {:.2}, closing {:.0} u/s",
+            h.car, h.z, h.x, h.closing
+        ),
+        None => println!("    ⚠️  NO CONTACT DETECTED — the wiring is wrong, not the art"),
+    }
+
+    let Some(hit) = hit else { return };
+
+    for i in 0..(cols * rows) {
+        let ox = (i % cols) * pw;
+        let oy = (i / cols) * ph;
+
+        render::draw_road_into(
+            c, art, theme, &road, &tuning, &car, 0.0, &[], ox, oy, pw, ph,
+        );
+
+        let mut fire = Explosion::start(hit.z, hit.x);
+        let life = i as f32 / (cols * rows - 1) as f32;
+        fire.advance(crash::BURN_TIME * life * 0.999);
+
+        render::draw_explosion_into(
+            c, &art.explosion, theme, &road, &car, &fire, ox, oy, pw, ph,
+        );
+    }
+
+    for i in 1..cols {
+        c.fill_rect((i * pw) as i32 - 1, 0, 2, H, theme.foreground);
+    }
+    for i in 1..rows {
+        c.fill_rect(0, (i * ph) as i32 - 1, W, 2, theme.foreground);
+    }
+    println!("\n    the fireball sits where the car it consumed was.\n");
 }

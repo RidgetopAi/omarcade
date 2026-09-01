@@ -208,9 +208,16 @@ impl Racer {
             return;
         }
         self.recorded = true;
-        self.new_best = self.scores.record_at(self.ledger.total(), GRAND_PRIX_ID);
+        let total = self.ledger.total();
+        self.new_best = self.scores.record_at(total, GRAND_PRIX_ID);
         self.best = self.scores.best_for(GRAND_PRIX_ID);
-        let _ = self.scores.save();
+        // Never interrupt the player, but never fail silently either: a
+        // score that did not reach the marquee is a bug report, and
+        // stderr is where it goes.
+        match self.scores.save() {
+            Ok(()) => eprintln!("omaprix: banked {total} ({GRAND_PRIX_ID}), new best: {}", self.new_best),
+            Err(e) => eprintln!("omaprix: could not save the score: {e}"),
+        }
     }
 
     /// The numbers the HUD shows.

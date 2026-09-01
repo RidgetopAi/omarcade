@@ -90,6 +90,11 @@ struct Racer {
     /// stops, it burns, and the clock keeps going. That is the whole
     /// punishment, and it is enough because the timer is what ends you.
     crash: Option<crash::Explosion>,
+    /// Seconds of recovery left after a burn. While positive the car
+    /// blinks and cannot be hit, so a wreck can get moving and pick a
+    /// lane before the traffic is dangerous again. Derived from how long
+    /// it takes to reach the slowest car's pace — `crash::recovery_time`.
+    recovering: f32,
     /// The run: qualifying, the grid, the clock, the laps. Every limit
     /// in it is derived from the reference driver at start-up.
     race: Race,
@@ -148,6 +153,7 @@ impl Racer {
             pixels_per_unit,
             traffic,
             crash: None,
+            recovering: 0.0,
             race,
             grid_z: start_z,
             flash: None,
@@ -165,6 +171,7 @@ impl Racer {
         self.car = Drive { z: self.grid_z, ..Drive::new() };
         self.roll = Roll::new();
         self.crash = None;
+        self.recovering = 0.0;
         self.flash = None;
         let ahead = position.saturating_sub(1).min(TRAFFIC_CARS);
         self.traffic = traffic::Field::grid_split(&self.road, TRAFFIC_CARS, ahead, self.grid_z);
@@ -293,6 +300,11 @@ impl Game for Racer {
             self.car.speed = 0.0;
             if !fire.advance(dt) {
                 self.crash = None;
+                // Untouchable until the car could catch anything. The
+                // traffic has been driving through the wreck the whole
+                // burn; without this the first frame of throttle was
+                // a second crash.
+                self.recovering = crash::recovery_time(&self.tuning);
             }
             let event = self.race.advance(dt, self.car.z, &self.road);
             self.on_event(event);
@@ -332,11 +344,16 @@ impl Game for Racer {
         // `advance` stays provably blind.
         self.traffic.recycle(self.car.z, &self.road);
 
+        if self.recovering > 0.0 {
+            self.recovering -= dt;
+        }
+
         // Did that step put us into anything? Checked AFTER the move,
         // so the frame the player drives into a car is the frame it
         // registers rather than the one after. Only while driving: a car
-        // rolling to a stop after the flag cannot crash.
-        if self.race.driving() {
+        // rolling to a stop after the flag cannot crash. And not while
+        // recovering from the last one.
+        if self.race.driving() && self.recovering <= 0.0 {
             if let Some(hit) = collide::check(&self.car, prev_z, &self.traffic, &self.road) {
                 // ⚠️ REWIND THE PLAYER TO THE POINT OF CONTACT. The check
                 // is swept, so `car.update` has already carried the car
@@ -359,7 +376,9 @@ impl Game for Racer {
     }
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
-        render::draw_road_into(
+        // Recovering: blink at 5Hz, the arcade signal for "untouchable".
+        let show_player = self.recovering <= 0.0 || (self.recovering * 10.0) as i32 % 2 == 0;
+        render::draw_road_into_with(
             canvas,
             &self.art,
             &self.theme,
@@ -372,6 +391,7 @@ impl Game for Racer {
             0,
             WIDTH,
             HEIGHT,
+            show_player,
         );
 
         // The fireball goes on top of the road, after it. It is an
@@ -771,5 +791,53 @@ mod tests {
             g.update(1.0 / 60.0);
         }
         assert_eq!(g.car.speed, 0.0, "the car kept going after the flag");
+    }
+
+    /// After the burn there is a recovery window: a car directly ahead,
+    /// slower than us, cannot be hit until it ends — and can after. The
+    /// window is derived (time to reach the slowest car's pace), so the
+    /// test reads it from the same function the game does.
+    #[test]
+    fn a_wreck_gets_a_recovery_window() {
+        let mut g = on_track();
+        g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
+        g.traffic.cars[0].x = g.car.x;
+        g.car.speed = g.tuning.top_speed * 0.5;
+        g.update(1.0 / 60.0);
+        assert!(g.crash.is_some(), "fixture: no first crash");
+        while g.crash.is_some() {
+            g.update(1.0 / 60.0);
+        }
+        let window = crash::recovery_time(&g.tuning);
+        assert!(window > 1.0, "the window is too short to matter: {window}");
+        assert!((g.recovering - window).abs() < 1e-3);
+
+        // Park a slow car right in front, in our lane, and drive at it.
+        for c in g.traffic.cars.iter_mut() {
+            c.speed = 0.0;
+            c.z = g.road.wrap(g.car.z + g.road.length() / 2.0);
+        }
+        g.traffic.cars[0].z = g.road.wrap(g.car.z + 150.0);
+        g.traffic.cars[0].x = g.car.x;
+        g.throttle_held = true;
+        let mut t = 0.0;
+        while t < window - 0.1 {
+            g.update(1.0 / 60.0);
+            t += 1.0 / 60.0;
+            assert!(g.crash.is_none(), "crashed {t:.2}s into a {window:.2}s recovery window");
+            // Keep the target car just ahead so the geometry stays a hit.
+            g.traffic.cars[0].z = g.road.wrap(g.car.z + 150.0);
+            g.traffic.cars[0].speed = 0.0;
+        }
+        // The window ends; the same car is now a crash.
+        for _ in 0..30 {
+            g.update(1.0 / 60.0);
+            if g.crash.is_some() {
+                return;
+            }
+            g.traffic.cars[0].z = g.road.wrap(g.car.z + 150.0);
+            g.traffic.cars[0].speed = 0.0;
+        }
+        panic!("the recovery window never ended");
     }
 }

@@ -183,6 +183,31 @@ pub fn draw_road_into(
     w: u32,
     h: u32,
 ) {
+    draw_road_into_with(c, art, theme, road, tuning, car, roll, rivals, ox, oy, w, h, true);
+}
+
+/// [`draw_road_into`], with the player sprite optional.
+///
+/// `show_player = false` draws the frame without the car, which is how
+/// the car blinks during the recovery window after a crash — the arcade
+/// signal for "untouchable, for now". Everything else is identical, so
+/// the scene cannot drift between the two.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_road_into_with(
+    c: &mut Canvas<'_>,
+    art: &Art,
+    theme: &Theme,
+    road: &Road,
+    tuning: &Tuning,
+    car: &Drive,
+    roll: f32,
+    rivals: &[(f32, f32, usize)],
+    ox: u32,
+    oy: u32,
+    w: u32,
+    h: u32,
+    show_player: bool,
+) {
     // The sky keeps its colour; the HAZE does not.
     //
     // These were one colour and had to be split. `theme.blue` is a teal on
@@ -451,6 +476,10 @@ pub fn draw_road_into(
     }
 
     let pose = Pose::cornering(car.cornering(road, tuning));
+
+    if !show_player {
+        return;
+    }
 
     // The player sits where the camera is — dead centre — because the
     // camera IS the car. Steering moves the world, not the sprite.

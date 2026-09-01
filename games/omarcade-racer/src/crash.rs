@@ -40,6 +40,21 @@ use omarcade_core::Color;
 /// outlast this — that is the game's business, not the sprite's.
 pub const BURN_TIME: f32 = 1.4;
 
+/// How long after the burn the wreck is untouchable, in seconds.
+///
+/// DERIVED: the time it takes to accelerate from a standstill to the
+/// slowest car in the field. Until then no car can be caught, so no car
+/// can be hit (see `collide::check`); the window only exists so the
+/// player can get moving and choose a lane before the traffic they can
+/// catch becomes something they can hit again. Brian: "we need to give
+/// driver recovery time if they crash".
+///
+/// A ratio against the car's own acceleration and the traffic's own
+/// band, so a retune of either carries it (L019).
+pub fn recovery_time(tuning: &crate::drive::Tuning) -> f32 {
+    tuning.accel_time * crate::traffic::CRUISE_MIN
+}
+
 /// Seconds between mirror flips.
 ///
 /// 0.06s is about 8Hz of alternation. Fast enough to read as turbulence,

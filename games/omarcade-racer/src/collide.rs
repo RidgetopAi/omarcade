@@ -136,6 +136,19 @@ pub fn check(
     let travelled = if travelled > length / 2.0 { 0.0 } else { travelled };
 
     for (i, car) in traffic.cars.iter().enumerate() {
+        // ⚠️ YOU CRASH INTO CARS; CARS DO NOT CRASH INTO YOU. Only a car
+        // the player is CATCHING can be hit. The traffic is blind
+        // (decision 4a0707a3) and faster than a stopped car, so a car
+        // that drives through the wreck while it burns is sitting inside
+        // the contact range the moment the burn ends — and without this
+        // rule the first frame of throttle was a second crash. Brian:
+        // "before I can move a few pixels I get crashed into from ai
+        // car". Pole Position had the same rule for the same reason:
+        // every collision in it is the player arriving at a car.
+        if player.speed <= car.speed {
+            continue;
+        }
+
         // Lateral overlap: the sprites are drawn touching when their
         // centres are closer than one car width.
         if (player.x - car.x).abs() >= CAR_WIDTH_HALF_WIDTHS {
@@ -413,5 +426,26 @@ mod tests {
         let traffic = Field::default();
         let player = Drive::new();
         assert!(check(&player, road.wrap(player.z - road.segment_length()), &traffic, &road).is_none());
+    }
+
+    /// A faster car passing through a slower player is not a crash —
+    /// only a car the player is catching can be hit. Without this, the
+    /// blind traffic drove through a burning wreck and the restart was
+    /// a second crash on the first frame of throttle.
+    #[test]
+    fn a_car_you_are_not_catching_cannot_be_hit() {
+        let road = course();
+        let contact = contact_distance(&road);
+        let mut field = one_car_at(&road, 1000.0 + contact * 0.5, 0.0);
+        // The car is faster than the player and inside contact range.
+        field.cars[0].speed = 9000.0;
+        let player = Drive { z: 1000.0, x: 0.0, speed: 4000.0 };
+        assert_eq!(check(&player, 950.0, &field, &road), None, "hit by a car that was overtaking");
+        // A stopped player, a car driving through it: nothing.
+        let stopped = Drive { z: 1000.0, x: 0.0, speed: 0.0 };
+        assert_eq!(check(&stopped, 1000.0, &field, &road), None, "hit while stationary");
+        // The same geometry with the player faster IS a hit.
+        let catching = Drive { z: 1000.0, x: 0.0, speed: 9500.0 };
+        assert!(check(&catching, 950.0, &field, &road).is_some(), "catching the car should hit it");
     }
 }

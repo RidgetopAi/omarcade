@@ -243,6 +243,28 @@ impl Surface {
             Surface::Grass => 0.45,
         }
     }
+
+    /// The surface at a lateral position, in half-widths.
+    ///
+    /// ONE implementation, because there is now more than one kind of
+    /// thing on the road. The traffic needs this rule too, and a second
+    /// copy of it in `traffic.rs` would be the same drift that moved
+    /// [`RUMBLE_FRACTION`] out of the renderer: two copies diverge, and
+    /// the symptom is "the AI slows down in places it should not",
+    /// which looks nothing like a boundary constant being wrong.
+    ///
+    /// The boundaries are the ones the renderer PAINTS — see
+    /// [`Drive::surface`], which delegates here.
+    pub fn at(x: f32) -> Surface {
+        let d = x.abs();
+        if d > 1.0 {
+            Surface::Grass
+        } else if d > 1.0 - RUMBLE_FRACTION {
+            Surface::Rumble
+        } else {
+            Surface::Road
+        }
+    }
 }
 
 /// How far past the verge the car may stray before it is off the road.
@@ -378,14 +400,7 @@ impl Drive {
     /// can therefore see which surface they are on, which is the whole
     /// point of a penalty that is not a message on screen.
     pub fn surface(&self) -> Surface {
-        let d = self.x.abs();
-        if d > 1.0 {
-            Surface::Grass
-        } else if d > 1.0 - RUMBLE_FRACTION {
-            Surface::Rumble
-        } else {
-            Surface::Road
-        }
+        Surface::at(self.x)
     }
 
     /// The car's position across the road in **world units**, which is

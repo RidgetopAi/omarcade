@@ -1,0 +1,651 @@
+//! The traffic: cars that drive, and that never see you.
+//!
+//! Decision 4a0707a3. A traffic car holds its own line at its own speed
+//! and has NO awareness of the player — it does not dodge, does not
+//! block, and does not brake because someone is closing. A car sitting
+//! in your line will be hit unless you move.
+//!
+//! **That is enforced by the signature, not by discipline.**
+//! [`Field::advance`] takes no player, no camera and no input; there is
+//! nothing in scope for a future edit to react to without changing the
+//! function's shape and the test that guards it. The reasoning is in the
+//! decision, but the short version is that the fail state is a collision:
+//! when contact ends the run, the obstacle field has to be predictable,
+//! or every crash is arguable. Blind traffic makes every crash the
+//! player's own error.
+//!
+//! ⚠️ THIS IS NOT [`Drive`](crate::drive::Drive) AND MUST NOT BECOME IT.
+//! `Drive` is the player's physics: throttle, brake, steering authority,
+//! the centrifugal push you fight through a bend. A traffic car has no
+//! inputs at all — it has a target speed and a lane it holds. Driving it
+//! through `Drive` would mean synthesising fake key presses for an AI,
+//! which is how an AI ends up fighting its own controller.
+
+use crate::drive::{Surface, Tuning};
+use crate::road::Road;
+
+/// The slowest and fastest a traffic car cruises, as a fraction of the
+/// player's top speed.
+///
+/// ⚠️ A BAND, NOT A NUMBER, and both ends are load-bearing. Above about
+/// 0.75 an overtake takes longer than the straights are long, so passing
+/// becomes impossible anywhere but a corner. Below about 0.55 the
+/// traffic reads as parked cars rather than as a race, and the plan's
+/// points-per-car-passed scoring becomes automatic.
+///
+/// Varied per car rather than shared, so the field SPREADS over a lap
+/// and cars close on each other into groups. A single speed makes the
+/// whole lap one overtake, learned once and then repeated.
+///
+/// Expressed against `tuning.top_speed` rather than in world units so a
+/// retune of the car carries the traffic with it (L015).
+pub const CRUISE_MIN: f32 = 0.55;
+pub const CRUISE_MAX: f32 = 0.75;
+
+/// How much of the road's half-width the traffic will use.
+///
+/// Kept inside the rumble strip: a traffic car riding the verge would be
+/// taking the surface penalty for its whole life, and it would look like
+/// the AI could not hold a line. `1.0 - RUMBLE_FRACTION` is the tarmac's
+/// own edge, and this sits inside that again so a car has somewhere to
+/// be without touching the strip.
+pub const MAX_LANE: f32 = 0.72;
+
+/// How quickly a traffic car settles onto its lane, in half-widths per
+/// second.
+///
+/// Deliberately slow. Pole Position's traffic drifted lazily across the
+/// road rather than snapping to a rail, and that laziness is most of what
+/// makes it read as traffic rather than as scenery on a track. It is also
+/// what makes an overtake a judgement: the gap you aim at is still moving
+/// when you get there.
+pub const LANE_DRIFT_RATE: f32 = 0.18;
+
+
+/// How far behind the player a car must fall before it is recycled
+/// ahead, as a fraction of **the lap**.
+///
+/// ⚠️ A FRACTION OF THE LAP, NOT OF THE VISIBLE ROAD, and the difference
+/// is not cosmetic. THE VISIBLE ROAD IS 1.8% OF A LAP on the shipped
+/// course — 24,000 units against 1,309,800. Expressed in visible roads
+/// this was 1.2, which reads like a comfortable margin and is actually
+/// 2.2% of a lap: a car was recycled almost the instant it was passed.
+/// The probe showed it immediately — 112 overtakes over three laps
+/// against five cars, every car passed about seven times a lap, and the
+/// whole field collapsed onto the recycle distance instead of spreading.
+///
+/// This is the scale trap the course notes already warn about in another
+/// costume: miles are the right unit for authoring a course and the
+/// wrong one for authoring what stands beside it. Recycling is a PACING
+/// question, so it belongs in lap fractions; the respawn distance below
+/// is a VISIBILITY question, so it belongs in visible roads. Two
+/// different questions, two different units, and using one unit for both
+/// is what produced the bug.
+///
+/// A third of a lap means a car passed at the start line reappears
+/// somewhere after the second corner — long enough that it reads as new
+/// traffic rather than as the same car coming round again.
+pub const RECYCLE_BEHIND_LAPS: f32 = 0.33;
+
+/// Where a recycled car reappears, as a fraction of the visible road
+/// ahead of the player.
+///
+/// ⚠️ DERIVED, NOT PICKED, and the derivation is a safety argument.
+/// A recycled car must never appear close enough to be unavoidable —
+/// that is the one way this mechanism can turn a fair game unfair, and
+/// it lands right before collision does.
+///
+/// The worst case is closing on the SLOWEST traffic: at a cruise floor
+/// of 0.55 the closing speed is 0.45 of top speed, 7200 u/s on the
+/// shipped tuning. The game already has a definition of "enough time to
+/// react" — `REACTION_SECONDS`, 1.5, the same constant
+/// `Tuning::from_corner` derives top speed from — and 1.5s at that
+/// closing speed is 10800 units, or 0.45 of the 24000-unit visible road.
+///
+/// Respawning at the far edge of the visible road (1.0) is further again
+/// and has a property the bare safety margin does not: the car is
+/// ALWAYS SEEN ARRIVING. It fades in at the horizon like every other car
+/// rather than appearing in the middle distance, so there is nothing to
+/// notice. A shorter distance would be safe and would still look like a
+/// pop-in.
+pub const RECYCLE_AHEAD: f32 = 1.0;
+
+/// One traffic car.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Car {
+    /// Position along the track, world units. Wraps with the road.
+    pub z: f32,
+    /// Position across the road in half-widths, matching `Drive::x`.
+    pub x: f32,
+    /// Current speed, world units per second.
+    pub speed: f32,
+    /// Which livery to draw it in.
+    pub livery: usize,
+    /// This car's own cruise speed as a fraction of the player's top
+    /// speed. Fixed for the car's life — it is the car's character.
+    cruise: f32,
+    /// The lane it is heading for, in half-widths.
+    lane: f32,
+    /// How many times this car has been recycled ahead. Drives the
+    /// fresh lane and cruise speed it comes back with.
+    recycled: u32,
+}
+
+impl Car {
+    /// The fastest this car will go where it currently is.
+    ///
+    /// ⚠️ THE CORNER SPEED IS SOLVED, NOT PICKED. Steering moves the car
+    /// by `steer_rate * authority`; a bend pushes it out by
+    /// `curve * authority² * centrifugal`. A car holds its line at full
+    /// lock exactly when those balance:
+    ///
+    /// ```text
+    ///     steer_rate * a = curve * a² * centrifugal
+    ///                  a = steer_rate / (curve * centrifugal)
+    /// ```
+    ///
+    /// and since `authority = speed / top_speed`, the fastest a bend of
+    /// curve `c` can be held is `top_speed * steer_rate / (c *
+    /// centrifugal)`. That is the same arithmetic the player is subject
+    /// to, read from the same two tuning numbers — so traffic corners on
+    /// the physics you corner on, rather than on a second set that would
+    /// drift away from it the moment either is retuned (L015).
+    ///
+    /// A margin is taken off because full lock is the theoretical edge:
+    /// a car cornering at exactly the limit is holding the wheel hard
+    /// over with nothing left, and any curve at all in the next segment
+    /// puts it on the grass.
+    pub fn target_speed(&self, road: &Road, tuning: &Tuning) -> f32 {
+        let cruise = tuning.top_speed * self.cruise;
+
+        let curve = road.curve_at(self.z).abs();
+        if curve <= f32::EPSILON || tuning.centrifugal <= 0.0 {
+            return cruise;
+        }
+
+        // The full-lock limit, then backed off so the car is not riding
+        // the edge of its own grip through every bend.
+        const CORNER_MARGIN: f32 = 0.85;
+        let limit = tuning.top_speed * tuning.steer_rate / (curve * tuning.centrifugal);
+
+        cruise.min(limit * CORNER_MARGIN)
+    }
+
+    /// What this car is driving on, from its lateral position.
+    ///
+    /// Reuses the player's own surface rule so "where the rumble strip
+    /// is" has exactly one answer in the game.
+    pub fn surface(&self) -> Surface {
+        Surface::at(self.x)
+    }
+}
+
+/// The whole traffic field.
+///
+/// A struct rather than a bare `Vec` so the no-player rule has somewhere
+/// to live and something to test.
+#[derive(Debug, Clone, Default)]
+pub struct Field {
+    pub cars: Vec<Car>,
+}
+
+impl Field {
+    /// Build a starting field spread down the road ahead.
+    ///
+    /// Spacing is a FRACTION OF THE VISIBLE DEPTH, not a segment count:
+    /// at a draw distance of 120, a car nine segments ahead is 7% of the
+    /// way to the horizon and renders three pixels tall. This is the same
+    /// reasoning the static placement used, kept because it was right.
+    ///
+    /// Speeds and lanes are spread deterministically across the field
+    /// rather than randomly. The same lap must present the same traffic
+    /// twice — a player learning a course is learning where the cars are,
+    /// and a random field makes that learning worthless. It also means a
+    /// probe measures the real game and not one sample of it.
+    pub fn grid(road: &Road, n: usize) -> Field {
+        let visible = road.draw_distance() as f32 * road.segment_length();
+
+        let cars = (0..n)
+            .map(|i| {
+                let t = if n > 1 {
+                    i as f32 / (n - 1) as f32
+                } else {
+                    0.0
+                };
+
+                // Spread down the road, widening as it goes: the far
+                // cars matter less, and bunching the near ones gives the
+                // player something to do immediately.
+                let z = road.wrap(visible * (0.25 + 2.35 * t * t));
+
+                // Alternate sides, at varying distance from the centre,
+                // so the field does not read as a single file.
+                let side = if i % 2 == 0 { -1.0 } else { 1.0 };
+                let lane = side * MAX_LANE * (0.35 + 0.65 * ((i % 3) as f32 / 2.0));
+
+                // Walk the cruise band across the field. Not random:
+                // repeatable traffic is what makes a course learnable.
+                let cruise = CRUISE_MIN + (CRUISE_MAX - CRUISE_MIN) * t;
+
+                Car {
+                    z,
+                    x: lane,
+                    speed: 0.0,
+                    livery: i,
+                    cruise,
+                    lane,
+                    recycled: 0,
+                }
+            })
+            .collect();
+
+        Field { cars }
+    }
+
+    /// Drive every car one step.
+    ///
+    /// ⚠️ TAKES NO PLAYER, AND THAT IS THE POINT. There is deliberately
+    /// nothing in scope to react to. `traffic_is_blind` guards this by
+    /// running the same field twice — once alone, once with a player
+    /// driving through it — and asserting the cars end up in identical
+    /// places. If a future change threads the player in here, that test
+    /// is where the argument has to be had.
+    pub fn advance(&mut self, dt: f32, road: &Road, tuning: &Tuning) {
+        if !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
+
+        for car in &mut self.cars {
+            // Approach the target rather than snapping to it, so a car
+            // entering a corner slows into it and accelerates out. The
+            // rates are the player's own: traffic that could brake harder
+            // than you can would be a different vehicle.
+            let target = car.target_speed(road, tuning) * car.surface().speed_cap();
+
+            if car.speed < target {
+                let accel = tuning.top_speed / tuning.accel_time.max(f32::EPSILON);
+                car.speed = (car.speed + accel * dt).min(target);
+            } else {
+                let decel = tuning.top_speed / tuning.brake_time.max(f32::EPSILON);
+                car.speed = (car.speed - decel * dt).max(target);
+            }
+
+            car.z = road.wrap(car.z + car.speed * dt);
+
+            // Drift onto the lane rather than tracking it exactly. The
+            // gap you aim at is still moving when you get there, which is
+            // what makes an overtake a judgement rather than a formality.
+            let gap = car.lane - car.x;
+            let step = LANE_DRIFT_RATE * dt;
+            car.x += gap.clamp(-step, step);
+        }
+    }
+
+    /// Move cars that have fallen far behind back out in front.
+    ///
+    /// ⚠️ THIS IS THE ONE PLACE THE PLAYER'S POSITION IS ALLOWED IN, and
+    /// it is deliberately NOT part of [`Field::advance`]. Recycling is a
+    /// supply question — "is there anything left to overtake" — not a
+    /// driving one, and keeping it in its own call means `advance` stays
+    /// provably blind and its guard test stays meaningful.
+    ///
+    /// Five cars on a 2.7-mile loop cannot produce continuous traffic:
+    /// measured over three laps, the field ended up spread from 0.11 to
+    /// 0.95 of a lap apart, and 5 of 7 overtakes happened in the first
+    /// twenty seconds. You clear the grid and then drive alone. Pole
+    /// Position's traffic was an obstacle STREAM rather than a simulated
+    /// field, and this is that: the same five cars, recycled.
+    ///
+    /// A recycled car gets a fresh lane and cruise speed so the stream
+    /// does not become the same five cars in the same order forever.
+    pub fn recycle(&mut self, player_z: f32, road: &Road) {
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        let length = road.length();
+
+        for (i, car) in self.cars.iter_mut().enumerate() {
+            // Signed gap to the player, unwrapped onto (-length/2, length/2].
+            let mut gap = car.z - player_z;
+            while gap > length / 2.0 {
+                gap -= length;
+            }
+            while gap < -length / 2.0 {
+                gap += length;
+            }
+
+            if gap > -length * RECYCLE_BEHIND_LAPS {
+                continue;
+            }
+
+            car.z = road.wrap(player_z + visible * RECYCLE_AHEAD);
+            car.speed = 0.0_f32.max(car.speed);
+
+            // A fresh character, walked deterministically so a course
+            // stays learnable: same lap, same traffic. `recycled` counts
+            // up per car so the sequence does not repeat immediately.
+            car.recycled = car.recycled.wrapping_add(1);
+            let n = car.recycled as f32;
+            let t = ((n * 0.618_034) % 1.0).abs();
+
+            car.cruise = CRUISE_MIN + (CRUISE_MAX - CRUISE_MIN) * t;
+            let side = if (car.recycled as usize + i) % 2 == 0 {
+                -1.0
+            } else {
+                1.0
+            };
+            car.lane = side * MAX_LANE * (0.35 + 0.65 * t);
+        }
+    }
+
+    /// The field as the renderer wants it: `(z, lane, livery)`.
+    ///
+    /// Keeps the drawing code unaware that traffic gained a speed and a
+    /// target lane — it draws cars at positions, exactly as before.
+    pub fn as_rendered(&self) -> Vec<(f32, f32, usize)> {
+        self.cars.iter().map(|c| (c.z, c.x, c.livery)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::drive::Drive;
+    use crate::track;
+
+    fn course() -> (Road, Tuning) {
+        let road = track::grand_prix().build();
+        let tuning = Tuning::from_corner(&road, 1.5);
+        (road, tuning)
+    }
+
+    /// The rule the whole design rests on, guarded mechanically.
+    ///
+    /// Runs the same field twice for the same duration — once with
+    /// nothing else on track, once with a player driving flat out through
+    /// it — and asserts every car ends in an identical place. This is
+    /// what stops "just a small nudge to avoid the player" being added
+    /// later without the decision (4a0707a3) being re-opened.
+    #[test]
+    fn traffic_is_blind() {
+        let (road, tuning) = course();
+        let dt = 1.0 / 60.0;
+
+        let mut alone = Field::grid(&road, 5);
+        let mut watched = alone.clone();
+        let mut player = Drive::new();
+
+        for _ in 0..(20.0 / dt) as usize {
+            alone.advance(dt, &road, &tuning);
+
+            let correction = (-player.x * 3.0).clamp(-1.0, 1.0);
+            player.update(dt, 1.0, 0.0, correction, &road, &tuning);
+            watched.advance(dt, &road, &tuning);
+        }
+
+        for (a, b) in alone.cars.iter().zip(watched.cars.iter()) {
+            assert_eq!(
+                (a.z, a.x, a.speed),
+                (b.z, b.x, b.speed),
+                "a traffic car moved differently with a player on track"
+            );
+        }
+    }
+
+    #[test]
+    fn traffic_actually_drives() {
+        // The bug this replaces: cars sat where they were put. A field
+        // that does not move is the thing this module exists to end.
+        let (road, tuning) = course();
+        let mut field = Field::grid(&road, 5);
+        let start: Vec<f32> = field.cars.iter().map(|c| c.z).collect();
+
+        for _ in 0..600 {
+            field.advance(1.0 / 60.0, &road, &tuning);
+        }
+
+        for (car, z0) in field.cars.iter().zip(start.iter()) {
+            assert!(car.speed > 0.0, "a car never moved off");
+            assert!(
+                (car.z - z0).abs() > road.segment_length(),
+                "a car covered less than one segment in ten seconds"
+            );
+        }
+    }
+
+    #[test]
+    fn traffic_is_slower_than_the_player() {
+        // If traffic can run with the player it cannot be overtaken, and
+        // the plan scores 50 points per car passed.
+        let (road, tuning) = course();
+        let mut field = Field::grid(&road, 5);
+        for _ in 0..900 {
+            field.advance(1.0 / 60.0, &road, &tuning);
+        }
+        for car in &field.cars {
+            assert!(
+                car.speed < tuning.top_speed * CRUISE_MAX + 1.0,
+                "a car at {} is running past the cruise band on a top speed of {}",
+                car.speed,
+                tuning.top_speed
+            );
+        }
+    }
+
+    /// Varied speeds exist so the field does not hold formation.
+    ///
+    /// ⚠️ THE FIRST VERSION OF THIS TEST ASSERTED `after != before` AND
+    /// PASSED AGAINST UNIFORM SPEEDS — the exact bug it existed to catch
+    /// (L024). Float inequality is not a measurement: the cars are on a
+    /// curved course at different positions, so they corner at different
+    /// moments and the gaps wobble by a hair even when every car runs at
+    /// an identical cruise. Any non-zero difference satisfied it.
+    ///
+    /// MEASURED instead. Over one simulated minute on the shipped
+    /// course, the standard deviation of the gaps between cars moves to
+    /// 0.68x its starting value with varied cruise speeds, and to
+    /// 1.000x with uniform ones. The threshold sits between two numbers
+    /// that were measured, not guessed at.
+    ///
+    /// It CONVERGES rather than diverging because the starting grid is
+    /// spaced quadratically and the faster far cars close those wide
+    /// gaps. The direction is incidental; what the guard cares about is
+    /// that uniform speeds hold formation EXACTLY and varied ones do not.
+    #[test]
+    fn the_field_spreads() {
+        let (road, tuning) = course();
+        let mut field = Field::grid(&road, 5);
+
+        let spread_of = |f: &Field| -> f32 {
+            let mut zs: Vec<f32> = f.cars.iter().map(|c| c.z).collect();
+            zs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let gaps: Vec<f32> = zs.windows(2).map(|w| w[1] - w[0]).collect();
+            let mean = gaps.iter().sum::<f32>() / gaps.len() as f32;
+            (gaps.iter().map(|g| (g - mean).powi(2)).sum::<f32>() / gaps.len() as f32).sqrt()
+        };
+
+        let before = spread_of(&field);
+        for _ in 0..(60.0 * 60.0) as usize {
+            field.advance(1.0 / 60.0, &road, &tuning);
+        }
+        let after = spread_of(&field);
+        let ratio = after / before.max(1.0);
+
+        assert!(
+            (ratio - 1.0).abs() > 0.10,
+            "the field held formation (gap spread moved {ratio:.3}x over a \
+             minute) — the cruise band is not varying across the cars"
+        );
+    }
+
+    #[test]
+    fn no_car_leaves_the_road() {
+        // A traffic car on the grass is taking a permanent speed penalty
+        // and looks like an AI that cannot hold a line.
+        let (road, tuning) = course();
+        let mut field = Field::grid(&road, 6);
+        for _ in 0..(120.0 * 60.0) as usize {
+            field.advance(1.0 / 60.0, &road, &tuning);
+            for car in &field.cars {
+                assert!(
+                    car.x.abs() <= MAX_LANE + 1e-3,
+                    "a car reached lane {}, outside the traffic's own limit",
+                    car.x
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cars_slow_for_corners() {
+        // The derived corner speed, exercised. A car that takes the
+        // course's hardest bend at its cruise speed is cornering on
+        // different physics than the player, who must brake for it.
+        let (road, tuning) = course();
+        let field = Field::grid(&road, 5);
+        let car = field.cars[0];
+
+        // Find the sharpest point on the shipped course.
+        let steps = 400;
+        let hardest = (0..steps)
+            .map(|i| road.length() * i as f32 / steps as f32)
+            .max_by(|a, b| {
+                road.curve_at(*a)
+                    .abs()
+                    .partial_cmp(&road.curve_at(*b).abs())
+                    .unwrap()
+            })
+            .unwrap();
+        assert!(road.curve_at(hardest).abs() > 0.0, "course has no bends");
+
+        let straight = Car { z: 0.0, ..car };
+        let cornering = Car { z: hardest, ..car };
+
+        // Pick a z on the course that is genuinely straight to compare
+        // against, or the assertion is vacuous.
+        let flat = (0..steps)
+            .map(|i| road.length() * i as f32 / steps as f32)
+            .min_by(|a, b| {
+                road.curve_at(*a)
+                    .abs()
+                    .partial_cmp(&road.curve_at(*b).abs())
+                    .unwrap()
+            })
+            .unwrap();
+        let on_straight = Car { z: flat, ..straight };
+
+        assert!(
+            cornering.target_speed(&road, &tuning) < on_straight.target_speed(&road, &tuning),
+            "a car does not slow for the course's hardest bend"
+        );
+    }
+
+
+
+    /// THE SAFETY GUARD ON RECYCLING.
+    ///
+    /// A car moved back out in front must always appear far enough away
+    /// that the player can see it and react. This is the one way the
+    /// recycling mechanism can make the game unfair, and it lands
+    /// immediately before collision does — so it is checked against the
+    /// worst case: closing on the SLOWEST traffic at full speed, with
+    /// the game's own `REACTION_SECONDS` as the bar.
+    #[test]
+    fn a_recycled_car_never_appears_inside_reaction_distance() {
+        const REACTION_SECONDS: f32 = 1.5;
+
+        let (road, tuning) = course();
+        let mut field = Field::grid(&road, 5);
+
+        // Worst case closing speed: player flat out, traffic at the floor.
+        let closing = tuning.top_speed * (1.0 - CRUISE_MIN);
+        let needed = closing * REACTION_SECONDS;
+
+        // Put every car well past the recycle threshold, then recycle.
+        let player_z = road.wrap(road.length() * 0.5);
+        for car in &mut field.cars {
+            car.z = road.wrap(player_z - road.length() * (RECYCLE_BEHIND_LAPS + 0.05));
+        }
+        field.recycle(player_z, &road);
+
+        for car in &field.cars {
+            let mut gap = car.z - player_z;
+            while gap < 0.0 {
+                gap += road.length();
+            }
+            assert!(
+                gap >= needed,
+                "a car reappeared {gap:.0} units ahead; {needed:.0} is the \
+                 distance {REACTION_SECONDS}s of reaction needs at a closing \
+                 speed of {closing:.0} u/s"
+            );
+        }
+    }
+
+    /// Recycling must not fire on a car the player has merely passed.
+    #[test]
+    fn a_freshly_passed_car_is_left_alone() {
+        let (road, tuning) = course();
+        let _ = tuning;
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        let mut field = Field::grid(&road, 3);
+
+        let player_z = road.wrap(visible * 5.0);
+        // Just behind the player — passed a moment ago. Expressed in
+        // VISIBLE ROADS because that is what "just passed" means, and it
+        // is far inside the lap-fraction recycle threshold.
+        for car in &mut field.cars {
+            car.z = road.wrap(player_z - visible * 0.3);
+        }
+        let before: Vec<f32> = field.cars.iter().map(|c| c.z).collect();
+        field.recycle(player_z, &road);
+        let after: Vec<f32> = field.cars.iter().map(|c| c.z).collect();
+
+        assert_eq!(
+            before, after,
+            "a car was teleported back in front moments after being passed"
+        );
+    }
+
+    /// `advance` must stay blind even though `recycle` is not.
+    ///
+    /// The two are separate calls precisely so this stays provable. If a
+    /// future change folds recycling into `advance`, `traffic_is_blind`
+    /// starts failing, and that is the intended alarm.
+    #[test]
+    fn recycling_is_not_part_of_advancing() {
+        let (road, tuning) = course();
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        let mut field = Field::grid(&road, 3);
+
+        let player_z = road.wrap(road.length() * 0.5);
+        for car in &mut field.cars {
+            car.z = road.wrap(player_z - road.length() * (RECYCLE_BEHIND_LAPS + 0.05));
+        }
+        let before: Vec<f32> = field.cars.iter().map(|c| c.z).collect();
+
+        // Advancing alone must not move anything back out in front,
+        // however far behind the cars are.
+        for _ in 0..10 {
+            field.advance(1.0 / 60.0, &road, &tuning);
+        }
+        for (car, z0) in field.cars.iter().zip(before.iter()) {
+            let moved = (car.z - z0).abs();
+            assert!(
+                moved < visible,
+                "advance() jumped a car {moved:.0} units — recycling leaked into it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stalled_frame_cannot_move_the_field() {
+        let (road, tuning) = course();
+        let mut field = Field::grid(&road, 3);
+        field.advance(0.1, &road, &tuning);
+        let before: Vec<Car> = field.cars.clone();
+
+        field.advance(-1.0, &road, &tuning);
+        field.advance(f32::NAN, &road, &tuning);
+
+        assert_eq!(before, field.cars, "a bad dt moved the traffic");
+    }
+}

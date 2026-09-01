@@ -11,6 +11,7 @@
 //! Controls: ← → steer · ↑ throttle · ↓ brake · Escape quit.
 
 mod crash;
+mod traffic;
 mod art;
 mod drive;
 mod render;
@@ -35,6 +36,14 @@ const HEIGHT: u32 = 720;
 /// — top speed is solved from it (decision e515f892, tuning A). Change
 /// this and the car's speed follows; do not set a speed directly.
 const REACTION_SECONDS: f32 = 1.5;
+
+/// How many cars share the track with the player.
+///
+/// Five is what the static field carried and it reads well at this draw
+/// distance: enough that a lap is a series of overtakes rather than one,
+/// few enough that the road never looks like a car park. It is a
+/// starting point to drive against, not a derived number.
+const TRAFFIC_CARS: usize = 5;
 
 /// How fast the tread scrolls, in source pixels per world unit travelled.
 ///
@@ -61,12 +70,10 @@ struct Racer {
     car: Drive,
     roll: Roll,
     pixels_per_unit: f32,
-    /// Traffic as (track position, lane in half-widths, livery index).
-    ///
-    /// Static for now — the cars sit where they are put. Making them
-    /// drive is its own piece of work and wants its own decision, because
-    /// "traffic that moves" is an AI question, not a rendering one.
-    rivals: Vec<(f32, f32, usize)>,
+    /// The traffic. It DRIVES (decision 4a0707a3) and it never sees the
+    /// player — `Field::advance` takes no player at all, which is how
+    /// that rule is enforced rather than merely intended.
+    traffic: traffic::Field,
     /// Steering tracked as two independent flags rather than one
     /// direction, exactly as Pong does. With a single `dir`, holding Left
     /// and tapping Right releases the wheel when Right lifts, leaving the
@@ -89,22 +96,13 @@ impl Racer {
 
         let pixels_per_unit = WHEEL_PIXELS * WHEEL_TURNS_PER_SECOND / tuning.top_speed;
 
-        // Spread traffic down the track at staggered lanes, so there is
-        // something to judge distance against.
-        //
-        // Spaced by a FRACTION of the visible road rather than in
-        // segments: at a draw distance of 120, a car nine segments ahead
-        // is still only 7% of the way to the horizon and renders three
-        // pixels tall. Spacing them across the visible depth is what makes
-        // them arrive at a usable rate.
+        // The traffic field. Spacing, lanes and per-car cruise speeds all
+        // live in `traffic::Field::grid` now — the reasoning that used to
+        // sit here (space by a FRACTION of the visible depth, never in
+        // segments, or the cars arrive three pixels tall) moved with it.
+        let traffic = traffic::Field::grid(&road, TRAFFIC_CARS);
+
         let visible = road.draw_distance() as f32 * road.segment_length();
-        let rivals = vec![
-            (visible * 0.25, -0.45, 0),
-            (visible * 0.60, 0.40, 1),
-            (visible * 1.10, -0.20, 2),
-            (visible * 1.80, 0.45, 3),
-            (visible * 2.60, -0.40, 4),
-        ];
 
         // Where the car sits at the green light. Computed before `road`
         // moves into the struct.
@@ -119,7 +117,7 @@ impl Racer {
             car: Drive { z: start_z, ..Drive::new() },
             roll: Roll::new(),
             pixels_per_unit,
-            rivals,
+            traffic,
             left_held: false,
             right_held: false,
             throttle_held: false,
@@ -205,6 +203,18 @@ impl Game for Racer {
         );
         self.roll
             .advance(self.car.speed, self.pixels_per_unit, dt);
+
+        // The traffic drives on the same clamped dt the player does, and
+        // is given nothing else — no player, no camera. See
+        // `traffic::Field::advance` and decision 4a0707a3.
+        self.traffic.advance(dt, &self.road, &self.tuning);
+
+        // Supply, not driving: cars that have fallen well behind come
+        // back out at the horizon so there is always something to
+        // overtake. Five cars on a 2.7-mile loop cannot do that on their
+        // own — measured, see `probe_traffic`. Kept a SEPARATE call so
+        // `advance` stays provably blind.
+        self.traffic.recycle(self.car.z, &self.road);
     }
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
@@ -216,7 +226,7 @@ impl Game for Racer {
             &self.tuning,
             &self.car,
             self.roll.phase(),
-            &self.rivals,
+            &self.traffic.as_rendered(),
             0,
             0,
             WIDTH,
@@ -338,18 +348,38 @@ mod tests {
     }
 
     /// Traffic must be on the road, not in the scenery.
+    ///
+    /// ⚠️ CHECKED AFTER DRIVING, not only at construction. The old
+    /// version of this test ran against a field that had never moved,
+    /// which was adequate when the cars were static and is worthless now
+    /// that they drive: every interesting way for a car to end up in the
+    /// scenery happens during `advance`, not during `grid`. Twenty
+    /// seconds of simulation is several corners of the shipped course.
     #[test]
     fn every_rival_sits_on_the_track() {
-        let g = racer();
-        assert!(!g.rivals.is_empty());
-        for (z, lane, livery) in &g.rivals {
-            assert!(
-                *z >= 0.0 && *z < g.road.length(),
-                "a rival sits at {z}, off a track {} long",
-                g.road.length(),
-            );
-            assert!(lane.abs() <= 1.0, "a rival sits at lane {lane}, off the road");
-            assert!(*livery < 5, "livery {livery} is past the five that exist");
+        let mut g = racer();
+        assert!(!g.traffic.cars.is_empty());
+
+        for step in 0..(20.0 * 60.0) as usize {
+            g.traffic.advance(1.0 / 60.0, &g.road, &g.tuning);
+            for car in &g.traffic.cars {
+                assert!(
+                    car.z >= 0.0 && car.z < g.road.length(),
+                    "after {step} steps a rival sits at {}, off a track {} long",
+                    car.z,
+                    g.road.length(),
+                );
+                assert!(
+                    car.x.abs() <= 1.0,
+                    "after {step} steps a rival sits at lane {}, off the road",
+                    car.x
+                );
+                assert!(
+                    car.livery < 5,
+                    "livery {} is past the five that exist",
+                    car.livery
+                );
+            }
         }
     }
 

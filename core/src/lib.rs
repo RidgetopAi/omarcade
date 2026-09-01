@@ -13,6 +13,7 @@ pub mod ease;
 pub mod geom;
 pub mod scores;
 pub mod sprite;
+pub mod text;
 pub mod theme;
 
 pub use backend::{Backend, Canvas, Color, Game, InputEvent, Key};

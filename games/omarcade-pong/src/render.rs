@@ -8,15 +8,14 @@
 //! vertically at the same speed — which players feel immediately even
 //! if they cannot name it.
 //!
-//! The 5x7 font is a near-copy of Breakout's. Two copies is evidence;
-//! three would be a pattern worth promoting to core alongside `geom`.
-//! Deliberately not extracted yet — the second consumer is where a
-//! premature abstraction usually goes wrong, and this one has already
-//! diverged (Pong wants big centred score digits, Breakout wants a
-//! corner HUD).
+//! The 5x7 font is `omarcade_core::text`. It was a copy of Breakout's here
+//! until the racer became its third consumer, which is the rule `geom`
+//! moved on. Each game still owns its coverage test, because each game
+//! owns the strings it can display.
 
 use omarcade_core::ease;
 use omarcade_core::geom::Rect;
+use omarcade_core::text::{text, text_width, GLYPH_H};
 use omarcade_core::{Canvas, Color, Theme};
 
 use crate::state::{Difficulty, GameState, Phase, Side, FIELD_H, FIELD_W};
@@ -223,7 +222,7 @@ fn draw_rally(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Vi
         x - (4.0 * vp.scale) as i32,
         y - (3.0 * vp.scale) as i32,
         text_width(&s, scale) + (8.0 * vp.scale) as u32,
-        (GLYPH_H as u32 * scale) + (6.0 * vp.scale) as u32,
+        (GLYPH_H * scale) + (6.0 * vp.scale) as u32,
         theme.background,
     );
     text(canvas, &s, x, y, scale, theme.muted);
@@ -356,102 +355,10 @@ fn draw_phase_message(
     }
 }
 
-// ----------------------------------------------------------------------
-// A 5x7 bitmap font.
-//
-// Hand-rolled to keep the game free of any font dependency — a real
-// font stack would be a large dependency for eleven glyphs of score.
-// ----------------------------------------------------------------------
-
-const GLYPH_W: u32 = 5;
-const GLYPH_H: usize = 7;
-const GLYPH_SPACING: u32 = 1;
-
-/// Covers A-Z, 0-9, space and dash. Anything else returns `None` and is
-/// SKIPPED SILENTLY by [`text`] — which is how Breakout once shipped
-/// "BEST" as "EST". A test below requires the full printable set rather
-/// than a hand-written list of strings.
-fn glyph(c: char) -> Option<[u8; GLYPH_H]> {
-    Some(match c.to_ascii_uppercase() {
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-        '3' => [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
-        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
-        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
-        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
-        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
-        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
-        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
-        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
-        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
-        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
-        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
-        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
-        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
-        ' ' => [0; GLYPH_H],
-        _ => return None,
-    })
-}
-
-/// Rendered width of `s`, in pixels, at `scale`.
-pub fn text_width(s: &str, scale: u32) -> u32 {
-    let n = s.chars().count() as u32;
-    if n == 0 {
-        return 0;
-    }
-    (n * GLYPH_W + (n - 1) * GLYPH_SPACING) * scale
-}
-
-/// Draw `s` with its top-left at `(x, y)`.
-pub fn text(canvas: &mut Canvas<'_>, s: &str, x: i32, y: i32, scale: u32, color: Color) {
-    let scale = scale.max(1);
-    let advance = ((GLYPH_W + GLYPH_SPACING) * scale) as i32;
-
-    for (i, ch) in s.chars().enumerate() {
-        let Some(rows) = glyph(ch) else { continue };
-        let gx = x + i as i32 * advance;
-        for (row, bits) in rows.iter().enumerate() {
-            for col in 0..GLYPH_W {
-                // Bit 4 is the leftmost column.
-                if bits & (1 << (GLYPH_W - 1 - col)) != 0 {
-                    canvas.fill_rect(
-                        gx + (col * scale) as i32,
-                        y + (row as u32 * scale) as i32,
-                        scale,
-                        scale,
-                        color,
-                    );
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omarcade_core::text::glyph;
     use crate::state::MATCH_POINT;
 
     /// Pixels differing from a reference frame.
@@ -522,25 +429,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn every_glyph_fills_the_cell_height() {
-        // GLYPH_H is the contract the row arrays have to honour; a
-        // glyph with the wrong number of rows would draw into its
-        // neighbour below.
-        for ch in ('A'..='Z').chain('0'..='9').chain([' ', '-']) {
-            let rows = glyph(ch).expect("covered above");
-            assert_eq!(rows.len(), GLYPH_H, "{ch:?} has the wrong height");
-        }
-    }
-
-    #[test]
-    fn text_width_matches_the_glyph_layout() {
-        assert_eq!(text_width("", 1), 0);
-        assert_eq!(text_width("A", 1), GLYPH_W);
-        assert_eq!(text_width("AB", 1), GLYPH_W * 2 + GLYPH_SPACING);
-        assert_eq!(text_width("A", 3), GLYPH_W * 3);
     }
 
     #[test]

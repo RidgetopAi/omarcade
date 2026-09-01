@@ -9,6 +9,7 @@
 //! feel immediately even if they cannot name it.
 
 use omarcade_core::ease;
+use omarcade_core::text::{text, text_width, GLYPH_H};
 use omarcade_core::{Canvas, Color, Theme};
 
 use crate::state::{GameState, Phase, FIELD_H, FIELD_W};
@@ -206,102 +207,10 @@ fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme,
     );
 }
 
-// ---------------------------------------------------------------------
-// Text
-//
-// Canvas draws rectangles and nothing else, so glyphs are 5x7 bitmaps
-// painted as one rect per pixel. That is enough for a HUD and keeps the
-// game free of any font dependency — a real font stack would be a large
-// amount of machinery for eighteen characters.
-// ---------------------------------------------------------------------
-
-const GLYPH_W: u32 = 5;
-const GLYPH_H: u32 = 7;
-/// Gap between characters, in glyph pixels.
-const GLYPH_SPACING: u32 = 1;
-
-/// Row bitmaps, most significant bit = leftmost of five columns.
-fn glyph(c: char) -> Option<[u8; 7]> {
-    Some(match c.to_ascii_uppercase() {
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-        '3' => [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
-        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
-        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
-        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
-        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
-        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
-        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
-        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
-        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
-        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
-        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
-        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
-        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
-        ' ' => [0; 7],
-        _ => return None,
-    })
-}
-
-/// Pixel width of `s` at `scale`.
-pub fn text_width(s: &str, scale: u32) -> u32 {
-    let n = s.chars().count() as u32;
-    if n == 0 {
-        return 0;
-    }
-    (n * GLYPH_W + (n - 1) * GLYPH_SPACING) * scale
-}
-
-/// Draw `s` with its top-left at `(x, y)`.
-pub fn text(canvas: &mut Canvas<'_>, s: &str, x: i32, y: i32, scale: u32, color: Color) {
-    let scale = scale.max(1);
-    let advance = ((GLYPH_W + GLYPH_SPACING) * scale) as i32;
-
-    for (i, ch) in s.chars().enumerate() {
-        let Some(rows) = glyph(ch) else { continue };
-        let gx = x + i as i32 * advance;
-        for (row, bits) in rows.iter().enumerate() {
-            for col in 0..GLYPH_W {
-                // Bit 4 is the leftmost column.
-                if bits & (1 << (GLYPH_W - 1 - col)) != 0 {
-                    canvas.fill_rect(
-                        gx + (col * scale) as i32,
-                        y + (row as u32 * scale) as i32,
-                        scale,
-                        scale,
-                        color,
-                    );
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omarcade_core::text::glyph;
 
     #[test]
     fn viewport_letterboxes_a_wide_window() {
@@ -372,15 +281,6 @@ mod tests {
     fn thin_objects_never_round_away_to_nothing() {
         let vp = Viewport::fit(100, 75); // heavy downscale
         assert!(vp.len(1.0) >= 1, "a 1-unit object must still be visible");
-    }
-
-    #[test]
-    fn text_width_matches_glyph_layout() {
-        assert_eq!(text_width("", 1), 0);
-        assert_eq!(text_width("A", 1), GLYPH_W);
-        // Two glyphs plus one space between them.
-        assert_eq!(text_width("AB", 1), GLYPH_W * 2 + GLYPH_SPACING);
-        assert_eq!(text_width("A", 3), GLYPH_W * 3);
     }
 
     /// Every character the HUD can render must have a glyph, or words

@@ -269,6 +269,51 @@ impl Field {
         }
     }
 
+    /// A starting field with only `ahead` of its `n` cars in front of the
+    /// player at `player_z`; the rest start behind.
+    ///
+    /// This is what a grid position means. Pole is `ahead == 0`: a clean
+    /// road, and the field arrives from behind the horizon over the first
+    /// third of a lap rather than all at once — the cars behind are
+    /// marked as already passed and staggered along the recycling window,
+    /// so they trickle back in as fresh traffic rather than sitting
+    /// uselessly in the mirror. Starting last is the whole field to pass
+    /// before the first corner.
+    ///
+    /// The cars ahead are spread exactly as [`Field::grid`] spreads a
+    /// field of that size, so the probes' measurements of a full grid
+    /// describe the last-place start.
+    pub fn grid_split(road: &Road, n: usize, ahead: usize, player_z: f32) -> Field {
+        let ahead = ahead.min(n);
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        let length = road.length();
+        let mut field = Field::grid(road, ahead);
+        let behind = n - ahead;
+        for k in 0..behind {
+            let i = ahead + k;
+            let t = if n > 1 { i as f32 / (n - 1) as f32 } else { 0.0 };
+            // Just behind the camera, one after another, never drawn.
+            let z = road.wrap(player_z - visible * 0.5 * (k + 1) as f32);
+            let side = if i % 2 == 0 { -1.0 } else { 1.0 };
+            let lane = side * MAX_LANE * (0.35 + 0.65 * ((i % 3) as f32 / 2.0));
+            // Staggered through the window so they come back one at a
+            // time: the first at roughly a fifth of the way through it,
+            // the last just before the end.
+            let along = length * RECYCLE_BEHIND_LAPS * (k as f32 + 1.0) / (behind as f32 + 1.0);
+            field.cars.push(Car {
+                z,
+                x: lane,
+                speed: 0.0,
+                livery: i,
+                cruise: CRUISE_MIN + (CRUISE_MAX - CRUISE_MIN) * t,
+                lane,
+                recycled: 0,
+                since_passed: Some(along),
+            });
+        }
+        field
+    }
+
     /// Drive every car one step.
     ///
     /// ⚠️ TAKES NO PLAYER, AND THAT IS THE POINT. There is deliberately
@@ -839,5 +884,53 @@ mod tests {
         field.advance(f32::NAN, &road, &tuning);
 
         assert_eq!(before, field.cars, "a bad dt moved the traffic");
+    }
+
+    /// A split grid puts the rest of the field behind, and brings it back
+    /// as traffic within the recycling window rather than losing it.
+    #[test]
+    fn a_split_grid_starts_the_rest_behind_and_brings_them_back() {
+        let road = crate::track::grand_prix().build();
+        let visible = road.draw_distance() as f32 * road.segment_length();
+        let length = road.length();
+        let player_z = road.wrap(-0.1 * visible);
+        let mut field = Field::grid_split(&road, 5, 2, player_z);
+        assert_eq!(field.cars.len(), 5);
+        let ahead_of = |car: &Car, z: f32| (car.z - z).rem_euclid(length);
+
+        let (front, back): (Vec<_>, Vec<_>) =
+            field.cars.iter().partition(|c| ahead_of(c, player_z) < visible * 3.0);
+        assert_eq!(front.len(), 2, "two cars should start ahead");
+        assert_eq!(back.len(), 3, "three cars should start behind");
+        for c in &back {
+            assert!(ahead_of(c, player_z) > length / 2.0, "a 'behind' car is ahead: {}", c.z);
+        }
+        let liveries: std::collections::BTreeSet<_> = field.cars.iter().map(|c| c.livery).collect();
+        assert_eq!(liveries.len(), 5, "liveries must stay distinct");
+
+        // Drive the recycling window. Each car that started behind must
+        // come back out ahead at some point in it — checked the moment it
+        // happens, because the field here never drives, so a car that has
+        // come back is passed again a few calls later.
+        let mut z = player_z;
+        let step = 200.0;
+        let mut travelled = 0.0;
+        let mut came_back = std::collections::BTreeMap::new();
+        while travelled < length * RECYCLE_BEHIND_LAPS + step {
+            z = road.wrap(z + step);
+            travelled += step;
+            field.recycle(z, &road);
+            for c in field.cars.iter().filter(|c| c.livery >= 2 && c.recycled == 1) {
+                came_back.entry(c.livery).or_insert((travelled, ahead_of(c, z)));
+            }
+        }
+        assert_eq!(came_back.keys().copied().collect::<Vec<_>>(), vec![2, 3, 4], "not every car came back: {came_back:?}");
+        let mut returns: Vec<f32> = came_back.values().map(|v| v.0).collect();
+        returns.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for (livery, (at, d)) in &came_back {
+            assert!(*d < visible * 3.0, "car {livery} came back BEHIND: {d}");
+            assert!(*at > 0.0 && *at < length * RECYCLE_BEHIND_LAPS, "car {livery} came back outside the window, at {at}");
+        }
+        assert!(returns.windows(2).all(|w| w[1] > w[0] + visible), "the field came back as one clump: {returns:?}");
     }
 }

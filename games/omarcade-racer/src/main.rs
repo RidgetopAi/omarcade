@@ -8,13 +8,15 @@
 //! not in this file and not in this crate's `Cargo.toml`. Everything
 //! crosses through `omarcade_core`'s seam.
 //!
-//! Controls: ← → steer · ↑ throttle · ↓ brake · Escape quit.
+//! Controls: ← → steer · ↑ throttle · ↓ brake · Enter start/restart ·
+//! Escape quit.
 
 mod collide;
 mod crash;
 mod traffic;
 mod art;
 mod drive;
+mod hud;
 mod pace;
 mod race;
 mod render;
@@ -28,6 +30,8 @@ use omarcade_core::{Backend, Canvas, Game, InputEvent, Key, Roll, Theme};
 
 use art::Art;
 use drive::{Drive, Tuning};
+use hud::Flash;
+use race::{Event, Phase, Race, Windows};
 use road::Road;
 
 const TITLE: &str = "Omarcade Racer";
@@ -84,6 +88,13 @@ struct Racer {
     /// stops, it burns, and the clock keeps going. That is the whole
     /// punishment, and it is enough because the timer is what ends you.
     crash: Option<crash::Explosion>,
+    /// The run: qualifying, the grid, the clock, the laps. Every limit
+    /// in it is derived from the reference driver at start-up.
+    race: Race,
+    /// Where the car sits at the green light, for putting it back there.
+    grid_z: f32,
+    /// A line flashed mid-screen: GO, a checkpoint's banked time, a lap.
+    flash: Option<Flash>,
     /// Steering tracked as two independent flags rather than one
     /// direction, exactly as Pong does. With a single `dir`, holding Left
     /// and tapping Right releases the wheel when Right lifts, leaving the
@@ -118,6 +129,12 @@ impl Racer {
         // moves into the struct.
         let start_z = road.wrap(structures::GRID_SETBACK * visible);
 
+        // The time limits, derived by driving the course with the
+        // reference driver rather than typed in. Two simulated laps at
+        // 240Hz, a few milliseconds, once.
+        let windows = Windows::derive(&road, &tuning, start_z);
+        let race = Race::new(windows, &road, start_z, TRAFFIC_CARS + 1);
+
         Racer {
             theme,
             art,
@@ -129,10 +146,40 @@ impl Racer {
             pixels_per_unit,
             traffic,
             crash: None,
+            race,
+            grid_z: start_z,
+            flash: None,
             left_held: false,
             right_held: false,
             throttle_held: false,
             brake_held: false,
+        }
+    }
+
+    /// Put the car on the grid in the slot qualifying earned and start
+    /// the race. `position` is from 1; the cars ahead on the grid are the
+    /// slots in front of it.
+    fn start_race(&mut self, position: usize) {
+        self.car = Drive { z: self.grid_z, ..Drive::new() };
+        self.roll = Roll::new();
+        self.crash = None;
+        self.flash = None;
+        let ahead = position.saturating_sub(1).min(TRAFFIC_CARS);
+        self.traffic = traffic::Field::grid_split(&self.road, TRAFFIC_CARS, ahead, self.grid_z);
+        self.race.start_race(self.grid_z, &self.road);
+    }
+
+    /// Back to the grid for a fresh qualifying lap.
+    fn restart(&mut self) {
+        *self = Racer::new(self.theme);
+    }
+
+    /// React to what the race reported this frame.
+    fn on_event(&mut self, event: Option<Event>) {
+        if let Some(event) = event {
+            if let Some(flash) = flash_for(event) {
+                self.flash = Some(flash);
+            }
         }
     }
 
@@ -193,6 +240,16 @@ impl Game for Racer {
             InputEvent::KeyDown(Key::Down) => self.brake_held = true,
             InputEvent::KeyUp(Key::Down) => self.brake_held = false,
 
+            // Enter moves between sessions and nothing else: it starts
+            // the race once qualified, and starts over once the run has
+            // ended. Mid-lap it does nothing, so a stray press cannot
+            // throw away a lap.
+            InputEvent::KeyDown(Key::Enter) => match self.race.phase {
+                Phase::Qualified { position, .. } => self.start_race(position),
+                Phase::Finished { .. } | Phase::Over(_) => self.restart(),
+                _ => {}
+            },
+
             _ => {}
         }
         true
@@ -204,20 +261,39 @@ impl Game for Racer {
         // roughly four frames keeps a hitch as a hitch.
         let dt = dt.min(1.0 / 15.0);
 
+        if let Some(flash) = &mut self.flash {
+            flash.remaining -= dt;
+            if flash.remaining <= 0.0 {
+                self.flash = None;
+            }
+        }
+
+        // The lights. EVERYTHING holds — the car, the traffic, the clock
+        // — so the field a session starts from is the one on the grid,
+        // and the first second of the clock is the first second of
+        // driving.
+        if matches!(self.race.phase, Phase::Countdown { .. }) {
+            let event = self.race.advance(dt, self.car.z, &self.road);
+            self.on_event(event);
+            return;
+        }
+
         // THE TRAFFIC DRIVES WHATEVER THE PLAYER IS DOING, crash
         // included. A field that freezes while you burn would make the
         // restart a different race from the one you crashed out of.
         self.traffic.advance(dt, &self.road, &self.tuning);
 
         if let Some(fire) = &mut self.crash {
-            // Burning. The car is stopped and the clock is running —
-            // that IS the punishment (the plan's fail state is a missed
-            // checkpoint, not a crash). Input is ignored so a held key
-            // cannot drive a wreck.
+            // Burning. The car is stopped and THE CLOCK KEEPS RUNNING —
+            // that IS the punishment, and the whole of it. A crash never
+            // ends the run; an empty clock does. Input is ignored so a
+            // held key cannot drive a wreck.
             self.car.speed = 0.0;
             if !fire.advance(dt) {
                 self.crash = None;
             }
+            let event = self.race.advance(dt, self.car.z, &self.road);
+            self.on_event(event);
             // Deliberately NOT recycling while burning: the player is
             // not moving, so nothing has been overtaken, and recycling
             // reads distance travelled since a pass.
@@ -230,14 +306,20 @@ impl Game for Racer {
         // over traffic.
         let prev_z = self.car.z;
 
-        self.car.update(
-            dt,
-            self.throttle(),
-            self.brake(),
-            self.steer(),
-            &self.road,
-            &self.tuning,
-        );
+        if self.race.driving() {
+            self.car.update(
+                dt,
+                self.throttle(),
+                self.brake(),
+                self.steer(),
+                &self.road,
+                &self.tuning,
+            );
+        } else {
+            // Past the flag, or out. The car brakes itself to a stop and
+            // the keys do nothing; the banner has the next move.
+            self.car.update(dt, 0.0, 1.0, 0.0, &self.road, &self.tuning);
+        }
         self.roll
             .advance(self.car.speed, self.pixels_per_unit, dt);
 
@@ -250,18 +332,28 @@ impl Game for Racer {
 
         // Did that step put us into anything? Checked AFTER the move,
         // so the frame the player drives into a car is the frame it
-        // registers rather than the one after.
-        if let Some(hit) = collide::check(&self.car, prev_z, &self.traffic, &self.road) {
-            // ⚠️ REWIND THE PLAYER TO THE POINT OF CONTACT. The check is
-            // swept, so `car.update` has already carried the car PAST
-            // where the impact happened — up to a frame's travel, which
-            // is 267 units at 60fps and 1067 at the clamped 15fps. Left
-            // there, the wreck comes to rest beyond its own fireball and
-            // the fire renders behind the car. Brian saw exactly that.
-            self.car.z = self.road.wrap(hit.player_z);
-            self.car.speed = 0.0;
-            self.crash = Some(crash::Explosion::start(hit.z, hit.x));
+        // registers rather than the one after. Only while driving: a car
+        // rolling to a stop after the flag cannot crash.
+        if self.race.driving() {
+            if let Some(hit) = collide::check(&self.car, prev_z, &self.traffic, &self.road) {
+                // ⚠️ REWIND THE PLAYER TO THE POINT OF CONTACT. The check
+                // is swept, so `car.update` has already carried the car
+                // PAST where the impact happened — up to a frame's travel,
+                // which is 267 units at 60fps and 1067 at the clamped
+                // 15fps. Left there, the wreck comes to rest beyond its
+                // own fireball and the fire renders behind the car. Brian
+                // saw exactly that. The race counts distance by signed z
+                // steps, so the rewind is ground to re-drive, as it should
+                // be.
+                self.car.z = self.road.wrap(hit.player_z);
+                self.car.speed = 0.0;
+                self.crash = Some(crash::Explosion::start(hit.z, hit.x));
+            }
         }
+
+        // The race sees the car where it ended up, rewind included.
+        let event = self.race.advance(dt, self.car.z, &self.road);
+        self.on_event(event);
     }
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
@@ -297,7 +389,29 @@ impl Game for Racer {
                 HEIGHT,
             );
         }
+
+        // The HUD goes over everything, fireball included: the clock is
+        // the one thing that must never be hidden, because it is the
+        // thing that ends you.
+        let layout = hud::compose(&self.race, self.flash.as_ref());
+        hud::draw(canvas, &self.theme, &layout, WIDTH, HEIGHT);
     }
+}
+
+/// The line flashed for an event, if it gets one. The banner speaks
+/// for qualifying, finishing and going out; these are the moments that
+/// pass while you are still driving.
+///
+/// A free function rather than a method so the HUD's font-coverage test
+/// can ask for exactly the strings the game will produce.
+pub fn flash_for(event: Event) -> Option<Flash> {
+    let line = match event {
+        Event::GreenLight => "GO".to_string(),
+        Event::Checkpoint { remaining } => format!("+{remaining:.1}"),
+        Event::LapDone { lap, remaining } => format!("LAP {lap} DONE  +{remaining:.1}"),
+        Event::Qualified { .. } | Event::Finished { .. } | Event::Over(_) => return None,
+    };
+    Some(Flash::new(line))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -316,6 +430,14 @@ mod tests {
 
     fn racer() -> Racer {
         Racer::new(Theme::load())
+    }
+
+    /// A racer past the lights, on its qualifying lap, so a test about
+    /// driving is not silently a test about the countdown holding the car.
+    fn on_track() -> Racer {
+        let mut g = racer();
+        g.race.phase = Phase::Qualifying;
+        g
     }
 
     /// The gotcha Pong documented and this file inherits: with a single
@@ -358,7 +480,7 @@ mod tests {
     /// Holding throttle must actually move the car down the track.
     #[test]
     fn holding_throttle_drives_the_car() {
-        let mut g = racer();
+        let mut g = on_track();
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..120 {
             g.update(1.0 / 60.0);
@@ -372,7 +494,7 @@ mod tests {
     /// any corner or rival in between.
     #[test]
     fn a_stalled_frame_does_not_teleport_the_car() {
-        let mut g = racer();
+        let mut g = on_track();
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..600 {
             g.update(1.0 / 60.0);
@@ -392,7 +514,7 @@ mod tests {
     /// where a scrolling pattern aliases into running backwards.
     #[test]
     fn the_tread_rolls_without_aliasing() {
-        let mut g = racer();
+        let mut g = on_track();
         g.on_input(InputEvent::KeyDown(Key::Up));
 
         let mut last = g.roll.phase();
@@ -419,7 +541,7 @@ mod tests {
     /// burn -> back to racing.
     #[test]
     fn hitting_a_car_starts_a_crash_that_ends_by_itself() {
-        let mut g = racer();
+        let mut g = on_track();
 
         // Put a car directly in front of the player, in the same lane.
         g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
@@ -446,7 +568,7 @@ mod tests {
     /// Input must not drive a wreck.
     #[test]
     fn holding_the_throttle_through_a_crash_does_nothing() {
-        let mut g = racer();
+        let mut g = on_track();
         g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
         g.traffic.cars[0].x = g.car.x;
         g.car.speed = g.tuning.top_speed * 0.5;
@@ -469,7 +591,7 @@ mod tests {
     /// different race from the one that was crashed out of.
     #[test]
     fn traffic_keeps_driving_through_a_crash() {
-        let mut g = racer();
+        let mut g = on_track();
         g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
         g.traffic.cars[0].x = g.car.x;
         g.car.speed = g.tuning.top_speed * 0.5;
@@ -535,5 +657,117 @@ mod tests {
             "the shipped reaction window is {}, not {REACTION_SECONDS}",
             g.tuning.reaction_seconds(&g.road),
         );
+    }
+
+    /// Nothing moves during the lights: not the car under a held key,
+    /// not the traffic, not the clock.
+    #[test]
+    fn the_lights_hold_everything() {
+        let mut g = racer();
+        assert!(matches!(g.race.phase, Phase::Countdown { .. }));
+        let car_z = g.car.z;
+        let traffic_z: Vec<f32> = g.traffic.cars.iter().map(|c| c.z).collect();
+        let clock = g.race.clock;
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        for _ in 0..30 {
+            g.update(1.0 / 60.0);
+        }
+        assert_eq!(g.car.z, car_z, "the car moved during the countdown");
+        assert_eq!(g.car.speed, 0.0);
+        let now: Vec<f32> = g.traffic.cars.iter().map(|c| c.z).collect();
+        assert_eq!(now, traffic_z, "the traffic moved during the countdown");
+        assert_eq!(g.race.clock, clock, "the clock ran during the countdown");
+    }
+
+    /// After the green light the same held key drives the car.
+    #[test]
+    fn the_green_light_releases_the_car() {
+        let mut g = racer();
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        for _ in 0..((race::COUNTDOWN_SECONDS + 1.0) * 60.0) as usize {
+            g.update(1.0 / 60.0);
+        }
+        assert_eq!(g.race.phase, Phase::Qualifying);
+        assert!(g.car.speed > 0.0, "the car never moved after the green light");
+        assert!(g.race.clock < g.race.windows.qualify, "the clock never started");
+    }
+
+    /// The clock runs while the wreck burns. That is the entire cost of
+    /// a crash, so if it stopped, crashing would be free.
+    #[test]
+    fn the_clock_runs_while_burning() {
+        let mut g = racer();
+        g.race.phase = Phase::Racing { lap: 1 };
+        g.race.clock = 30.0;
+        g.crash = Some(crash::Explosion::start(g.car.z + 500.0, 0.0));
+        for _ in 0..12 {
+            g.update(1.0 / 60.0);
+        }
+        assert!(g.crash.is_some(), "fixture: the fire should still be burning");
+        assert!(
+            (g.race.clock - (30.0 - 12.0 / 60.0)).abs() < 1e-3,
+            "the clock did not run while burning: {}",
+            g.race.clock,
+        );
+    }
+
+    /// Enter after qualifying starts the race from the earned slot: the
+    /// grid has that many cars ahead and the rest behind.
+    #[test]
+    fn enter_starts_the_race_from_the_grid_slot() {
+        let mut g = racer();
+        g.race.phase = Phase::Qualified { time: 100.0, position: 3 };
+        g.on_input(InputEvent::KeyDown(Key::Enter));
+        assert!(
+            matches!(g.race.phase, Phase::Countdown { then: race::Session::Race, .. }),
+            "{:?}",
+            g.race.phase,
+        );
+        assert_eq!(g.car.z, g.grid_z);
+        assert_eq!(g.car.speed, 0.0);
+        let length = g.road.length();
+        let ahead = g
+            .traffic
+            .cars
+            .iter()
+            .filter(|c| (c.z - g.car.z).rem_euclid(length) < length / 2.0)
+            .count();
+        assert_eq!(ahead, 2, "grid slot 3 means two cars ahead");
+        assert_eq!(g.traffic.cars.len(), TRAFFIC_CARS);
+    }
+
+    /// Enter mid-lap does nothing; a stray press cannot throw a lap away.
+    #[test]
+    fn enter_mid_lap_is_ignored() {
+        let mut g = racer();
+        g.race.phase = Phase::Qualifying;
+        g.race.clock = 42.0;
+        g.on_input(InputEvent::KeyDown(Key::Enter));
+        assert_eq!(g.race.phase, Phase::Qualifying);
+        assert_eq!(g.race.clock, 42.0);
+    }
+
+    /// Enter after the end starts a fresh run on the grid.
+    #[test]
+    fn enter_after_the_end_restarts() {
+        let mut g = racer();
+        g.race.phase = Phase::Over(race::Out::OutOfTime);
+        g.car.z = 12345.0;
+        g.on_input(InputEvent::KeyDown(Key::Enter));
+        assert!(matches!(g.race.phase, Phase::Countdown { then: race::Session::Qualifying, .. }));
+        assert_eq!(g.car.z, g.grid_z);
+    }
+
+    /// Past the flag the keys are dead and the car stops by itself.
+    #[test]
+    fn after_the_flag_the_car_stops_and_ignores_the_keys() {
+        let mut g = racer();
+        g.race.phase = Phase::Finished { time: 270.0 };
+        g.car.speed = g.tuning.top_speed;
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        for _ in 0..(3.0 * 60.0) as usize {
+            g.update(1.0 / 60.0);
+        }
+        assert_eq!(g.car.speed, 0.0, "the car kept going after the flag");
     }
 }

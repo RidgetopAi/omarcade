@@ -147,9 +147,12 @@ pub enum Event {
     /// A checkpoint crossed with `remaining` seconds still on the clock
     /// before the top-up. The number the original paid points for.
     Checkpoint { remaining: f32 },
-    /// A lap of the race completed. `lap` is the lap just finished.
-    LapDone { lap: u32 },
-    Finished { time: f32 },
+    /// A lap of the race completed. `lap` is the lap just finished and
+    /// `remaining` what was on the clock at the line — the line is a
+    /// checkpoint too, and S12 pays for it the same way.
+    LapDone { lap: u32, remaining: f32 },
+    /// Every lap done, in `time` seconds, with `remaining` on the clock.
+    Finished { time: f32, remaining: f32 },
     Over(Out),
 }
 
@@ -202,6 +205,11 @@ impl Race {
     /// May the player's input reach the car?
     pub fn driving(&self) -> bool {
         matches!(self.phase, Phase::Qualifying | Phase::Racing { .. })
+    }
+
+    /// Grid slots, the player's included.
+    pub fn grid_size(&self) -> usize {
+        self.grid_size
     }
 
     /// Is the run finished, one way or the other?
@@ -309,10 +317,10 @@ impl Race {
                         if self.laps_done >= RACE_LAPS {
                             let time = self.elapsed;
                             self.phase = Phase::Finished { time };
-                            return Some(Event::Finished { time });
+                            return Some(Event::Finished { time, remaining });
                         }
                         self.phase = Phase::Racing { lap: lap + 1 };
-                        return Some(Event::LapDone { lap });
+                        return Some(Event::LapDone { lap, remaining });
                     }
                     return Some(Event::Checkpoint { remaining });
                 }
@@ -497,11 +505,11 @@ mod tests {
         let checkpoints = events.iter().filter(|e| matches!(e, Event::Checkpoint { .. })).count();
         let laps: Vec<u32> = events
             .iter()
-            .filter_map(|e| if let Event::LapDone { lap } = e { Some(*lap) } else { None })
+            .filter_map(|e| if let Event::LapDone { lap, .. } = e { Some(*lap) } else { None })
             .collect();
         assert_eq!(checkpoints, (CHECKPOINTS_PER_LAP - 1) * RACE_LAPS as usize, "{events:?}");
         assert_eq!(laps, (1..RACE_LAPS).collect::<Vec<_>>(), "{events:?}");
-        let Some(Event::Finished { time }) = events.last().copied() else {
+        let Some(Event::Finished { time, .. }) = events.last().copied() else {
             panic!("did not finish: {events:?}");
         };
         let expected = w.reference_standing + w.reference_lap * (RACE_LAPS - 1) as f32;

@@ -18,6 +18,8 @@
 //! Never screenshot a window for this — the render is deterministic and
 //! the window is not.
 
+#[path = "../src/crash.rs"]
+mod crash;
 #[path = "../src/art.rs"]
 mod art;
 #[path = "../src/road.rs"]
@@ -68,9 +70,10 @@ fn main() {
             "structures" => draw_structures(&mut c, &art, &theme),
             "proportion" => draw_proportion(&mut c, &art, &theme),
             "lap" => draw_lap(&mut c, &art, &theme),
+            "explosion" => draw_explosion(&mut c, &art, &theme),
             other => {
                 eprintln!(
-                    "unknown scene {other:?} — try: sheet | road | curve | lean | roll | drive | gantry | heights | structures | proportion | lap"
+                    "unknown scene {other:?} — try: sheet | road | curve | lean | roll | drive | gantry | heights | structures | proportion | lap | explosion"
                 );
                 std::process::exit(2);
             }
@@ -970,6 +973,16 @@ fn draw_proportion(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
         // picture at a size you can compare. Further out and both are
         // specks; the question is about their RATIO, so both have to be
         // big enough to have a shape.
+        // ⚠️ MEASURED IN SEGMENT LENGTHS, NOT IN FRACTIONS OF THE DRAW
+    // DISTANCE. The player car is sized from a probe exactly ONE segment
+    // ahead (render.rs) and drawn at a fixed screen row; a fireball
+    // placed at 0.02 of the draw distance sits 2.4 segments out, which
+    // through a hyperbolic projection is a smudge near the horizon while
+    // the car is a full sprite in the foreground. They looked like
+    // different scenes because they were at different scales entirely.
+    //
+    // Two segments ahead is a rival's braking distance — close enough to
+    // read, far enough not to be under the bumper.
         let z = car.z + visible * 0.055;
         if let Some(p) = road.project(
             &camera, car.z, car.x * road.width() / 2.0, z, pw as f32, H as f32,
@@ -1052,4 +1065,110 @@ fn draw_lap(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
     c.fill_rect(0, ph as i32 - 1, W, 2, theme.foreground);
     println!("\n    top-left THE STARTING GRID · top-right first billboards");
     println!("    bottom-left down the straight · bottom-right back straight pair\n");
+}
+
+/// The crash fireball, on the road, across its life.
+///
+/// ⚠️ THIS IS THE SCENE THAT SETTLES THE EXPLOSION, not the sprite
+/// sheet. Last session a gantry was judged from the flat sheet — where
+/// art draws several times larger than gameplay with nothing beside it —
+/// and its leg was cut by 25 rows on the strength of that impression.
+/// In the road view the cut was near invisible. Art is judged where it
+/// ships.
+///
+/// Six panels walk one fireball from ignition to burnout at a fixed
+/// place on the road, with the car drawn in the same frame for scale.
+/// The question this answers is not "is the fire pretty" but "at the
+/// size this actually draws, can you SEE the flip, the growth and the
+/// fade at all" — the whole animation is three transforms, and if the
+/// sprite lands at thirty pixels they may be invisible.
+fn draw_explosion(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
+    use crash::Explosion;
+
+    let road = Road::straight(400);
+    let tuning = Tuning::from_corner(&road, 1.5);
+    let mut car = Drive::new();
+    let dt = 1.0 / 120.0;
+    for _ in 0..(6.0 / dt) as usize {
+        let correction = (-car.x * 3.0).clamp(-1.0, 1.0);
+        car.update(dt, 1.0, 0.0, correction, &road, &tuning);
+    }
+    car.z = road.segment_length() * 3.0;
+
+    let camera = Camera::for_road(&road, 0.85);
+    let sprite = Sprite::new(art::EXPLOSION, &art::explosion_palette(theme));
+    let smoke = theme.darker_background;
+
+    // Two rows of three. Each panel is one moment in the burn.
+    let cols = 3u32;
+    let rows = 2u32;
+    let pw = W / cols;
+    let ph = H / rows;
+
+    println!("\n  the fireball on the road, at the size it ships\n");
+    println!("    {:<8}{:>8}{:>10}{:>9}{:>8}", "life", "scale", "px tall", "vs car", "mirror");
+
+    // A fireball burning where a rival car would be: just ahead, on the
+    // racing line. Close enough to read — the projection is hyperbolic,
+    // so anything past a few percent of the draw distance is a speck.
+    // ⚠️ MEASURED IN SEGMENT LENGTHS, NOT IN FRACTIONS OF THE DRAW
+    // DISTANCE. The player car is sized from a probe exactly ONE segment
+    // ahead (see render.rs) and drawn at a fixed screen row. A fireball
+    // placed at 0.02 of the draw distance sits 2.4 segments out, which
+    // through a hyperbolic projection is a smudge near the horizon while
+    // the car is a full sprite in the foreground — they read as two
+    // different scenes because they were at two different scales.
+    //
+    // Two segments ahead is about a rival's braking distance: close
+    // enough to read, far enough not to be under the bumper.
+    let z = car.z + road.segment_length() * 2.0;
+
+    for i in 0..(cols * rows) {
+        let ox = (i % cols) * pw;
+        let oy = (i / cols) * ph;
+
+        render::draw_road_into(
+            c, art, theme, &road, &tuning, &car, 0.0, &[], ox, oy, pw, ph,
+        );
+
+        // Age one fireball to this panel's moment.
+        let mut e = Explosion::start(z, 0.0);
+        let life = i as f32 / (cols * rows - 1) as f32;
+        e.advance(crash::BURN_TIME * life * 0.999);
+
+        if let Some(p) = road.project(
+            &camera, car.z, car.x * road.width() / 2.0, z, pw as f32, ph as f32,
+        ) {
+            // The SAME rule a car is sized by. Not a second copy of 70.0.
+            let base = p.half_width / render::CAR_ART_PIXELS_PER_HALF_WIDTH;
+            e.draw(c, &sprite, ox as f32 + p.x, oy as f32 + p.y, base, smoke);
+
+            // ⚠️ INK against INK. Comparing the fireball's ink to the
+            // car's whole GRID understates it by the car's 18 blank
+            // rows, and the two numbers then disagree with the scale
+            // factor for no visible reason.
+            let (_, iy0, _, iy1) = sprite.ink_bounds().unwrap();
+            let px = (iy1 - iy0 + 1) as f32 * base * e.scale_factor();
+            let (_, cy0, _, cy1) = art.player.ink_bounds().unwrap();
+            let car_px = (cy1 - cy0 + 1) as f32 * base;
+            println!(
+                "    {:<8.2}{:>8.2}{:>10.0}{:>8.1}x{:>8}",
+                e.life(),
+                e.scale_factor(),
+                px,
+                px / car_px.max(1.0),
+                if e.flipped() { "yes" } else { "no" }
+            );
+        }
+    }
+
+    // Panel dividers, so the six moments do not read as one picture.
+    for i in 1..cols {
+        c.fill_rect((i * pw) as i32 - 1, 0, 2, H, theme.foreground);
+    }
+    for i in 1..rows {
+        c.fill_rect(0, (i * ph) as i32 - 1, W, 2, theme.foreground);
+    }
+
+    println!("\n    ignition top-left, burnout bottom-right. The car is in every panel for scale.\n");
 }

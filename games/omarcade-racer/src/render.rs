@@ -86,7 +86,12 @@ const PROP_HEIGHT_IN_HALF_WIDTHS: f32 = 0.38;
 ///
 /// 48px of car art / 70 ≈ 0.69 half-widths of road covered by a car.
 /// The playground's scale check assumes this value; move them together.
-const CAR_ART_PIXELS_PER_HALF_WIDTH: f32 = 70.0;
+///
+/// Public because the crash fireball replaces a car and must be sized
+/// against the same rule. A second copy of this number in the scene that
+/// judges it is precisely the drift that put a structure constant in two
+/// files last session.
+pub const CAR_ART_PIXELS_PER_HALF_WIDTH: f32 = 70.0;
 
 pub fn demo_track() -> Road {
     let mut segs = Vec::new();

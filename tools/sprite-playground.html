@@ -1682,7 +1682,12 @@ $('resettheme').onclick = () => {
 function emit() {
   rebuildVarNames();
   const rows = grid.map(r => `    "${r.join('')}",`).join('\n');
-  const name = $('out').dataset.name || 'PLAYER_CAR';
+  // ⚠️ NOT 'PLAYER_CAR'. This is the name an UNSAVED sprite exports
+  // under, and PLAYER_CAR is the const the real car already occupies in
+  // art.rs — so pasting an unnamed export straight into the game deleted
+  // the car. The default must never be a name that exists. Name the
+  // asset in the Assets panel and this uses that instead.
+  const name = $('out').dataset.name || 'SPRITE';
 
   const lines = [];
   lines.push(`pub const ${name}: &[&str] = &[`);
@@ -1958,7 +1963,7 @@ function applySnapshot(s) {
   if (!PALETTE.some(p => p.ch === cur)) cur = PALETTE[1] ? PALETTE[1].ch : '.';
   editing = null;
   $('assetname').value = s.name || '';
-  $('out').dataset.name = s.name ? constName(s.name) : 'PLAYER_CAR';
+  $('out').dataset.name = s.name ? constName(s.name) : 'SPRITE';
   syncSizeControl();
   fitZoom();
   refreshColors();

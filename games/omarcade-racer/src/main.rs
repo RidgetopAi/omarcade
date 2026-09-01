@@ -10,6 +10,7 @@
 //!
 //! Controls: ← → steer · ↑ throttle · ↓ brake · Escape quit.
 
+mod crash;
 mod art;
 mod drive;
 mod render;

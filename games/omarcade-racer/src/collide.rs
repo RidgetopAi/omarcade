@@ -62,6 +62,18 @@ pub struct Hit {
     /// Where it happened, in world units along the track. The fireball
     /// is lit here, so it stays put and recedes with the road.
     pub z: f32,
+    /// Where the PLAYER was at the moment of contact.
+    ///
+    /// ⚠️ NOT where the player ended the frame. The check is swept, so
+    /// by the time it runs the car has already been moved past the point
+    /// of impact — by up to a full frame's travel (267 units at 60fps,
+    /// 1067 at the clamped 15fps). Lighting the fireball and then leaving
+    /// the player at the frame-end position put the fire BEHIND the car,
+    /// which is what Brian saw: "it's like it's behind you slightly".
+    ///
+    /// The caller stops the player here, so the wreck comes to rest at
+    /// the point of contact with the fire in front of it.
+    pub player_z: f32,
     /// Lateral position of the impact, in half-widths.
     pub x: f32,
     /// How fast the player was closing when it happened, world units per
@@ -145,10 +157,18 @@ pub fn check(
             continue;
         }
 
+        // Where along the sweep the contact happened. The car's contact
+        // band starts at `band_near` measured forward from `prev_z`; if
+        // that is behind the start of the sweep the player was already
+        // touching, so contact is at the sweep's start.
+        let travelled_to_contact = band_near.max(0.0);
+        let player_z = prev_z + travelled_to_contact;
+
         return Some(Hit {
             car: i,
             z: car.z,
             x: car.x,
+            player_z,
             closing: player.speed - car.speed,
         });
     }
@@ -325,6 +345,66 @@ mod tests {
             check(&player, start_z, &traffic, &road).is_some(),
             "a car sitting between two frames was stepped clean over"
         );
+    }
+
+    /// The fireball must end up IN FRONT of the stopped wreck.
+    ///
+    /// ⚠️ THE SWEEP CREATED THIS PROBLEM AND THE REWIND SOLVES IT. By the
+    /// time `check` runs, `car.update` has already carried the player
+    /// past the point of impact — up to a full frame's travel, 267 units
+    /// at 60fps and 1067 at the clamped 15fps. Lighting the fire at the
+    /// struck car's position while leaving the player at the frame-end
+    /// position put the fire BEHIND the wreck. Brian drove it and
+    /// reported exactly that: "it's like it's behind you slightly."
+    ///
+    /// Checked at several frame rates because the error scales with the
+    /// frame: a 60fps-only test would show the smallest version of it.
+    #[test]
+    fn the_fireball_lands_in_front_of_the_stopped_wreck() {
+        use crate::drive::Tuning;
+
+        let road = course();
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let contact = contact_distance(&road);
+        let length = road.length();
+
+        for fps in [60.0f32, 30.0, 15.0] {
+            let step = tuning.top_speed / fps;
+            let prev = road.wrap(10_000.0);
+            let end = road.wrap(prev + step);
+
+            // ⚠️ THE CAR MUST SIT AT THE START OF THE SWEEP, not near its
+            // end. Placed ahead of the frame-end position the fire is in
+            // front whether or not the rewind happens, and this test
+            // passes against the very bug it guards — confirmed by
+            // mutation. A car the player drives ENTIRELY PAST in one
+            // frame is the case that fails without the rewind, and it is
+            // also the case Brian hit: at speed, contact is detected
+            // after the car is already behind you.
+            let traffic = one_car_at(&road, prev + contact * 0.5, 0.0);
+            let moved = Drive {
+                z: end,
+                x: 0.0,
+                speed: tuning.top_speed,
+            };
+
+            let hit = check(&moved, prev, &traffic, &road)
+                .unwrap_or_else(|| panic!("no contact detected at {fps}fps"));
+
+            // Forward distance from where the player comes to rest to
+            // where the fire is lit. Wrapped, and it must be a SHORT
+            // forward distance rather than nearly a full lap.
+            let ahead = (hit.z - hit.player_z).rem_euclid(length);
+            assert!(
+                ahead < contact * 2.0,
+                "at {fps}fps the fire is {ahead:.0} units from the wreck — \
+                 that is behind it, or most of a lap away"
+            );
+            assert!(
+                ahead > 0.0,
+                "at {fps}fps the fire is exactly on the wreck"
+            );
+        }
     }
 
     #[test]

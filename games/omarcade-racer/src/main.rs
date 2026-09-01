@@ -250,6 +250,14 @@ impl Game for Racer {
         // so the frame the player drives into a car is the frame it
         // registers rather than the one after.
         if let Some(hit) = collide::check(&self.car, prev_z, &self.traffic, &self.road) {
+            // ⚠️ REWIND THE PLAYER TO THE POINT OF CONTACT. The check is
+            // swept, so `car.update` has already carried the car PAST
+            // where the impact happened — up to a frame's travel, which
+            // is 267 units at 60fps and 1067 at the clamped 15fps. Left
+            // there, the wreck comes to rest beyond its own fireball and
+            // the fire renders behind the car. Brian saw exactly that.
+            self.car.z = self.road.wrap(hit.player_z);
+            self.car.speed = 0.0;
             self.crash = Some(crash::Explosion::start(hit.z, hit.x));
         }
     }

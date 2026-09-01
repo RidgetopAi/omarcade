@@ -22,6 +22,10 @@
 mod road;
 #[path = "../src/drive.rs"]
 mod drive;
+#[path = "../src/collide.rs"]
+mod collide;
+#[path = "../src/traffic.rs"]
+mod traffic;
 #[path = "../src/track.rs"]
 mod track;
 
@@ -120,4 +124,48 @@ fn main() {
         None => println!("\n  ⚠️  never overlapped — the projection or the anchors are wrong"),
     }
     println!();
+
+    // ⚠️ WHERE THE FIREBALL LANDS, through the REAL collision path.
+    // Brian: "the explosion renders too close, it's like it's behind you
+    // slightly." Measured rather than reasoned about: run the actual
+    // check at several frame rates and report where the fire ends up
+    // relative to where the player comes to rest.
+    {
+        println!("  WHERE THE FIREBALL LANDS, after the rewind\n");
+        let contact = collide::contact_distance(&road);
+        println!("    contact range {contact:.0} units\n");
+        println!(
+            "    {:>6}{:>10}{:>12}{:>12}{:>12}",
+            "fps", "frame", "player z", "fire z", "fire is"
+        );
+
+        for fps in [60.0f32, 30.0, 15.0] {
+            let step = tuning.top_speed / fps;
+
+            // A car dead ahead, just inside contact at the end of the
+            // frame — the ordinary case of driving into someone.
+            let prev = road.wrap(10_000.0);
+            let end = road.wrap(prev + step);
+            let mut field = traffic::Field::grid(&road, 1);
+            field.cars[0].z = road.wrap(prev + step + contact * 0.5);
+            field.cars[0].x = 0.0;
+
+            let moved = Drive { z: end, x: 0.0, speed: tuning.top_speed };
+
+            match collide::check(&moved, prev, &field, &road) {
+                Some(h) => {
+                    let rest = h.player_z;
+                    let ahead = h.z - rest;
+                    println!(
+                        "    {fps:>6.0}{step:>10.0}{rest:>12.0}{:>12.0}{:>12}",
+                        h.z,
+                        if ahead > 0.0 { "AHEAD ✓" } else { "BEHIND ✗" }
+                    );
+                }
+                None => println!("    {fps:>6.0}{step:>10.0}      no contact detected"),
+            }
+        }
+        println!("\n    The player is rewound to the point of contact, so the wreck");
+        println!("    comes to rest with the fire in front of it at every frame rate.\n");
+    }
 }

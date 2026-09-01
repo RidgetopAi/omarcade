@@ -164,19 +164,34 @@ pub struct Lap {
 pub fn lap(pacer: Pacer, road: &Road, tuning: &Tuning) -> Lap {
     let mut car = Drive::new();
     car.speed = tuning.top_speed;
-    let length = road.length();
+    drive_distance(pacer, road, tuning, car, road.length())
+}
+
+/// Drive `distance` from `start` and report it.
+///
+/// The general form of [`lap`]: a standing start from the grid, a lap
+/// and a half, whatever the question needs. The qualifying lap the game
+/// asks for starts from rest behind the line, so its reference must too.
+pub fn drive_distance(
+    pacer: Pacer,
+    road: &Road,
+    tuning: &Tuning,
+    start: Drive,
+    distance: f32,
+) -> Lap {
+    let mut car = start;
     let mut report = Lap {
         time: 0.0,
         braking: 0.0,
         off_road: 0.0,
-        slowest: tuning.top_speed,
+        slowest: car.speed,
         max_stray: 0.0,
     };
     let mut travelled = 0.0f32;
     // A lap at walking pace on a long course would run forever; nothing
     // sensible takes ten times the flat-out time.
-    let ceiling = length / tuning.top_speed * 10.0;
-    while travelled < length && report.time < ceiling {
+    let ceiling = distance / tuning.top_speed * 10.0;
+    while travelled < distance && report.time < ceiling {
         let before = car.speed;
         let inputs = pacer.step(&mut car, road, tuning, DT);
         travelled += (before + car.speed) * 0.5 * DT;

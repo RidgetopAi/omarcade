@@ -43,6 +43,34 @@ impl Flash {
     }
 }
 
+/// What the score corner and the end banner need to know. Numbers only:
+/// the ledger that produced them lives in `score.rs`, and the HUD does
+/// not care how they were earned.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Scoreboard {
+    /// The run's points so far.
+    pub score: u32,
+    /// The best on this track, if there is one. Once the run is banked
+    /// this is the new table's best, which may be this run.
+    pub best: Option<u32>,
+    /// Whether the banked run beat what was there before.
+    pub new_best: bool,
+}
+
+impl Scoreboard {
+    /// The lines an end banner adds: the score, and how it ranks. Plain
+    /// digits — the font has no comma, and the arcade never used one.
+    fn summary(&self) -> Vec<String> {
+        let mut lines = vec![format!("SCORE {}", self.score)];
+        if self.new_best {
+            lines.push("NEW BEST".to_string());
+        } else if let Some(best) = self.best {
+            lines.push(format!("BEST {best}"));
+        }
+        lines
+    }
+}
+
 /// Everything on screen this frame, as strings.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Layout {
@@ -50,6 +78,8 @@ pub struct Layout {
     pub clock: String,
     /// Whether the clock should shout.
     pub urgent: bool,
+    /// Top-left, under the clock: the score.
+    pub score: String,
     /// Top-right: the lap, or the session.
     pub corner: Option<String>,
     /// Centre: the lights, the grid slot, the end. First line largest.
@@ -65,8 +95,9 @@ fn secs(t: f32) -> String {
 }
 
 /// What the HUD says for this state.
-pub fn compose(race: &Race, flash: Option<&Flash>) -> Layout {
+pub fn compose(race: &Race, flash: Option<&Flash>, board: &Scoreboard) -> Layout {
     let clock = format!("TIME {}", secs(race.clock));
+    let score = format!("SCORE {}", board.score);
     let urgent = matches!(race.phase, Phase::Qualifying | Phase::Racing { .. })
         && race.clock < URGENT_SECONDS;
 
@@ -88,28 +119,31 @@ pub fn compose(race: &Race, flash: Option<&Flash>) -> Layout {
             format!("GRID {position} OF {}", race.grid_size()),
             "ENTER TO RACE".to_string(),
         ],
-        Phase::Finished { time } => vec![
-            format!("FINISHED {}", secs(time)),
-            "ENTER TO RACE AGAIN".to_string(),
-        ],
-        Phase::Over(Out::DidNotQualify) => vec![
-            "DID NOT QUALIFY".to_string(),
-            "ENTER TO TRY AGAIN".to_string(),
-        ],
-        Phase::Over(Out::OutOfTime) => vec![
-            "OUT OF TIME".to_string(),
-            "ENTER TO TRY AGAIN".to_string(),
-        ],
+        // The end, however it came: the headline, the score and how it
+        // ranks, then the way out. Every run that ends is banked, so a
+        // DNQ shows its score like a finish does.
+        Phase::Finished { time } => ended(format!("FINISHED {}", secs(time)), board, "ENTER TO RACE AGAIN"),
+        Phase::Over(Out::DidNotQualify) => ended("DID NOT QUALIFY".to_string(), board, "ENTER TO TRY AGAIN"),
+        Phase::Over(Out::OutOfTime) => ended("OUT OF TIME".to_string(), board, "ENTER TO TRY AGAIN"),
         Phase::Qualifying | Phase::Racing { .. } => Vec::new(),
     };
 
     Layout {
         clock,
         urgent,
+        score,
         corner,
         banner,
         flash: flash.map(|f| f.line.clone()),
     }
+}
+
+/// An end banner: `headline`, the score lines, `exit`.
+fn ended(headline: String, board: &Scoreboard, exit: &str) -> Vec<String> {
+    let mut lines = vec![headline];
+    lines.extend(board.summary());
+    lines.push(exit.to_string());
+    lines
 }
 
 /// A line of text centred on `cx`, on a backing so it reads over any
@@ -132,6 +166,13 @@ pub fn draw(c: &mut Canvas<'_>, theme: &Theme, layout: &Layout, w: u32, h: u32) 
     let ch = (GLYPH_H * SCALE) as i32;
     c.fill_rect(MARGIN - PAD, MARGIN - PAD, (cw + 2 * PAD) as u32, (ch + 2 * PAD) as u32, backing);
     text(c, &layout.clock, MARGIN, MARGIN, SCALE, clock_color);
+
+    // The score sits under the clock on its own backing. Never urgent:
+    // the clock is what ends you, the score only says how it went.
+    let sw = text_width(&layout.score, SCALE) as i32;
+    let sy = MARGIN + ch + 2 * PAD + 4;
+    c.fill_rect(MARGIN - PAD, sy - PAD, (sw + 2 * PAD) as u32, (ch + 2 * PAD) as u32, backing);
+    text(c, &layout.score, MARGIN, sy, SCALE, theme.foreground);
 
     if let Some(corner) = &layout.corner {
         let tw = text_width(corner, SCALE) as i32;
@@ -174,11 +215,20 @@ mod tests {
         Race::new(windows, &road, grid_z, 6)
     }
 
-    /// Every phase, with awkward numbers, and every flash the game can
-    /// raise: all of it must be in the font.
+    fn board() -> Scoreboard {
+        Scoreboard::default()
+    }
+
+    /// Every phase, with awkward numbers, every flash the game can
+    /// raise, and every shape of scoreboard: all of it must be in the font.
     #[test]
     fn everything_the_hud_can_say_is_in_the_font() {
         let mut r = race();
+        let boards = [
+            Scoreboard::default(),
+            Scoreboard { score: 2_138_400, best: Some(2_000_000), new_best: true },
+            Scoreboard { score: 0, best: Some(4_294_967_295), new_best: false },
+        ];
         let phases = [
             Phase::Countdown { remaining: 2.4, then: Session::Qualifying },
             Phase::Countdown { remaining: 0.01, then: Session::Race },
@@ -199,13 +249,15 @@ mod tests {
             for clock in [-0.5, 0.0, 9.99, 112.3] {
                 r.clock = clock;
                 for flash in flashes.iter().chain([None].iter()) {
-                    let layout = compose(&r, flash.as_ref());
-                    let mut all = vec![layout.clock.clone()];
-                    all.extend(layout.corner.clone());
-                    all.extend(layout.banner.clone());
-                    all.extend(layout.flash.clone());
-                    for s in all {
-                        assert_eq!(unrenderable(&s), None, "{phase:?}: {s:?} has a glyph the font lacks");
+                    for board in &boards {
+                        let layout = compose(&r, flash.as_ref(), board);
+                        let mut all = vec![layout.clock.clone(), layout.score.clone()];
+                        all.extend(layout.corner.clone());
+                        all.extend(layout.banner.clone());
+                        all.extend(layout.flash.clone());
+                        for s in all {
+                            assert_eq!(unrenderable(&s), None, "{phase:?}: {s:?} has a glyph the font lacks");
+                        }
                     }
                 }
             }
@@ -222,10 +274,46 @@ mod tests {
     fn the_banner_says_the_grid_slot_and_the_time() {
         let mut r = race();
         r.phase = Phase::Qualified { time: 92.34, position: 2 };
-        let l = compose(&r, None);
+        let l = compose(&r, None, &board());
         assert_eq!(l.banner[0], "QUALIFIED 92.3");
         assert_eq!(l.banner[1], "GRID 2 OF 6");
         assert_eq!(l.corner.as_deref(), Some("QUALIFIED"));
+    }
+
+    #[test]
+    fn the_score_is_always_in_the_corner() {
+        let mut r = race();
+        let b = Scoreboard { score: 123_450, best: None, new_best: false };
+        for phase in [Phase::Qualifying, Phase::Racing { lap: 2 }, Phase::Finished { time: 1.0 }] {
+            r.phase = phase;
+            assert_eq!(compose(&r, None, &b).score, "SCORE 123450");
+        }
+    }
+
+    #[test]
+    fn the_end_banner_shows_the_score_and_how_it_ranks() {
+        let mut r = race();
+        r.phase = Phase::Finished { time: 265.3 };
+
+        let first = Scoreboard { score: 2_138_400, best: Some(2_138_400), new_best: true };
+        assert_eq!(
+            compose(&r, None, &first).banner,
+            vec!["FINISHED 265.3", "SCORE 2138400", "NEW BEST", "ENTER TO RACE AGAIN"]
+        );
+
+        let beaten = Scoreboard { score: 1_900_000, best: Some(2_138_400), new_best: false };
+        assert_eq!(
+            compose(&r, None, &beaten).banner,
+            vec!["FINISHED 265.3", "SCORE 1900000", "BEST 2138400", "ENTER TO RACE AGAIN"]
+        );
+
+        // A DNQ is banked too, so it shows the same lines.
+        r.phase = Phase::Over(Out::DidNotQualify);
+        let dnq = Scoreboard { score: 400_000, best: None, new_best: true };
+        assert_eq!(
+            compose(&r, None, &dnq).banner,
+            vec!["DID NOT QUALIFY", "SCORE 400000", "NEW BEST", "ENTER TO TRY AGAIN"]
+        );
     }
 
     #[test]
@@ -233,7 +321,7 @@ mod tests {
         let mut r = race();
         for (remaining, shown) in [(3.0, "3"), (2.2, "3"), (2.0, "2"), (0.4, "1"), (0.0, "1")] {
             r.phase = Phase::Countdown { remaining, then: Session::Race };
-            assert_eq!(compose(&r, None).banner, vec![shown.to_string()], "at {remaining}");
+            assert_eq!(compose(&r, None, &board()).banner, vec![shown.to_string()], "at {remaining}");
         }
     }
 
@@ -242,16 +330,16 @@ mod tests {
         let mut r = race();
         r.clock = 5.0;
         r.phase = Phase::Racing { lap: 1 };
-        assert!(compose(&r, None).urgent);
+        assert!(compose(&r, None, &board()).urgent);
         r.clock = 30.0;
-        assert!(!compose(&r, None).urgent);
+        assert!(!compose(&r, None, &board()).urgent);
         r.clock = 5.0;
         r.phase = Phase::Qualified { time: 90.0, position: 1 };
-        assert!(!compose(&r, None).urgent, "nothing to hurry for after the flag");
-        assert_eq!(compose(&r, None).clock, "TIME 5.0");
+        assert!(!compose(&r, None, &board()).urgent, "nothing to hurry for after the flag");
+        assert_eq!(compose(&r, None, &board()).clock, "TIME 5.0");
         r.clock = -0.3;
         r.phase = Phase::Over(Out::OutOfTime);
-        assert_eq!(compose(&r, None).clock, "TIME 0.0", "a run-out clock never shows negative");
+        assert_eq!(compose(&r, None, &board()).clock, "TIME 0.0", "a run-out clock never shows negative");
     }
 
     #[test]
@@ -268,8 +356,8 @@ mod tests {
             }
             buf.iter().filter(|&&p| p != 0).count()
         };
-        let plain = paint(&compose(&r, None));
-        let flashed = paint(&compose(&r, Some(&Flash::new("+12.3"))));
+        let plain = paint(&compose(&r, None, &board()));
+        let flashed = paint(&compose(&r, Some(&Flash::new("+12.3")), &board()));
         assert!(plain > 0, "a banner painted nothing");
         assert!(flashed > plain, "the flash painted nothing extra");
     }

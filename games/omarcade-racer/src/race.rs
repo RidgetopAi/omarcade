@@ -246,6 +246,13 @@ impl Race {
         self.next_mark = f32::INFINITY;
     }
 
+    /// Distance travelled since the green light, signed: a crash rewind
+    /// takes it backwards. Restarts from zero at every green. The
+    /// ledger pays on the high-water mark of this number.
+    pub fn travelled(&self) -> f32 {
+        self.travelled
+    }
+
     /// Advance the run by `dt` with the car now at `car_z`.
     pub fn advance(&mut self, dt: f32, car_z: f32, road: &Road) -> Option<Event> {
         self.track_distance(car_z, road);

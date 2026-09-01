@@ -22,21 +22,29 @@ mod race;
 mod render;
 mod road;
 mod scenery;
+mod score;
 mod structures;
 mod track;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
+use omarcade_core::scores::ScoreFile;
 use omarcade_core::{Backend, Canvas, Game, InputEvent, Key, Roll, Theme};
 
 use art::Art;
 use drive::{Drive, Tuning};
-use hud::Flash;
+use hud::{Flash, Scoreboard};
 use race::{Event, Phase, Race, Windows};
 use road::Road;
+use score::Ledger;
+use track::GRAND_PRIX_ID;
 
 // The plan's locked name (ref:omarcade-plan-2). The app_id stays "omarcade" —
 // that is the public surface Hyprland rules match; the title is not.
 const TITLE: &str = "Omaprix";
+/// The score file's stem: `omarcade-racer.json`. The binary's name, as
+/// with the other titles, so the file never has to follow the display
+/// name — the marquee takes the name from inside the record.
+const GAME_ID: &str = "omarcade-racer";
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 720;
 
@@ -110,6 +118,19 @@ struct Racer {
     right_held: bool,
     throttle_held: bool,
     brake_held: bool,
+    /// The points, from the qualifying green light to the end of the run.
+    ledger: Ledger,
+    /// This game's score file: read once at start-up, written once per
+    /// run. Omaprix is its sole writer, as the contract requires.
+    scores: ScoreFile,
+    /// The best on this track, for the end banner. Refreshed when a run
+    /// is banked.
+    best: Option<u32>,
+    /// Whether this run has been banked, so an end event cannot write
+    /// twice. A restart builds a new `Racer`, which clears it.
+    recorded: bool,
+    /// Whether the banked run beat the previous best.
+    new_best: bool,
 }
 
 impl Racer {
@@ -142,6 +163,11 @@ impl Racer {
         let windows = Windows::derive(&road, &tuning, start_z);
         let race = Race::new(windows, &road, start_z, TRAFFIC_CARS + 1);
 
+        // The score file, and the mark to beat on this track. A missing
+        // or unreadable file is an empty table, never an error.
+        let scores = ScoreFile::load_or_new(GAME_ID, TITLE);
+        let best = scores.best_for(GRAND_PRIX_ID);
+
         Racer {
             theme,
             art,
@@ -161,7 +187,35 @@ impl Racer {
             right_held: false,
             throttle_held: false,
             brake_held: false,
+            ledger: Ledger::new(),
+            scores,
+            best,
+            recorded: false,
+            new_best: false,
         }
+    }
+
+    /// Bank the run's score the first time it ends — the flag, an empty
+    /// clock, or a missed cut: every run that ends is ranked (decision
+    /// 729d1f0e). The label is the track, not a difficulty; Omaprix has
+    /// courses, not tiers.
+    ///
+    /// Save failures are swallowed on purpose, as in Pong: a scoreboard
+    /// that cannot be written is not a reason to interrupt the end of a
+    /// race.
+    fn bank_score(&mut self) {
+        if self.recorded {
+            return;
+        }
+        self.recorded = true;
+        self.new_best = self.scores.record_at(self.ledger.total(), GRAND_PRIX_ID);
+        self.best = self.scores.best_for(GRAND_PRIX_ID);
+        let _ = self.scores.save();
+    }
+
+    /// The numbers the HUD shows.
+    fn scoreboard(&self) -> Scoreboard {
+        Scoreboard { score: self.ledger.total(), best: self.best, new_best: self.new_best }
     }
 
     /// Put the car on the grid in the slot qualifying earned and start
@@ -185,10 +239,24 @@ impl Racer {
 
     /// React to what the race reported this frame.
     fn on_event(&mut self, event: Option<Event>) {
-        if let Some(event) = event {
-            if let Some(flash) = flash_for(event) {
-                self.flash = Some(flash);
-            }
+        let Some(event) = event else { return };
+
+        // The ledger hears every mark. `Race::travelled` restarts at a
+        // green light, so the ledger's high-water mark must too.
+        match event {
+            Event::GreenLight => self.ledger.new_session(),
+            Event::Checkpoint { remaining }
+            | Event::LapDone { remaining, .. }
+            | Event::Finished { remaining, .. } => self.ledger.checkpoint(remaining),
+            Event::Qualified { .. } | Event::Over(_) => {}
+        }
+
+        if matches!(event, Event::Finished { .. } | Event::Over(_)) {
+            self.bank_score();
+        }
+
+        if let Some(flash) = flash_for(event) {
+            self.flash = Some(flash);
         }
     }
 
@@ -344,6 +412,14 @@ impl Game for Racer {
         // `advance` stays provably blind.
         self.traffic.recycle(self.car.z, &self.road);
 
+        // Every car overtaken pays, re-passes included (decision
+        // 729d1f0e). Drained every frame; paid only while the run is
+        // live, so a car rolling to a stop past the flag earns nothing.
+        let passes = self.traffic.take_passes();
+        if self.race.driving() {
+            self.ledger.passed(passes);
+        }
+
         if self.recovering > 0.0 {
             self.recovering -= dt;
         }
@@ -371,7 +447,17 @@ impl Game for Racer {
         }
 
         // The race sees the car where it ended up, rewind included.
+        let was_driving = self.race.driving();
         let event = self.race.advance(dt, self.car.z, &self.road);
+
+        // Ground pays while the run is live. `was_driving` is read
+        // BEFORE the advance so the frame that crosses the flag still
+        // counts and the roll-out after it does not. The ledger pays on
+        // the high-water mark, so a rewind is neither a refund nor a
+        // second payday.
+        if was_driving {
+            self.ledger.distance(self.race.travelled());
+        }
         self.on_event(event);
     }
 
@@ -415,7 +501,7 @@ impl Game for Racer {
         // The HUD goes over everything, fireball included: the clock is
         // the one thing that must never be hidden, because it is the
         // thing that ends you.
-        let layout = hud::compose(&self.race, self.flash.as_ref());
+        let layout = hud::compose(&self.race, self.flash.as_ref(), &self.scoreboard());
         hud::draw(canvas, &self.theme, &layout, WIDTH, HEIGHT);
     }
 }
@@ -456,6 +542,70 @@ mod tests {
 
     /// A racer past the lights, on its qualifying lap, so a test about
     /// driving is not silently a test about the countdown holding the car.
+    // ⚠️ NO TEST HERE MAY RAISE Event::Finished OR Event::Over. Those
+    // bank the score, and `bank_score` writes the real score file under
+    // $XDG_STATE_HOME — a test that ends a run would put a fake score
+    // on Brian's marquee. Set phases directly instead.
+
+    #[test]
+    fn driving_pays_for_the_ground_covered() {
+        let mut g = on_track();
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        for _ in 0..60 {
+            g.update(1.0 / 60.0);
+        }
+        assert!(g.race.travelled() > 0.0, "the car never moved");
+        // At least the ground the car stands on. Equal unless a crash
+        // rewound the car, in which case the high-water mark is more.
+        let floor = (g.race.travelled() / score::UNITS_PER_FOOT * score::POINTS_PER_FOOT) as u32;
+        assert!(floor > 0);
+        assert!(g.ledger.total() >= floor, "paid {} for ground worth {floor}", g.ledger.total());
+    }
+
+    #[test]
+    fn the_grid_and_the_lights_pay_nothing() {
+        let mut g = Racer::new(Theme::default());
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        for _ in 0..30 {
+            g.update(1.0 / 60.0);
+        }
+        assert!(matches!(g.race.phase, Phase::Countdown { .. }));
+        assert_eq!(g.ledger.total(), 0);
+    }
+
+    #[test]
+    fn a_mark_banks_its_seconds() {
+        let mut g = on_track();
+        g.on_event(Some(Event::Checkpoint { remaining: 10.0 }));
+        g.on_event(Some(Event::LapDone { lap: 1, remaining: 2.5 }));
+        assert_eq!(g.ledger.total(), 2500);
+        assert!(!g.recorded, "a mark is not the end of the run");
+    }
+
+    #[test]
+    fn a_green_light_restarts_the_mark_and_keeps_the_points() {
+        let mut g = on_track();
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        for _ in 0..60 {
+            g.update(1.0 / 60.0);
+        }
+        let banked = g.ledger.total();
+        assert!(banked > 0);
+        // The race: distance restarts from zero and must pay from the
+        // first foot, not from wherever qualifying left the mark.
+        g.on_event(Some(Event::GreenLight));
+        g.ledger.distance(score::UNITS_PER_FOOT * 10.0);
+        assert_eq!(g.ledger.total(), banked + 500);
+    }
+
+    #[test]
+    fn the_hud_shows_the_ledger() {
+        let mut g = on_track();
+        g.on_event(Some(Event::Checkpoint { remaining: 1.0 }));
+        assert_eq!(g.scoreboard().score, 200);
+        assert!(!g.scoreboard().new_best);
+    }
+
     fn on_track() -> Racer {
         let mut g = racer();
         g.race.phase = Phase::Qualifying;

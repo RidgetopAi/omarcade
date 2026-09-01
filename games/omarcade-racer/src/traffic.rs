@@ -224,6 +224,10 @@ pub struct Field {
     /// distance they have travelled can be accumulated. `None` before
     /// the first call.
     last_player_z: Option<f32>,
+    /// Cars overtaken since the last `take_passes`. Counted on the frame
+    /// the pass is detected, so the scoring rule and the recycling rule
+    /// cannot disagree about what a pass is.
+    passes: u32,
 }
 
 impl Field {
@@ -280,6 +284,7 @@ impl Field {
         Field {
             cars,
             last_player_z: None,
+            passes: 0,
         }
     }
 
@@ -326,6 +331,12 @@ impl Field {
             });
         }
         field
+    }
+
+    /// Cars overtaken since the last call. Drains the count, so the
+    /// ledger sees each pass exactly once however often it asks.
+    pub fn take_passes(&mut self) -> u32 {
+        std::mem::take(&mut self.passes)
     }
 
     /// Drive every car one step.
@@ -426,6 +437,7 @@ impl Field {
                     let was_ahead = (car.z - (player_z - step)).rem_euclid(length);
                     if was_ahead <= step && ahead > length / 2.0 {
                         car.since_passed = Some(0.0);
+                        self.passes += 1;
                     }
                 }
                 Some(travelled) => {
@@ -771,6 +783,49 @@ mod tests {
                 (player.z - start_player_z).rem_euclid(length) / length,
             );
         }
+    }
+
+    /// Every pass is counted once, drained on read, and a recycled car
+    /// passed again counts again — the plan pays 50 a car, every car.
+    #[test]
+    fn passes_are_counted_once_each_and_again_after_a_recycle() {
+        let (road, tuning) = course();
+        let length = road.length();
+        let mut field = Field::grid(&road, 1);
+
+        let mut player = Drive::new();
+        player.z = road.wrap(length * 0.25);
+        player.speed = tuning.top_speed;
+        field.cars[0].z = road.wrap(player.z + road.segment_length());
+        field.cars[0].speed = tuning.top_speed * CRUISE_MIN;
+
+        assert_eq!(field.take_passes(), 0, "nothing has been passed yet");
+
+        let dt = 1.0 / 60.0;
+        let start = player.z;
+        let mut total = 0;
+        let mut first_pass_at = None;
+        while (player.z - start).rem_euclid(length) < length * 0.99 {
+            player.z = road.wrap(player.z + player.speed * dt);
+            field.advance(dt, &road, &tuning);
+            field.recycle(player.z, &road);
+            let n = field.take_passes();
+            assert!(n <= 1, "one car cannot be passed {n} times in one frame");
+            if n == 1 && first_pass_at.is_none() {
+                first_pass_at = Some((player.z - start).rem_euclid(length) / length);
+                assert_eq!(field.take_passes(), 0, "a pass was counted twice");
+            }
+            total += n;
+        }
+
+        let first = first_pass_at.expect("the car a segment ahead was never passed");
+        assert!(first < 0.05, "the first pass came at {first:.3} of a lap, not at once");
+        assert!(
+            total >= 2,
+            "one car over a lap was passed {total} time(s); it is recycled \
+             {RECYCLE_BEHIND_LAPS} of a lap behind and should be passed again"
+        );
+        assert_eq!(field.cars[0].recycled as u32 + 1, total, "passes should be one more than recycles");
     }
 
     /// `advance` must stay blind even though `recycle` is not.

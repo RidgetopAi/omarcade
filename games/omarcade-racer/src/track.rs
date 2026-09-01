@@ -291,6 +291,12 @@ impl Track {
     }
 }
 
+/// The score-file label for the grand prix. It rides in the score entry's
+/// difficulty slot (decision 729d1f0e): Omaprix has tracks, not tiers, and
+/// the marquee already keeps a best per label, so a second course shows up
+/// beside this one with nothing else changed.
+pub const GRAND_PRIX_ID: &str = "grand-prix";
+
 /// **The course.** 2.7 miles, and the only track the game ships for now.
 ///
 /// Authored to exercise what the car can do rather than to look like a

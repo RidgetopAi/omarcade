@@ -92,6 +92,16 @@ pub const PLAYER_CAR: &[&str] = &[
 /// lattice legs at the verges carrying a banner across the full width,
 /// with a chequered band and a signal bar on it.
 ///
+/// ⚠️ THE LEG HEIGHT IS SETTLED — do not "fix" it. Brian sized it against
+/// the car from a reference screenshot. It was cut to 18 rows of leg on
+/// my reading that 43 rows made it a radio mast, and that reading came
+/// off the flat sprite sheet, where this is drawn five times larger than
+/// it ever appears in the scene and with nothing to compare it to. In the
+/// road view the two are near indistinguishable: the extra height sits
+/// BELOW the banner and perspective swallows it. `dump_art -- out.png
+/// proportion` renders both side by side, same road, same car, and is the
+/// view that settled it. Judge art in the scene it ships in.
+///
 /// ⚠️ The ink does not fill the grid. It occupies columns 17..=142 and
 /// rows 0..=56 — 17 blank columns each side and 3 blank rows below. A
 /// caller that scales this by GRID width to span the road will draw a
@@ -193,6 +203,122 @@ pub fn gantry_palette(theme: &Theme) -> Vec<PaletteEntry> {
         ('I', red.lerp(Color::BLACK, 0.35)),     // banner red, shadowed
         ('K', Color::WHITE),                     // chequer, light
         ('T', Color::rgb(0x1a, 0x1a, 0x1a)),     // chequer, dark
+    ]
+}
+
+/// A roadside billboard.
+///
+/// 160x60 as drawn, with the ink in the upper-left: a framed panel on two
+/// posts. Unlike the gantry it does not span the road and unlike a marker
+/// post it is not small and jittered — it is a large flat thing standing
+/// beside the track at a fixed place, meant to be READ.
+///
+/// The panel is blank white on purpose. It is a surface to put something
+/// on, and what goes on it is a separate piece of art.
+///
+/// ⚠️ The ink occupies columns 49..=114 and rows 12..=56 — nowhere near
+/// centred in the grid. Anything that positions this by grid width will
+/// put it in the wrong place. Measure the ink.
+///
+/// Legend:
+///   M frame highlight    N frame shadow
+///   E inner border       K panel face
+///   D post               W post highlight
+///   J one stray pixel at the top-right corner, as drawn
+pub const BILLBOARD: &[&str] = &[
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+    "..................................................NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN..J.............................................",
+    ".................................................MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMN................................................",
+    ".................................................MEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEMN................................................",
+    ".................................................MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMN................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "........................................................WDD..........................................DDW........................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "........................................................DDD..........................................DWD........................................................",
+    "........................................................DWD..........................................DDD........................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "........................................................DDD..........................................DDD........................................................",
+    "................................................................................................................................................................",
+    "................................................................................................................................................................",
+];
+
+/// The rows of [`BILLBOARD`] that are the PANEL — the sign itself, not
+/// the posts under it.
+///
+/// Placement scales a billboard by this rather than by its whole height.
+/// A viewer judges the size of the sign; the posts are however tall they
+/// need to be to hold it up. Scaling by the full sprite made the panel
+/// two thirds of the intended size and the posts too short to see, which
+/// read as a sign hanging in the air.
+pub const BILLBOARD_PANEL_ROWS: (usize, usize) = (12, 42);
+
+/// A palette for the billboard.
+///
+/// Shares `E` and `J` with the gantry deliberately — they are the same
+/// structural metal, and a roadside set that uses one vocabulary of
+/// materials reads as belonging to one world. Everything else is its own.
+pub fn billboard_palette(theme: &Theme) -> Vec<PaletteEntry> {
+    let structure = Color::rgb(0x2a, 0x49, 0xe5);
+    let lattice = structure.lerp(theme.green, 0.59);
+    let highlight = structure.lerp(theme.foreground, 0.35);
+    // The posts take the scene's darkest tone rather than a pinned grey:
+    // a post is in shadow under the panel it holds up, and that shadow is
+    // the scene's, not the object's.
+    let post = theme.darker_background.lerp(theme.foreground, 0.22);
+
+    vec![
+        ('M', highlight),                          // frame, lit
+        ('N', highlight.lerp(Color::BLACK, 0.35)), // frame, shadowed
+        ('E', lattice),                            // inner border
+        ('K', Color::WHITE),                       // panel face
+        ('D', post),                               // post
+        ('W', post.lerp(theme.foreground, 0.30)),  // post highlight
+        ('J', lattice.lerp(Color::BLACK, 0.21)),   // the stray corner pixel
     ]
 }
 
@@ -325,6 +451,9 @@ pub struct Art {
     /// The start/finish gantry. Not a prop: it spans the road and wants a
     /// FIXED track position, so `scenery.rs` must never pick it up.
     pub gantry: Sprite,
+    /// A roadside billboard. Like the gantry, placed at a FIXED track
+    /// position rather than jittered — so `scenery.rs` must not see it.
+    pub billboard: Sprite,
     /// Roadside scenery — what actually carries the sense of motion.
     ///
     /// A list rather than named fields so adding a shape drawn in the
@@ -404,6 +533,7 @@ impl Art {
             rivals,
             post: Sprite::new(MARKER_POST, &post_palette(theme)),
             gantry: Sprite::new(GANTRY, &gantry_palette(theme)),
+            billboard: Sprite::new(BILLBOARD, &billboard_palette(theme)),
             props: vec![
                 Sprite::new(MARKER_POST, &post_palette(theme)),
                 Sprite::new(TALL_POLE, &post_palette(theme)),

@@ -322,6 +322,108 @@ pub fn billboard_palette(theme: &Theme) -> Vec<PaletteEntry> {
     ]
 }
 
+/// A billboard carrying the Omarchy wordmark.
+///
+/// The same sign as [`BILLBOARD`], widened so the wordmark fits at its
+/// NATIVE resolution. The mark is 81 cells across and the original panel
+/// face was 58 — downscaling by 0.72 would drop every third column, and
+/// at a 3px stroke with 3px gaps that is the difference between letters
+/// and mush. The stroke IS the resolution, so the sign grew instead.
+///
+/// Widened by duplicating a column INSIDE the panel field, so the frame,
+/// the border and the posts are all exactly as drawn.
+///
+/// The wordmark came from `omarchy-wordmark.svg`, which converts without
+/// any rasterising: every element in it is a `<rect>` on a 51x50 lattice
+/// with `shape-rendering="crispEdges"` and a single fill. It is a pixel
+/// grid wearing an SVG costume, which is the only kind of SVG that
+/// survives this trip. A file with curves or gradients would have to be
+/// rasterised and would come out as mud at this size.
+///
+/// Legend as [`BILLBOARD`], plus:
+///   O the wordmark
+pub const BILLBOARD_OMARCHY: &[&str] = &[
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+    "..................................................NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN..J.............................................",
+    ".................................................MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMN................................................",
+    ".................................................MEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKOOOKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKOOOOOKKKKKKOOOOOOOOOOOKKKKKKOOOOOOOKKKKOOOOOOOKKKKOOOOOOOKKKKOKKKOKKKKKKOKKKOKKKKKEMN................................................",
+    ".................................................MEKKKKOOOOOOOKKKKOOOOOOOOOOOOOKKKKOOOOOOOOKKKOOOOOOOOKKKOOOOOOOOKKKOOKKKOOKKKKOOKKKOOKKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOKKKOOOKKKOOOKKOOOKKKOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOKKKKOOOKKKOOOKKOOOKKKOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKKKKKKOOOKKKOOOKKOOOKKKOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKOOOOOOOOOOKOOOOOOOOOKKKOOOKKKKKKKOOOOOOOOOOOKOOOOOOOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKOOOOOOOOOOKOOOOOOOOKKKKOOOKKKKKKOOOOOOOOOOOKKOOOOOOOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKKKKKKOOOKKKKKKKKOOOKKKOOOKKKKKKKKOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKKOOOKKKOOOKOOOOOOOOOOKKOOOKKKOKKKKOOOKKKOOOKKKOOKKKOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKKOOOKKKOOOKOOOOOOOOOOKKOOOKKKOOKKKOOOKKKOOOKKOOOKKKOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKKEMN................................................",
+    ".................................................MEKKKOOOKKKOOOKKOOOKKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKOOOKKKOOOKKKEMN................................................",
+    ".................................................MEKKKKOOOOOOOKKKKOOKKKOOOKKKOOKKKOOOKKKOOKKKOOOKKKOOOKKOOOOOOOOKKKOOOKKKOOKKKKOOOOOOOKKKKEMN................................................",
+    ".................................................MEKKKKKOOOOOKKKKKKOKKKOOOKKKOKKKKOOOKKKOKKKKOOOKKKOOOKKOOOOOOOKKKKOOOKKKOKKKKKKOOOOOKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKOOOKKKOOKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKOOOKKKOKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKEMN................................................",
+    ".................................................MEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEMN................................................",
+    ".................................................MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMN................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    "........................................................WDD.......................................................................DDW........................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    "........................................................DDD.......................................................................DWD........................................................",
+    "........................................................DWD.......................................................................DDD........................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    "........................................................DDD.......................................................................DDD........................................................",
+    ".............................................................................................................................................................................................",
+    ".............................................................................................................................................................................................",
+];
+
+/// The rows of [`BILLBOARD_OMARCHY`] that are the panel.
+///
+/// The widening inserted columns, not rows, so this matches
+/// [`BILLBOARD_PANEL_ROWS`] — but it is stated separately rather than
+/// shared, because the two are only equal by coincidence and a future
+/// edit to either sign should not silently move the other.
+pub const BILLBOARD_OMARCHY_PANEL_ROWS: (usize, usize) = (12, 42);
+
+/// A palette for the wordmark billboard.
+///
+/// [`billboard_palette`] plus the mark itself. The wordmark keeps
+/// Omarchy's own green rather than taking the theme: it is a LOGO, and a
+/// logo that changes colour with the desktop stops being a logo — the
+/// same reason the player's car body is pinned (decision 4153030a).
+pub fn billboard_omarchy_palette(theme: &Theme) -> Vec<PaletteEntry> {
+    let mut pal = billboard_palette(theme);
+    pal.push(('O', Color::rgb(0x9e, 0xce, 0x6a)));
+    pal
+}
+
 /// A roadside marker post — the cheapest thing that sells speed.
 ///
 /// Small, high-contrast, and passing constantly. The eye reads speed
@@ -454,6 +556,8 @@ pub struct Art {
     /// A roadside billboard. Like the gantry, placed at a FIXED track
     /// position rather than jittered — so `scenery.rs` must not see it.
     pub billboard: Sprite,
+    /// The billboard carrying the Omarchy wordmark.
+    pub billboard_omarchy: Sprite,
     /// Roadside scenery — what actually carries the sense of motion.
     ///
     /// A list rather than named fields so adding a shape drawn in the
@@ -534,6 +638,10 @@ impl Art {
             post: Sprite::new(MARKER_POST, &post_palette(theme)),
             gantry: Sprite::new(GANTRY, &gantry_palette(theme)),
             billboard: Sprite::new(BILLBOARD, &billboard_palette(theme)),
+            billboard_omarchy: Sprite::new(
+                BILLBOARD_OMARCHY,
+                &billboard_omarchy_palette(theme),
+            ),
             props: vec![
                 Sprite::new(MARKER_POST, &post_palette(theme)),
                 Sprite::new(TALL_POLE, &post_palette(theme)),
@@ -548,6 +656,11 @@ impl Art {
     /// name, and so a redraw changes one number in one place.
     pub fn billboard_panel_rows(&self) -> (usize, usize) {
         BILLBOARD_PANEL_ROWS
+    }
+
+    /// The rows of the wordmark billboard that are the PANEL.
+    pub fn billboard_omarchy_panel_rows(&self) -> (usize, usize) {
+        BILLBOARD_OMARCHY_PANEL_ROWS
     }
 
     /// The rival livery for a given traffic slot.

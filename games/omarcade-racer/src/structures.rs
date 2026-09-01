@@ -53,8 +53,15 @@ impl Side {
 pub enum Structure {
     /// The start/finish gantry. Spans the road.
     Gantry,
-    /// A billboard beside the road.
+    /// A blank billboard beside the road.
     Billboard { side: Side },
+    /// A billboard carrying the Omarchy wordmark.
+    ///
+    /// A separate variant rather than a field on `Billboard`, because it
+    /// is a different SPRITE — wider, so the mark fits at native
+    /// resolution — and placement has to scale the one it is actually
+    /// drawing.
+    BillboardOmarchy { side: Side },
 }
 
 /// One structure at one place on the track.
@@ -162,6 +169,15 @@ pub fn draw(
             Structure::Billboard { side } => {
                 draw_roadside(c, &art.billboard, art.billboard_panel_rows(), &p, side, fx, fy)
             }
+            Structure::BillboardOmarchy { side } => draw_roadside(
+                c,
+                &art.billboard_omarchy,
+                art.billboard_omarchy_panel_rows(),
+                &p,
+                side,
+                fx,
+                fy,
+            ),
         }
     }
 }
@@ -427,7 +443,10 @@ mod tests {
     fn billboards_stand_where_there_is_time_to_read_them() {
         let road = grand_prix().build();
         for p in shipped() {
-            if !matches!(p.kind, Structure::Billboard { .. }) {
+            if !matches!(
+                p.kind,
+                Structure::Billboard { .. } | Structure::BillboardOmarchy { .. }
+            ) {
                 continue;
             }
             // Straight where it stands, and still straight a little way
@@ -489,14 +508,16 @@ pub fn shipped() -> Vec<Placement> {
         // Down the start straight: the first appears as the gantry is
         // passed, then alternating sides a reach apart, so they arrive one
         // at a time rather than as a wall.
-        Placement { z: 1.1 * reach, kind: Structure::Billboard { side: Side::Right } },
+        // The wordmark gets the first slot after the line, where a real
+        // circuit puts the sponsor that paid the most.
+        Placement { z: 1.1 * reach, kind: Structure::BillboardOmarchy { side: Side::Right } },
         Placement { z: 2.2 * reach, kind: Structure::Billboard { side: Side::Left } },
         Placement { z: 3.3 * reach, kind: Structure::Billboard { side: Side::Right } },
         // The long back straight before the Hard right — the one place on
         // the lap with real time to look around. Mile 1.70 in course
         // terms; expressed here as the reach count that lands there.
         Placement { z: 34.0 * reach, kind: Structure::Billboard { side: Side::Left } },
-        Placement { z: 35.1 * reach, kind: Structure::Billboard { side: Side::Right } },
+        Placement { z: 35.1 * reach, kind: Structure::BillboardOmarchy { side: Side::Right } },
         Placement { z: 36.2 * reach, kind: Structure::Billboard { side: Side::Left } },
     ]
 }

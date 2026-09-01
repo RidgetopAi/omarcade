@@ -15,6 +15,7 @@ mod crash;
 mod traffic;
 mod art;
 mod drive;
+mod pace;
 mod render;
 mod road;
 mod scenery;

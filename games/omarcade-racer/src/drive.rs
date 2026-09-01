@@ -1082,19 +1082,20 @@ mod tests {
             // car, and a stationary car has no lean at all, which is how
             // the first attempt at this produced a 0.0.
             //
-            // The holdable speed is FOUND, not derived. Solving
-            // `curve * authority^2 * centrifugal = steer_rate` gives the
-            // answer for a driver holding FULL LOCK, and this driver does
-            // not: `(-x * 3.0)` only saturates once the car is a third of
-            // the way to a verge, so it settles wherever push balances a
-            // partial correction — measurably slower than the formula
-            // predicts (0.70 against 0.82 on the hardest bend here).
+            // The holdable speed is FOUND, not derived, so this test
+            // cannot inherit a wrong formula. It once quoted one: the
+            // balance was written as `curve * authority^2 * centrifugal =
+            // steer_rate`, dropping the `authority` on the steering term,
+            // and the 0.82 that gave for the hardest bend here was blamed
+            // on the driver "not reaching full lock" when the search
+            // found 0.70. The full-lock balance is linear —
+            // `authority = steer_rate / (curve * centrifugal)` — and it
+            // predicts the search to within a hundredth (0.67 against
+            // 0.68 with a long enough window). That formula, and the
+            // measurement, live in `pace::holdable`.
             //
-            // Fitting a second formula to this particular driver would be
-            // a constant calibrated against something that moves the
-            // moment the driver or the physics changes, which is the
-            // mistake this module keeps a lesson about. Searching for it
-            // stays correct through both.
+            // The search stays regardless: it is the independent check
+            // that stays correct if the physics or the driver changes.
             let target = fastest_holdable(&road, &tuning);
             for _ in 0..(6.0 / dt) as usize {
                 let correction = (-d.x * 3.0).clamp(-1.0, 1.0);

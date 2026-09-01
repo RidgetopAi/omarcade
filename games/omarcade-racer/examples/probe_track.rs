@@ -17,8 +17,11 @@ mod road;
 mod drive;
 #[path = "../src/track.rs"]
 mod track;
+#[path = "../src/pace.rs"]
+mod pace;
 
 use drive::{Drive, Surface, Tuning};
+use pace::Pacer;
 use track::{grand_prix, UNITS_PER_MILE};
 
 const DT: f32 = 1.0 / 240.0;
@@ -62,9 +65,14 @@ fn main() {
         }
     }
 
-    // Drive it. The driver brakes only when the bend ahead demands it —
-    // which is the strategy the game is asking the player to learn.
-    println!("\n  driving the lap\n");
+    // Drive it with the reference driver: brake only when the bend ahead
+    // demands it, otherwise flat out. That is the strategy the game asks
+    // the player to learn, and `pace` is the one place it is defined —
+    // this probe used to carry its own copy, which clamped the holdable
+    // speed before applying its margin and so never exceeded 78% of top
+    // speed anywhere. It reported that as "23% of the lap braking".
+    let pacer = Pacer::EXACT;
+    println!("\n  driving the lap  (pace::Pacer, margin {:.2})\n", pacer.margin);
     let trace = std::env::args().any(|a| a == "--trace");
     let trace_off = std::env::args().any(|a| a == "--off");
     let mut car = Drive::new();
@@ -75,51 +83,12 @@ fn main() {
     let mut slowest = tuning.top_speed;
     let lap = road.segment_count() as f32 * road.segment_length();
 
-    // ⚠️ `car.z` WRAPS — `Road::wrap` keeps it inside the track length, so
-    // `while car.z < lap` never terminates and the car simply laps forever.
-    // Distance travelled has to be accumulated separately. This probe
-    // reported "stuck at 0.92 miles" for exactly this reason, which looked
-    // like a physics failure and was a loop condition.
     let mut travelled = 0.0f32;
-    while travelled < lap && t < 600.0 {
-        // Look ahead and slow for the WORST bend inside braking range.
-        //
-        // ⚠️ Sampling the curve at one point `speed * brake_time` ahead is
-        // wrong and cost real time here: that is where the car would come
-        // to a STOP, not where it needs to already be slow, and a single
-        // sample steps straight over the entry of a corner that begins
-        // sooner. The driver under-braked and spent five seconds a lap on
-        // the grass, which read as "the course is too hard" when it was
-        // the driver being short-sighted.
-        //
-        // Braking distance is the AVERAGE speed over the stop, so half of
-        // `speed * brake_time` — and every bend within it matters, not
-        // just the one at the far end.
-        let look = car.speed * tuning.brake_time * 0.5;
-        let mut ahead = 0.0f32;
-        let steps = 12;
-        for k in 0..=steps {
-            let z = car.z + look * k as f32 / steps as f32;
-            ahead = ahead.max(road.curve_at(z).abs());
-        }
-        let holdable = if ahead > 0.001 {
-            (tuning.steer_rate / (tuning.centrifugal * ahead)).sqrt().min(1.0)
-        } else { 1.0 };
-        // ⚠️ AND THE MARGIN IS NOT COSMETIC. `holdable` is the algebra for a
-        // driver at FULL LOCK, and this one steers `(-x * 3.0)` — it does
-        // not reach full lock until the car is a third of the way to a
-        // verge, so it genuinely cannot hold the speed the formula says.
-        // At 0.9 it ran wide on the Hard corner every lap and the probe
-        // reported "the course asks for more than the car can give", which
-        // was a statement about the DRIVER. Same trap as the lean test:
-        // a closed form solves for the driver you assumed.
-        let target = tuning.top_speed * holdable * 0.78;
-
-        let (throttle, brake) = if car.speed > target { (0.0, 1.0) } else { (1.0, 0.0) };
-        if brake > 0.0 { braking += DT; }
-        let correction = (-car.x * 3.0).clamp(-1.0, 1.0);
+    while travelled < lap {
+        let target = pacer.target(&car, &road, &tuning);
         let before = car.speed;
-        car.update(DT, throttle, brake, correction, &road, &tuning);
+        let inputs = pacer.step(&mut car, &road, &tuning, DT);
+        if inputs.brake > 0.0 { braking += DT; }
         travelled += (before + car.speed) * 0.5 * DT;
 
         if car.surface() != Surface::Road {

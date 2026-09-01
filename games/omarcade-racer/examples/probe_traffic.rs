@@ -23,37 +23,24 @@ mod track;
 mod collide;
 #[path = "../src/traffic.rs"]
 mod traffic;
+#[path = "../src/pace.rs"]
+mod pace;
 
 use drive::{Drive, Tuning};
-use road::Road;
+use pace::Pacer;
 use track::grand_prix;
 use traffic::{Field, CRUISE_MAX, CRUISE_MIN};
 
 const DT: f32 = 1.0 / 240.0;
 const CARS: usize = 5;
 
-/// A driver that goes as fast as the corner allows.
-///
-/// The same shape `probe_track` uses: brake only when the bend demands
-/// it, otherwise flat out, and steer back toward the centre. It is not a
-/// perfect driver — it is a competent one, which is the bar the traffic
-/// has to be judged against.
-fn drive_step(car: &mut Drive, road: &Road, tuning: &Tuning) {
-    let curve = road.curve_at(car.z).abs();
-
-    // The fastest this bend can be held, from the same balance the
-    // traffic uses: steer_rate * a == curve * a² * centrifugal.
-    let holdable = if curve > f32::EPSILON {
-        tuning.top_speed * tuning.steer_rate / (curve * tuning.centrifugal)
-    } else {
-        f32::INFINITY
-    };
-
-    let brake = if car.speed > holdable * 0.9 { 1.0 } else { 0.0 };
-    let throttle = if brake > 0.0 { 0.0 } else { 1.0 };
-    let steer = (-car.x * 3.0).clamp(-1.0, 1.0);
-    car.update(DT, throttle, brake, steer, road, tuning);
-}
+/// The player is the reference driver from `pace`: brake only when the
+/// bend ahead demands it, otherwise flat out. It is not a perfect human
+/// — it is the physics-exact one, which is the bar the traffic has to
+/// be judged against. It used to be a local copy with no lookahead and
+/// a 0.9 margin; the lap it drives is within two seconds of that one,
+/// so the overtake arithmetic below still holds.
+const PACER: Pacer = Pacer::EXACT;
 
 fn main() {
     let road = grand_prix().build();
@@ -107,7 +94,7 @@ fn main() {
 
     // Three laps, the race distance the plan specifies.
     while travelled < length * 3.0 && t < 900.0 {
-        drive_step(&mut player, &road, &tuning);
+        PACER.step(&mut player, &road, &tuning, DT);
         field.advance(DT, &road, &tuning);
         field.recycle(player.z, &road);
         t += DT;
@@ -142,9 +129,10 @@ fn main() {
     }
 
     println!(
-        "\n  {:.2} laps in {t:.1}s with {CARS} cars on track  ({:.1}s per lap)\n",
+        "\n  {:.2} laps in {t:.1}s with {CARS} cars on track  ({:.1}s per lap, pace::Pacer margin {:.2})\n",
         travelled / length,
         t / (travelled / length).max(0.01),
+        PACER.margin,
     );
     println!("  {} overtakes", passes.len());
 

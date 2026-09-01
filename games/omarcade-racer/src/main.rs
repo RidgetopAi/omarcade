@@ -10,6 +10,7 @@
 //!
 //! Controls: ← → steer · ↑ throttle · ↓ brake · Escape quit.
 
+mod collide;
 mod crash;
 mod traffic;
 mod art;
@@ -74,6 +75,13 @@ struct Racer {
     /// player — `Field::advance` takes no player at all, which is how
     /// that rule is enforced rather than merely intended.
     traffic: traffic::Field,
+    /// The fireball, while one is burning. `None` means racing.
+    ///
+    /// A crash does NOT end the run — the plan's fail state is a missed
+    /// checkpoint, which is S11's work. A crash costs TIME: the car
+    /// stops, it burns, and the clock keeps going. That is the whole
+    /// punishment, and it is enough because the timer is what ends you.
+    crash: Option<crash::Explosion>,
     /// Steering tracked as two independent flags rather than one
     /// direction, exactly as Pong does. With a single `dir`, holding Left
     /// and tapping Right releases the wheel when Right lifts, leaving the
@@ -118,6 +126,7 @@ impl Racer {
             roll: Roll::new(),
             pixels_per_unit,
             traffic,
+            crash: None,
             left_held: false,
             right_held: false,
             throttle_held: false,
@@ -193,6 +202,26 @@ impl Game for Racer {
         // roughly four frames keeps a hitch as a hitch.
         let dt = dt.min(1.0 / 15.0);
 
+        // THE TRAFFIC DRIVES WHATEVER THE PLAYER IS DOING, crash
+        // included. A field that freezes while you burn would make the
+        // restart a different race from the one you crashed out of.
+        self.traffic.advance(dt, &self.road, &self.tuning);
+
+        if let Some(fire) = &mut self.crash {
+            // Burning. The car is stopped and the clock is running —
+            // that IS the punishment (the plan's fail state is a missed
+            // checkpoint, not a crash). Input is ignored so a held key
+            // cannot drive a wreck.
+            self.car.speed = 0.0;
+            if !fire.advance(dt) {
+                self.crash = None;
+            }
+            // Deliberately NOT recycling while burning: the player is
+            // not moving, so nothing has been overtaken, and recycling
+            // reads distance travelled since a pass.
+            return;
+        }
+
         self.car.update(
             dt,
             self.throttle(),
@@ -204,17 +233,19 @@ impl Game for Racer {
         self.roll
             .advance(self.car.speed, self.pixels_per_unit, dt);
 
-        // The traffic drives on the same clamped dt the player does, and
-        // is given nothing else — no player, no camera. See
-        // `traffic::Field::advance` and decision 4a0707a3.
-        self.traffic.advance(dt, &self.road, &self.tuning);
-
         // Supply, not driving: cars that have fallen well behind come
         // back out at the horizon so there is always something to
         // overtake. Five cars on a 2.7-mile loop cannot do that on their
         // own — measured, see `probe_traffic`. Kept a SEPARATE call so
         // `advance` stays provably blind.
         self.traffic.recycle(self.car.z, &self.road);
+
+        // Did that step put us into anything? Checked AFTER the move,
+        // so the frame the player drives into a car is the frame it
+        // registers rather than the one after.
+        if let Some(hit) = collide::check(&self.car, &self.traffic, &self.road) {
+            self.crash = Some(crash::Explosion::start(hit.z, hit.x));
+        }
     }
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
@@ -232,6 +263,24 @@ impl Game for Racer {
             WIDTH,
             HEIGHT,
         );
+
+        // The fireball goes on top of the road, after it. It is an
+        // overlay rather than part of the scene graph — there is one at
+        // most, and only while a crash is burning.
+        if let Some(fire) = &self.crash {
+            render::draw_explosion_into(
+                canvas,
+                &self.art.explosion,
+                &self.theme,
+                &self.road,
+                &self.car,
+                fire,
+                0,
+                0,
+                WIDTH,
+                HEIGHT,
+            );
+        }
     }
 }
 
@@ -345,6 +394,82 @@ mod tests {
             last = g.roll.phase();
         }
         assert!(moved, "the tread never turned while driving");
+    }
+
+    /// Driving into a car lights a fireball, and the fireball ends.
+    ///
+    /// The full crash cycle in one test, because the pieces are correct
+    /// individually and it is the SEQUENCE that can be wrong: hit ->
+    /// burn -> back to racing.
+    #[test]
+    fn hitting_a_car_starts_a_crash_that_ends_by_itself() {
+        let mut g = racer();
+
+        // Put a car directly in front of the player, in the same lane.
+        g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
+        g.traffic.cars[0].x = g.car.x;
+        g.car.speed = g.tuning.top_speed * 0.5;
+
+        assert!(g.crash.is_none(), "started already crashed");
+
+        g.update(1.0 / 60.0);
+        assert!(g.crash.is_some(), "drove into a car and nothing happened");
+
+        // The car is stopped while it burns — that is the cost, since the
+        // plan's fail state is a missed checkpoint rather than the crash.
+        g.update(1.0 / 60.0);
+        assert_eq!(g.car.speed, 0.0, "a burning wreck is still moving");
+
+        // And it ends on its own.
+        for _ in 0..(crash::BURN_TIME * 120.0) as usize {
+            g.update(1.0 / 60.0);
+        }
+        assert!(g.crash.is_none(), "the fireball never burned out");
+    }
+
+    /// Input must not drive a wreck.
+    #[test]
+    fn holding_the_throttle_through_a_crash_does_nothing() {
+        let mut g = racer();
+        g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
+        g.traffic.cars[0].x = g.car.x;
+        g.car.speed = g.tuning.top_speed * 0.5;
+        g.update(1.0 / 60.0);
+        assert!(g.crash.is_some());
+
+        g.throttle_held = true;
+        for _ in 0..30 {
+            g.update(1.0 / 60.0);
+            assert_eq!(
+                g.car.speed, 0.0,
+                "the throttle moved the car while it was a fireball"
+            );
+        }
+    }
+
+    /// The traffic keeps driving while the player burns.
+    ///
+    /// A field that freezes during a crash would make the restart a
+    /// different race from the one that was crashed out of.
+    #[test]
+    fn traffic_keeps_driving_through_a_crash() {
+        let mut g = racer();
+        g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
+        g.traffic.cars[0].x = g.car.x;
+        g.car.speed = g.tuning.top_speed * 0.5;
+        g.update(1.0 / 60.0);
+        assert!(g.crash.is_some());
+
+        // Watch a car that is NOT the one that was hit.
+        let watched = 2;
+        let before = g.traffic.cars[watched].z;
+        for _ in 0..60 {
+            g.update(1.0 / 60.0);
+        }
+        assert!(
+            (g.traffic.cars[watched].z - before).abs() > 1.0,
+            "the field froze while the player was burning"
+        );
     }
 
     /// Traffic must be on the road, not in the scenery.

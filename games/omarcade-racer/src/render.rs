@@ -13,6 +13,7 @@
 //! has tests.
 
 use omarcade_core::{Canvas, Color, Pose, Theme};
+use omarcade_core::sprite::Sprite;
 
 use crate::art::Art;
 use crate::drive::{Drive, Tuning};
@@ -92,6 +93,15 @@ const PROP_HEIGHT_IN_HALF_WIDTHS: f32 = 0.38;
 /// judges it is precisely the drift that put a structure constant in two
 /// files last session.
 pub const CAR_ART_PIXELS_PER_HALF_WIDTH: f32 = 70.0;
+
+/// How much of the screen height the road is made to fill.
+///
+/// Named because more than one thing now derives a camera from the road
+/// and they must all derive the SAME camera — a fireball projected
+/// through a slightly different camera than the road it sits on would
+/// float above or sink into the tarmac, and would look like a bug in the
+/// sprite anchoring rather than in a duplicated constant.
+pub const CAMERA_FILL: f32 = 0.85;
 
 pub fn demo_track() -> Road {
     let mut segs = Vec::new();
@@ -199,7 +209,7 @@ pub fn draw_road_into(
     let rumble_b = theme.foreground.lerp(Color::WHITE, 0.4);
     let line = theme.foreground.lerp(Color::WHITE, 0.5);
 
-    let camera = Camera::for_road(road, 0.85);
+    let camera = Camera::for_road(road, CAMERA_FILL);
     let fx = ox as f32;
     let fy = oy as f32;
     let fw = w as f32;
@@ -411,5 +421,54 @@ pub fn draw_road_into(
         pose,
         roll,
         None,
+    );
+}
+
+/// Draw a crash fireball on the road.
+///
+/// Separate from [`draw_road_into`] because that function already takes
+/// twelve arguments and a fireball is an overlay, not part of the road.
+/// But the CAMERA AND SCALE RULE ARE THE SAME ONES — derived here the
+/// way the road derives them, rather than recomputed by the caller.
+/// A second copy of the camera derivation in `main.rs` is
+/// exactly the drift that put a structure constant in two files in S9.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_explosion_into(
+    c: &mut Canvas<'_>,
+    sprite: &Sprite,
+    theme: &Theme,
+    road: &Road,
+    car: &Drive,
+    fire: &crate::crash::Explosion,
+    ox: u32,
+    oy: u32,
+    w: u32,
+    h: u32,
+) {
+    let (fx, fy) = (ox as f32, oy as f32);
+    let (fw, fh) = (w as f32, h as f32);
+    let camera = Camera::for_road(road, CAMERA_FILL);
+    let x_offset = car.x * road.width() / 2.0;
+
+    let Some(p) = road.project(&camera, car.z, x_offset, fire.z, fw, fh) else {
+        // Behind the camera: the player has driven past their own wreck.
+        return;
+    };
+
+    // The same rule a car is sized by — a fireball replaces a car, and
+    // `Explosion::draw` applies its own growth on top of this.
+    let base = p.half_width / CAR_ART_PIXELS_PER_HALF_WIDTH;
+
+    // The fireball sits at the crash's lateral position, which is where
+    // the car it consumed was, not where the player now is.
+    let lane = fire.x * p.half_width;
+
+    fire.draw(
+        c,
+        sprite,
+        fx + p.x + lane,
+        fy + p.y,
+        base,
+        theme.darker_background,
     );
 }

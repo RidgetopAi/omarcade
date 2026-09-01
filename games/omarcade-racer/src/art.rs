@@ -702,6 +702,9 @@ pub struct Art {
     pub billboard: Sprite,
     /// The billboard carrying the Omarchy wordmark.
     pub billboard_omarchy: Sprite,
+    /// The crash fireball. One frame; `crash.rs` animates it by
+    /// transform.
+    pub explosion: Sprite,
     /// Roadside scenery — what actually carries the sense of motion.
     ///
     /// A list rather than named fields so adding a shape drawn in the
@@ -786,6 +789,7 @@ impl Art {
                 BILLBOARD_OMARCHY,
                 &billboard_omarchy_palette(theme),
             ),
+            explosion: Sprite::new(EXPLOSION, &explosion_palette(theme)),
             props: vec![
                 Sprite::new(MARKER_POST, &post_palette(theme)),
                 Sprite::new(TALL_POLE, &post_palette(theme)),

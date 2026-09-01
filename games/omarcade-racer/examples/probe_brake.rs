@@ -27,6 +27,8 @@ mod scenery;
 mod structures;
 #[path = "../src/track.rs"]
 mod track;
+#[path = "../src/crash.rs"]
+mod crash;
 #[path = "../src/render.rs"]
 mod render;
 

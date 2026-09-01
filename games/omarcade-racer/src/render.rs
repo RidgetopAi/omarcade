@@ -135,15 +135,20 @@ pub fn demo_track() -> Road {
 /// road, at the horizon.
 ///
 /// This is the arcade lie Pole Position told: distant cars are drawn
-/// larger than they should be, so a car a second out reads as a car. At
-/// 0.6 that same car draws 31px, and 64px a quarter second out. The
-/// road is not touched — only the cars — which is why a far car sits
-/// wide on a narrow road, exactly as it did in the original.
+/// larger than they should be, so a car a second out reads as a car.
+/// The road is not touched — only the cars — which is why a far car
+/// sits wide on a narrow road, exactly as it did in the original.
+///
+/// 0.6 was the first value and Brian's first drive said the far cars
+/// were too big: a car at the horizon drew most of a road width. 0.7
+/// takes about 39% off a car at the horizon and 28% off one a second
+/// out, and leaves the near ones alone, which is the shape the
+/// complaint had. `probe_warning` prints the resulting heights.
 ///
 /// ⚠️ THE HITBOX IS THE ART, so `collide::CONTACT_SEGMENTS` is measured
 /// through THIS rule (`probe_contact` calls `rival_scale`). Change the
 /// exponent and re-run the probe.
-pub const RIVAL_SCALE_EXPONENT: f32 = 0.6;
+pub const RIVAL_SCALE_EXPONENT: f32 = 0.7;
 
 /// The scale a rival (or anything car-sized on the road) is drawn at.
 ///
@@ -535,11 +540,12 @@ mod tests {
             assert!(drawn < last, "at {frac} the rival stopped shrinking");
             last = drawn;
         }
-        // The number the exponent was chosen for: a car at 12% of the
+        // The band the exponent was chosen in: a car at 12% of the
         // player's size (one second out at the old closing speed) draws
-        // at roughly a quarter to a third.
+        // at roughly a fifth to a quarter — twice perspective, not three
+        // times, after Brian's "at least 30% smaller" on the far cars.
         let at_12 = rival_scale(player * 0.12, player) / player;
-        assert!((0.25..0.35).contains(&at_12), "12% -> {at_12:.2}");
+        assert!((0.18..0.28).contains(&at_12), "12% -> {at_12:.2}");
         assert_eq!(rival_scale(0.0, player), 0.0);
     }
 }

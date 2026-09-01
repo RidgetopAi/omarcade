@@ -88,6 +88,7 @@ fn main() {
 
     let mut prev: Vec<f32> = field.cars.iter().map(|c| gap_to(&player, c.z)).collect();
     let mut passes: Vec<(f32, f32, f32)> = Vec::new(); // (lap time, closing speed, lateral gap)
+    let mut last_pass: Vec<f32> = vec![-99.0; CARS];
 
     let mut t = 0.0f32;
 
@@ -120,8 +121,18 @@ fn main() {
             // A pass: the car was ahead and is now behind. Guard against
             // the wrap by ignoring jumps of more than a fraction of the
             // course.
-            if prev[i] > 0.0 && g <= 0.0 && (prev[i] - g).abs() < length * 0.1 {
+            // ⚠️ ONE PASS PER CAR PER COOLDOWN. A bare sign change
+            // double-counts: a car sitting near the boundary oscillates
+            // across it and logs four "overtakes" in 0.2s at identical
+            // closing speed, which is what the raw numbers showed. The
+            // traffic was fine; the instrument was counting wrong.
+            if prev[i] > 0.0
+                && g <= 0.0
+                && (prev[i] - g).abs() < length * 0.1
+                && t - last_pass[i] > 1.0
+            {
                 passes.push((t, player.speed - car.speed, (player.x - car.x).abs()));
+                last_pass[i] = t;
             }
             prev[i] = g;
         }
@@ -188,8 +199,15 @@ fn main() {
     }
 
     println!("\n  WHAT TO LOOK FOR");
-    println!("    · roughly one pass per car per lap — many fewer means traffic is");
-    println!("      too fast to catch, many more means it is parked");
+    println!("    · ~12 passes a lap with 5 cars and recycling at 0.33 laps. That");
+    println!("      number is DERIVED, not a preference: a car is recycled after the");
+    println!("      player travels 0.33 laps (~30s), reappears ~1.5 draw distances");
+    println!("      ahead and is re-passed ~7s later, so each car cycles about every");
+    println!("      36s — 2.5 passes per car per lap, 12 across the field.");
+    println!("      ⚠️ An earlier version of this note said 'one pass per car per");
+    println!("      lap'. That described a FIXED FIELD and was written before");
+    println!("      recycling existed; against a stream it is simply the wrong bar.");
+    println!("      If you change RECYCLE_BEHIND_LAPS, redo this arithmetic.");
     println!("    · passes on the same line are the ones that become crashes once");
     println!("      collision lands; they should exist, but not be most of them");
     println!("    · an overtake much longer than a straight means the cruise band's");

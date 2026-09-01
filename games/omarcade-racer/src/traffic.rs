@@ -129,6 +129,25 @@ pub struct Car {
     /// How many times this car has been recycled ahead. Drives the
     /// fresh lane and cruise speed it comes back with.
     recycled: u32,
+    /// How far the player has travelled since overtaking this car, in
+    /// world units. `None` until the car has actually been passed.
+    ///
+    /// ⚠️ THIS IS WHY RECYCLING NEEDS STATE AND NOT A POSITION TEST.
+    /// On a closed loop "behind me" and "ahead of me" are THE SAME SET
+    /// of positions — a car 0.99 of a lap behind is 0.01 of a lap in
+    /// front, and both descriptions are true at once. No comparison of
+    /// two `z` values can tell them apart.
+    ///
+    /// Two attempts proved it. A signed gap unwrapped onto
+    /// (-length/2, length/2] gave a recycle window only 0.33..0.50 of a
+    /// lap wide — everything past halfway read as "ahead" and was never
+    /// recycled, which Brian found by driving: pass the field, then see
+    /// nothing for a lap and a half. Switching to distance-ahead closed
+    /// that hole and opened the opposite one, recycling cars that were
+    /// genuinely in front and about to be reached: zero overtakes.
+    ///
+    /// Being overtaken is an EVENT, so it is recorded when it happens.
+    since_passed: Option<f32>,
 }
 
 impl Car {
@@ -187,6 +206,10 @@ impl Car {
 #[derive(Debug, Clone, Default)]
 pub struct Field {
     pub cars: Vec<Car>,
+    /// Where the player was on the previous `recycle` call, so the
+    /// distance they have travelled can be accumulated. `None` before
+    /// the first call.
+    last_player_z: Option<f32>,
 }
 
 impl Field {
@@ -235,11 +258,15 @@ impl Field {
                     cruise,
                     lane,
                     recycled: 0,
+                    since_passed: None,
                 }
             })
             .collect();
 
-        Field { cars }
+        Field {
+            cars,
+            last_player_z: None,
+        }
     }
 
     /// Drive every car one step.
@@ -302,37 +329,83 @@ impl Field {
         let visible = road.draw_distance() as f32 * road.segment_length();
         let length = road.length();
 
+        // How far the player moved since the last call, unwrapped. This
+        // is what "distance since the pass" accumulates.
+        let step = match self.last_player_z {
+            Some(prev) => {
+                let d = (player_z - prev).rem_euclid(length);
+                // A backwards or teleporting player (a reset, a lap
+                // rollover on a stalled frame) contributes nothing
+                // rather than a spurious near-full-lap step.
+                if d > length / 2.0 {
+                    0.0
+                } else {
+                    d
+                }
+            }
+            None => 0.0,
+        };
+        self.last_player_z = Some(player_z);
+
         for (i, car) in self.cars.iter_mut().enumerate() {
-            // Signed gap to the player, unwrapped onto (-length/2, length/2].
-            let mut gap = car.z - player_z;
-            while gap > length / 2.0 {
-                gap -= length;
+            // Distance from the player forward to this car.
+            let ahead = (car.z - player_z).rem_euclid(length);
+
+            match car.since_passed {
+                None => {
+                    // ⚠️ A PASS IS A SIGN CHANGE, DETECTED PER FRAME, and
+                    // it must be measured over the SMALL step the player
+                    // actually moved — not inferred from a position.
+                    //
+                    // The car was in front last frame and is behind now.
+                    // In "distance ahead" terms that is a value which was
+                    // small and has wrapped to near a full lap, and the
+                    // only honest tolerance is how far the player moved
+                    // this frame. Anything looser fires on cars that were
+                    // never passed; anything based on a fixed fraction of
+                    // the lap fires every time round.
+                    let was_ahead = (car.z - (player_z - step)).rem_euclid(length);
+                    if was_ahead <= step && ahead > length / 2.0 {
+                        car.since_passed = Some(0.0);
+                    }
+                }
+                Some(travelled) => {
+                    let travelled = travelled + step;
+                    if travelled < length * RECYCLE_BEHIND_LAPS {
+                        car.since_passed = Some(travelled);
+                        continue;
+                    }
+
+                    car.since_passed = None;
+                    car.recycled = car.recycled.wrapping_add(1);
+
+                    // ⚠️ VARY BY THE CAR AS WELL AS BY THE COUNT, or the
+                    // field COLLAPSES INTO ONE CLUMP. Cars are passed at
+                    // similar times, so they are recycled a similar
+                    // number of times; keying the fresh character off
+                    // that count alone gave every car the same cruise
+                    // (measured: all five at 62%) and every car the same
+                    // reappearance point, so they came back as a single
+                    // block that arrives together and is passed together.
+                    // Seeding with the car's own index breaks the tie.
+                    let n = car.recycled as f32 + i as f32 * 0.37;
+                    let t = ((n * 0.618_034) % 1.0).abs();
+
+                    // Stagger where they reappear, too. Landing every car
+                    // on exactly the horizon stacks them nose to tail
+                    // even when their speeds differ.
+                    let spread = 1.0 + (i as f32 * 0.23 + t * 0.4);
+                    car.z = road.wrap(player_z + visible * RECYCLE_AHEAD * spread);
+
+                    car.cruise = CRUISE_MIN + (CRUISE_MAX - CRUISE_MIN) * t;
+                    let side = if (car.recycled as usize + i) % 2 == 0 {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    car.lane = side * MAX_LANE * (0.35 + 0.65 * t);
+                }
             }
-            while gap < -length / 2.0 {
-                gap += length;
-            }
-
-            if gap > -length * RECYCLE_BEHIND_LAPS {
-                continue;
-            }
-
-            car.z = road.wrap(player_z + visible * RECYCLE_AHEAD);
-            car.speed = 0.0_f32.max(car.speed);
-
-            // A fresh character, walked deterministically so a course
-            // stays learnable: same lap, same traffic. `recycled` counts
-            // up per car so the sequence does not repeat immediately.
-            car.recycled = car.recycled.wrapping_add(1);
-            let n = car.recycled as f32;
-            let t = ((n * 0.618_034) % 1.0).abs();
-
-            car.cruise = CRUISE_MIN + (CRUISE_MAX - CRUISE_MIN) * t;
-            let side = if (car.recycled as usize + i) % 2 == 0 {
-                -1.0
-            } else {
-                1.0
-            };
-            car.lane = side * MAX_LANE * (0.35 + 0.65 * t);
         }
     }
 
@@ -581,28 +654,47 @@ mod tests {
     }
 
     /// Recycling must not fire on a car the player has merely passed.
+    ///
+    /// ⚠️ THE FIRST VERSION OF THIS TEST STOPPED GUARDING ANYTHING when
+    /// recycling moved from a position check to a pass event: it placed
+    /// a car behind the player by fiat, and a car that was never
+    /// overtaken is never a recycle candidate, so it passed for the
+    /// wrong reason. Mutation testing found it — removing the 0.33-lap
+    /// wait entirely left the whole suite green.
+    ///
+    /// This drives a real pass and then asserts the car is NOT snatched
+    /// back immediately: the player must cover the design's distance
+    /// first, or traffic pops back in front the instant it is overtaken.
     #[test]
     fn a_freshly_passed_car_is_left_alone() {
         let (road, tuning) = course();
-        let _ = tuning;
-        let visible = road.draw_distance() as f32 * road.segment_length();
-        let mut field = Field::grid(&road, 3);
+        let length = road.length();
+        let mut field = Field::grid(&road, 1);
 
-        let player_z = road.wrap(visible * 5.0);
-        // Just behind the player — passed a moment ago. Expressed in
-        // VISIBLE ROADS because that is what "just passed" means, and it
-        // is far inside the lap-fraction recycle threshold.
-        for car in &mut field.cars {
-            car.z = road.wrap(player_z - visible * 0.3);
+        let mut player = Drive::new();
+        player.z = road.wrap(length * 0.25);
+        player.speed = tuning.top_speed;
+        field.cars[0].z = road.wrap(player.z + road.segment_length());
+        field.cars[0].speed = tuning.top_speed * CRUISE_MIN;
+
+        let dt = 1.0 / 60.0;
+        let start_player_z = player.z;
+
+        // Drive only a tenth of a lap past the pass — well short of the
+        // 0.33 the design promises.
+        while (player.z - start_player_z).rem_euclid(length) < length * 0.10 {
+            player.z = road.wrap(player.z + player.speed * dt);
+            field.advance(dt, &road, &tuning);
+            field.recycle(player.z, &road);
+
+            assert_eq!(
+                field.cars[0].recycled, 0,
+                "a car was recycled after only {:.3} of a lap, short of the \
+                 {RECYCLE_BEHIND_LAPS} the design promises — traffic will pop \
+                 back in front the moment it is passed",
+                (player.z - start_player_z).rem_euclid(length) / length,
+            );
         }
-        let before: Vec<f32> = field.cars.iter().map(|c| c.z).collect();
-        field.recycle(player_z, &road);
-        let after: Vec<f32> = field.cars.iter().map(|c| c.z).collect();
-
-        assert_eq!(
-            before, after,
-            "a car was teleported back in front moments after being passed"
-        );
     }
 
     /// `advance` must stay blind even though `recycle` is not.
@@ -634,6 +726,106 @@ mod tests {
                 "advance() jumped a car {moved:.0} units — recycling leaked into it"
             );
         }
+    }
+
+    /// Sweep the whole loop: no position anywhere on the course may
+    /// produce a recycle that lands a car unavoidably close.
+    ///
+    /// ⚠️ THE SINGLE-POSITION TEST WAS NOT ENOUGH. This mechanism is a
+    /// wrap-around calculation, and wrap-around bugs live at the
+    /// boundaries — Brian drove the first version and found cars that
+    /// were never recycled at all, because the old signed-gap check had
+    /// a window only 0.33..0.50 of a lap wide and anything past halfway
+    /// round read as "ahead". A test that checks one placement cannot
+    /// see a hole in the OTHER 83% of the loop. Sweep it.
+    #[test]
+    fn no_position_on_the_loop_recycles_a_car_into_the_players_lap() {
+        const REACTION_SECONDS: f32 = 1.5;
+
+        let (road, tuning) = course();
+        let length = road.length();
+        let closing = tuning.top_speed * (1.0 - CRUISE_MIN);
+        let needed = closing * REACTION_SECONDS;
+
+        // Every hundredth of the loop, at every hundredth of an offset.
+        for p in 0..100 {
+            let player_z = road.wrap(length * p as f32 / 100.0);
+            for c in 0..100 {
+                let mut field = Field::grid(&road, 1);
+                field.cars[0].z = road.wrap(player_z + length * c as f32 / 100.0);
+                let before = field.cars[0].z;
+
+                field.recycle(player_z, &road);
+                let after = field.cars[0].z;
+
+                if (after - before).abs() < 1.0 {
+                    continue; // not recycled
+                }
+
+                let ahead = (after - player_z).rem_euclid(length);
+                assert!(
+                    ahead >= needed,
+                    "player at {p}% of the loop, car at +{c}%: recycled to \
+                     {ahead:.0} units ahead, inside the {needed:.0} that \
+                     {REACTION_SECONDS}s of reaction needs"
+                );
+            }
+        }
+    }
+
+    /// Every car must eventually come back.
+    ///
+    /// ⚠️ THE PASS IS DRIVEN, NOT TELEPORTED. Recycling is event-based:
+    /// a car becomes a candidate only once the player has actually
+    /// overtaken it, so a fixture that drops a car behind by fiat has
+    /// never been passed and correctly is not recycled. The earlier
+    /// version of this test did exactly that and had to be rewritten
+    /// when the design moved from a position test to a pass event —
+    /// which is the honest signal that the two are different mechanisms,
+    /// not the same one spelled differently.
+    ///
+    /// This drives a player past a car and then keeps driving, and
+    /// asserts the car comes back out in front within the distance the
+    /// design promises.
+    #[test]
+    fn a_car_that_falls_behind_is_always_eventually_recycled() {
+        let (road, tuning) = course();
+        let length = road.length();
+        let mut field = Field::grid(&road, 1);
+
+        // Put the car just in front of a player who is about to pass it.
+        let mut player = Drive::new();
+        player.z = road.wrap(length * 0.25);
+        player.speed = tuning.top_speed;
+        field.cars[0].z = road.wrap(player.z + road.segment_length());
+        field.cars[0].speed = tuning.top_speed * CRUISE_MIN;
+
+        let start_z = field.cars[0].z;
+        let dt = 1.0 / 60.0;
+
+        // Drive well past the recycle threshold.
+        let mut recycled = false;
+        for _ in 0..(120.0 / dt) as usize {
+            player.z = road.wrap(player.z + player.speed * dt);
+            field.advance(dt, &road, &tuning);
+            field.recycle(player.z, &road);
+
+            // A recycle is a jump: the car moves much further in one
+            // step than it could have driven.
+            if (field.cars[0].z - start_z).abs() > road.segment_length()
+                && field.cars[0].recycled > 0
+            {
+                recycled = true;
+                break;
+            }
+        }
+
+        assert!(
+            recycled,
+            "a car the player drove past was never recycled — it will only \
+             be seen again by lapping it, which is the bug Brian found by \
+             driving"
+        );
     }
 
     #[test]

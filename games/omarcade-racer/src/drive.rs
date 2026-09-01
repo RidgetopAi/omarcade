@@ -267,6 +267,17 @@ impl Surface {
     }
 }
 
+/// How steering authority grows with speed: `authority^HANDS`.
+///
+/// The centrifugal push grows one power faster, `authority^(HANDS + 1)`,
+/// so the push-to-steering ratio is always `curve * authority` and the
+/// corner balance does not depend on this number at all — see
+/// [`Drive::update`]. What it sets is how quickly the car crosses the
+/// road at LOW speed: 1.0 is "hands scale with speed", 0.5 is "hands
+/// scale with the square root of speed". Chosen by driving, and the
+/// only thing it may change is recovery at low speed.
+pub const HANDS: f32 = 0.5;
+
 /// How far past the verge the car may stray before it is off the road.
 ///
 /// Not zero, because clamping exactly at the verge means the car can never
@@ -362,27 +373,40 @@ impl Drive {
         } else {
             0.0
         };
-        self.x += steer * tuning.steer_rate * authority * dt;
 
-        // Centrifugal push: a bend throws the car toward its outside. This
-        // is what makes a corner something to *drive* rather than
-        // something to watch go by, and it is why steering into a bend at
-        // speed is not free.
+        // ⚠️ THE RATIO IS LOAD-BEARING; THE EXPONENTS ARE FEEL.
         //
-        // ⚠️ THE SQUARE IS LOAD-BEARING. Push goes as authority², steering
-        // as authority, and that asymmetry is the entire reason braking
-        // helps. Halve your speed and the push falls to a quarter while
-        // your steering only falls to a half — so slowing buys back twice
-        // the grip it costs you in hands. Make both linear and the ratio
-        // is constant at every speed: a bend you cannot hold at full
-        // throttle is equally unholdable at walking pace, the brake stops
-        // being an answer, and the only strategy left is to never go fast.
-        // (It is also the physics: centrifugal force goes as v².)
+        // Steering moves the car at `hands = steer_rate * authority^HANDS`
+        // and the bend pushes it back at `push = centrifugal * curve *
+        // authority^(HANDS + 1)`. What decides whether a corner can be
+        // held is push divided by hands, and that is `curve * authority`
+        // whatever HANDS is: halve your speed and the push falls by half
+        // relative to your steering, so slowing buys grip. Make the two
+        // exponents equal and the ratio is constant at every speed — a
+        // bend you cannot hold at full throttle is equally unholdable at
+        // walking pace, the brake stops being an answer, and the only
+        // strategy left is to never go fast. The exponents must differ by
+        // exactly one, and every derivation in this file and in `pace`
+        // (`holdable = steer_rate / (curve * centrifugal)`) assumes so.
+        //
+        // HANDS itself is how quickly the car moves ACROSS the road at
+        // low speed, and that is a feel question, settled by driving:
+        // with HANDS = 1 a car on the grass at 45% speed in the Hard bend
+        // never got back onto the tarmac, and one that braked never got
+        // back on any bend past 0.74 — Brian: "you slow down and you
+        // still can't turn much to get back on track". At 0.5 the hands
+        // at 45% speed are 0.67 of full rather than 0.45, the same bend
+        // is recovered in under a second, and NOTHING CHANGES AT FULL
+        // SPEED, where both exponents give 1.0. A real car turns sharper
+        // per second at low speed than a linear rule allows, so this is
+        // also the less wrong model.
         //
         // NOT segment_at().curve — that is the renderer's raw authoring
         // number. See Road::curve_at.
+        let hands = authority.powf(HANDS);
+        self.x += steer * tuning.steer_rate * hands * dt;
         let curve = road.curve_at(self.z);
-        self.x -= curve * authority * authority * tuning.centrifugal * dt;
+        self.x -= curve * hands * authority * tuning.centrifugal * dt;
 
         self.x = self.x.clamp(-MAX_STRAY, MAX_STRAY);
     }
@@ -698,6 +722,63 @@ mod tests {
         );
     }
 
+    /// A car on the grass at 45% speed in the Hard bend, throttle held,
+    /// full lock inward, is back on the tarmac inside a second.
+    ///
+    /// THE BUG THIS EXISTS FOR: with hands linear in speed it NEVER got
+    /// back — the push at 45% was 81% of the steering on that bend and
+    /// the grass cap kept the speed there. Brian: "you slow down and you
+    /// still can't turn much to get back on track". The grass entry is
+    /// the OUTSIDE of the bend, which is where a car that ran wide is.
+    #[test]
+    fn a_car_on_the_grass_in_a_hard_bend_can_get_back() {
+        let road = Road::new(vec![Segment::curving(90.0); 400], 200.0, 2200.0);
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let curve = road.curve_at(0.0);
+        assert!(curve.abs() > 1.2, "fixture must be a hard bend, got {curve}");
+        // Positive curve pushes toward negative x, so the outside is -x.
+        let mut d = Drive { z: 0.0, x: -1.15, speed: tuning.top_speed * 0.45 };
+        let dt = 1.0 / 120.0;
+        let mut t = 0.0;
+        while d.surface() != Surface::Road && t < 5.0 {
+            d.update(dt, 1.0, 0.0, 1.0, &road, &tuning);
+            t += dt;
+        }
+        assert!(t < 1.0, "took {t:.2}s to get back onto the road (never, if 5.0)");
+    }
+
+    /// Slow hands must not make corners easier: the holdable speed on a
+    /// bend is the same whatever HANDS is, because the push scales one
+    /// power faster. Found by search, so it cannot inherit a formula.
+    #[test]
+    fn the_corner_balance_does_not_depend_on_hands() {
+        let road = Road::new(vec![Segment::curving(90.0); 400], 200.0, 2200.0);
+        let tuning = Tuning::from_corner(&road, 1.5);
+        let curve = road.curve_at(0.0).abs();
+        let predicted = tuning.steer_rate / (curve * tuning.centrifugal);
+        // The slowest speed that still leaves the road within a long
+        // window, searched downward from top speed.
+        let dt = 1.0 / 120.0;
+        let mut frac = 1.0f32;
+        let found = loop {
+            let target = tuning.top_speed * frac;
+            let mut d = Drive::new();
+            let mut left = false;
+            for _ in 0..(40.0 / dt) as usize {
+                let steer = (-d.x * 3.0).clamp(-1.0, 1.0);
+                let (th, br) = if d.speed > target { (0.0, 1.0) } else { (1.0, 0.0) };
+                d.update(dt, th, br, steer, &road, &tuning);
+                if d.surface() != Surface::Road { left = true; break; }
+            }
+            if !left || frac <= 0.05 { break frac; }
+            frac -= 0.01;
+        };
+        assert!(
+            (found - predicted).abs() <= 0.02,
+            "holdable by search {found:.2}, by the ratio {predicted:.2}: HANDS leaked into the balance",
+        );
+    }
+
     /// `centrifugal` is SOLVED, not chosen: ask for a limit bend and the
     /// limit bend is what you get back.
     ///
@@ -727,7 +808,7 @@ mod tests {
     /// normalised `curve_at`, producing a push of 81 half-widths per
     /// second against 1.6 of steering, and the car crossed the whole road
     /// in 25ms. A test that BRAKES cannot catch that, because the push
-    /// scales with authority² and a braking car has almost none; it
+    /// scales one power of speed faster than the hands and a braking car has almost none; it
     /// passes against the bug. Only a car at full speed, on a bend that
     /// must be holdable, fails when the units are wrong. Verified by
     /// re-introducing the bug. (L015, and L022 rule 3: two quantities
@@ -766,8 +847,8 @@ mod tests {
     /// The pair above says a hard bend is unholdable; without this one
     /// that is merely a bend nobody can take, which is not a skill. What
     /// makes it a skill is that slowing down works — and it works only
-    /// because the push goes as authority² while steering goes as
-    /// authority.
+    /// because the push goes one power of speed faster than the steering
+    /// does.
     #[test]
     fn braking_gets_you_through_a_bend_you_cannot_hold() {
         let road = bent_to(BRAKE_BEND * 1.5);
@@ -1139,7 +1220,7 @@ mod tests {
     /// meant to be driven.
     ///
     /// ⚠️ AND THE GUARD MOVED, because braking DISSOLVES it. The push
-    /// goes as authority², so a braking car drives authority toward zero
+    /// goes one power of speed faster than the steering, so a braking car drives it toward zero
     /// and the push vanishes no matter how wrong its units are — a
     /// braking test passes happily against the raw-curve bug. Verified by
     /// re-introducing it. The units guard therefore lives in

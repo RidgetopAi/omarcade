@@ -124,6 +124,40 @@ pub fn demo_track() -> Road {
     Road::new(segs, 200.0, 2200.0)
 }
 
+/// How much slower than perspective a rival sprite shrinks with distance.
+///
+/// 1.0 is honest perspective: a car at ten times the player's probe
+/// distance draws a tenth the size. And measured, that is unplayable at
+/// this geometry — a car in your lane one second before contact drew 8px
+/// tall against the player's 233, and 27px a quarter second out. The
+/// projection is hyperbolic and the contact range is 1.6 segments, so
+/// everything a person could react to sits in the last few percent of the
+/// road, at the horizon.
+///
+/// This is the arcade lie Pole Position told: distant cars are drawn
+/// larger than they should be, so a car a second out reads as a car. At
+/// 0.6 that same car draws 31px, and 64px a quarter second out. The
+/// road is not touched — only the cars — which is why a far car sits
+/// wide on a narrow road, exactly as it did in the original.
+///
+/// ⚠️ THE HITBOX IS THE ART, so `collide::CONTACT_SEGMENTS` is measured
+/// through THIS rule (`probe_contact` calls `rival_scale`). Change the
+/// exponent and re-run the probe.
+pub const RIVAL_SCALE_EXPONENT: f32 = 0.6;
+
+/// The scale a rival (or anything car-sized on the road) is drawn at.
+///
+/// `true_scale` is what the projection says; `player_scale` is the size
+/// the player is drawn at, which is the anchor: at the player's own
+/// distance the two agree, and further out the rival shrinks by
+/// `RIVAL_SCALE_EXPONENT` powers of what perspective would do.
+pub fn rival_scale(true_scale: f32, player_scale: f32) -> f32 {
+    if player_scale <= 0.0 || true_scale <= 0.0 {
+        return true_scale.max(0.0);
+    }
+    player_scale * (true_scale / player_scale).powf(RIVAL_SCALE_EXPONENT)
+}
+
 /// `draw_road` for an arbitrary sub-rectangle, driven by a live car.
 ///
 /// The full-screen scene is the special case of this; keeping one
@@ -372,6 +406,18 @@ pub fn draw_road_into(
         );
     }
 
+    // Scale from the road at a FIXED distance ahead, never from
+    // `bands.first()`: the nearest band changes identity as the camera
+    // crosses a segment boundary — whole segment one frame, sliver the
+    // next — so anything sized from it pulses. A fixed probe distance is
+    // continuous, which is what a sprite scale has to be. This is the
+    // player's scale, and the anchor every rival is compressed toward.
+    let probe = road
+        .project(&camera, car.z, x_offset, car.z + road.segment_length(), fw, fh)
+        .map(|p| p.half_width)
+        .unwrap_or(fw * 0.4);
+    let scale = probe / CAR_ART_PIXELS_PER_HALF_WIDTH;
+
     // Rivals, placed by track position and lane, drawn far-to-near so a
     // nearer car occludes a further one.
     let mut traffic: Vec<&(f32, f32, usize)> = rivals.iter().collect();
@@ -383,7 +429,7 @@ pub fn draw_road_into(
         if p.y <= horizon + 1.0 || p.y > fh + 200.0 {
             continue;
         }
-        let s = p.half_width / CAR_ART_PIXELS_PER_HALF_WIDTH;
+        let s = rival_scale(p.half_width / CAR_ART_PIXELS_PER_HALF_WIDTH, scale);
         let haze = (p.distance / (road.draw_distance() as f32 * road.segment_length()))
             .clamp(0.0, 1.0)
             * 0.8;
@@ -399,17 +445,7 @@ pub fn draw_road_into(
         );
     }
 
-    // Scale from the road at a FIXED distance ahead, never from
-    // `bands.first()`: the nearest band changes identity as the camera
-    // crosses a segment boundary — whole segment one frame, sliver the
-    // next — so anything sized from it pulses. A fixed probe distance is
-    // continuous, which is what a sprite scale has to be.
     let pose = Pose::cornering(car.cornering(road, tuning));
-    let probe = road
-        .project(&camera, car.z, x_offset, car.z + road.segment_length(), fw, fh)
-        .map(|p| p.half_width)
-        .unwrap_or(fw * 0.4);
-    let scale = probe / CAR_ART_PIXELS_PER_HALF_WIDTH;
 
     // The player sits where the camera is — dead centre — because the
     // camera IS the car. Steering moves the world, not the sprite.
@@ -455,9 +491,16 @@ pub fn draw_explosion_into(
         return;
     };
 
-    // The same rule a car is sized by — a fireball replaces a car, and
+    // The same rule a car is sized by, compression included — a fireball
+    // replaces a car and must be the size that car was drawn at, or the
+    // fire is a different size from the thing it consumed.
     // `Explosion::draw` applies its own growth on top of this.
-    let base = p.half_width / CAR_ART_PIXELS_PER_HALF_WIDTH;
+    let player_scale = road
+        .project(&camera, car.z, x_offset, car.z + road.segment_length(), fw, fh)
+        .map(|p| p.half_width)
+        .unwrap_or(fw * 0.4)
+        / CAR_ART_PIXELS_PER_HALF_WIDTH;
+    let base = rival_scale(p.half_width / CAR_ART_PIXELS_PER_HALF_WIDTH, player_scale);
 
     // The fireball sits at the crash's lateral position, which is where
     // the car it consumed was, not where the player now is.
@@ -471,4 +514,32 @@ pub fn draw_explosion_into(
         base,
         theme.darker_background,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The compression is anchored at the player: at the player's own
+    /// scale a rival draws at exactly that scale, and further out it is
+    /// larger than perspective, never smaller, and still shrinking.
+    #[test]
+    fn rival_scale_is_anchored_at_the_player_and_compresses_beyond_it() {
+        let player = 5.8;
+        assert!((rival_scale(player, player) - player).abs() < 1e-5);
+        let mut last = player;
+        for frac in [0.5f32, 0.3, 0.12, 0.05, 0.01] {
+            let honest = player * frac;
+            let drawn = rival_scale(honest, player);
+            assert!(drawn > honest, "at {frac} the rival drew smaller than perspective");
+            assert!(drawn < last, "at {frac} the rival stopped shrinking");
+            last = drawn;
+        }
+        // The number the exponent was chosen for: a car at 12% of the
+        // player's size (one second out at the old closing speed) draws
+        // at roughly a quarter to a third.
+        let at_12 = rival_scale(player * 0.12, player) / player;
+        assert!((0.25..0.35).contains(&at_12), "12% -> {at_12:.2}");
+        assert_eq!(rival_scale(0.0, player), 0.0);
+    }
 }

@@ -1197,13 +1197,23 @@ fn draw_crash_scene(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
 
     // A car directly ahead, in the player's lane — the collision the
     // probe reports as a "same line" pass.
+    //
+    // ⚠️ INSIDE THE CONTACT RANGE, in segments, read from collide rather
+    // than typed. This scene was written when contact was 1729 units and
+    // placed the car two segments ahead with a one-segment sweep; once
+    // contact was measured at 1.6 segments that sweep stopped short of
+    // the car's band, `check` returned None, and the scene rendered a
+    // BLACK FRAME for a session without anyone noticing — a picture that
+    // judges the wiring must not be able to fail silently, so it panics
+    // now instead.
     let mut field = traffic::Field::grid(&road, 1);
-    field.cars[0].z = road.wrap(car.z + road.segment_length() * 2.0);
+    let sweep = road.segment_length();
+    field.cars[0].z = road.wrap(car.z + collide::contact_distance(&road) * 0.5);
     field.cars[0].x = car.x;
 
     // Swept: the scene places the car just ahead, so sweep from a point
     // behind it to represent the frame in which contact happened.
-    let hit = collide::check(&car, road.wrap(car.z - road.segment_length()), &field, &road);
+    let hit = collide::check(&car, road.wrap(car.z - sweep), &field, &road);
 
     let cols = 3u32;
     let rows = 2u32;
@@ -1219,7 +1229,9 @@ fn draw_crash_scene(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
         None => println!("    ⚠️  NO CONTACT DETECTED — the wiring is wrong, not the art"),
     }
 
-    let Some(hit) = hit else { return };
+    let Some(hit) = hit else {
+        panic!("the crash scene found no contact: the fixture is outside collide's range");
+    };
 
     for i in 0..(cols * rows) {
         let ox = (i % cols) * pw;

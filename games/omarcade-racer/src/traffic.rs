@@ -27,11 +27,17 @@ use crate::road::Road;
 /// The slowest and fastest a traffic car cruises, as a fraction of the
 /// player's top speed.
 ///
-/// ⚠️ A BAND, NOT A NUMBER, and both ends are load-bearing. Above about
-/// 0.75 an overtake takes longer than the straights are long, so passing
-/// becomes impossible anywhere but a corner. Below about 0.55 the
-/// traffic reads as parked cars rather than as a race, and the plan's
-/// points-per-car-passed scoring becomes automatic.
+/// ⚠️ A BAND, NOT A NUMBER, and both ends are load-bearing. Too high and
+/// an overtake takes longer than the straights are long, so passing
+/// becomes impossible anywhere but a corner. Too low and the traffic
+/// reads as parked cars rather than as a race, the plan's
+/// points-per-car-passed scoring becomes automatic — and, measured, you
+/// cannot see them coming: at 55-75% the closing speed on a straight
+/// was 7200 u/s, and a car in your lane drew EIGHT PIXELS tall one
+/// second before contact. In a Firm bend it was off the frame edge
+/// until half a second out. Brian: "not close so fast, and that means
+/// speeding opponents up". The band moved up by ten points for that;
+/// `probe_traffic` reports what it did to overtakes.
 ///
 /// Varied per car rather than shared, so the field SPREADS over a lap
 /// and cars close on each other into groups. A single speed makes the
@@ -39,8 +45,8 @@ use crate::road::Road;
 ///
 /// Expressed against `tuning.top_speed` rather than in world units so a
 /// retune of the car carries the traffic with it (L015).
-pub const CRUISE_MIN: f32 = 0.55;
-pub const CRUISE_MAX: f32 = 0.75;
+pub const CRUISE_MIN: f32 = 0.65;
+pub const CRUISE_MAX: f32 = 0.85;
 
 /// How much of the road's half-width the traffic will use.
 ///
@@ -60,6 +66,15 @@ pub const MAX_LANE: f32 = 0.72;
 /// what makes an overtake a judgement: the gap you aim at is still moving
 /// when you get there.
 pub const LANE_DRIFT_RATE: f32 = 0.18;
+
+/// How far inside the full-lock corner limit the traffic drives, as a
+/// fraction of that limit.
+///
+/// Full lock is the theoretical edge: a car cornering at exactly the
+/// limit is holding the wheel hard over with nothing left, and any curve
+/// at all in the next segment puts it on the grass. Public so a probe
+/// can compute a car's corner speed without a copy of this number.
+pub const CORNER_MARGIN: f32 = 0.85;
 
 
 /// How far behind the player a car must fall before it is recycled
@@ -96,7 +111,7 @@ pub const RECYCLE_BEHIND_LAPS: f32 = 0.33;
 /// it lands right before collision does.
 ///
 /// The worst case is closing on the SLOWEST traffic: at a cruise floor
-/// of 0.55 the closing speed is 0.45 of top speed, 7200 u/s on the
+/// of 0.65 the closing speed is 0.35 of top speed, 5600 u/s on the
 /// shipped tuning. The game already has a definition of "enough time to
 /// react" — `REACTION_SECONDS`, 1.5, the same constant
 /// `Tuning::from_corner` derives top speed from — and 1.5s at that
@@ -184,7 +199,6 @@ impl Car {
 
         // The full-lock limit, then backed off so the car is not riding
         // the edge of its own grip through every bend.
-        const CORNER_MARGIN: f32 = 0.85;
         let limit = tuning.top_speed * tuning.steer_rate / (curve * tuning.centrifugal);
 
         cruise.min(limit * CORNER_MARGIN)
@@ -557,11 +571,15 @@ mod tests {
     /// moments and the gaps wobble by a hair even when every car runs at
     /// an identical cruise. Any non-zero difference satisfied it.
     ///
-    /// MEASURED instead. Over one simulated minute on the shipped
-    /// course, the standard deviation of the gaps between cars moves to
-    /// 0.68x its starting value with varied cruise speeds, and to
-    /// 1.000x with uniform ones. The threshold sits between two numbers
-    /// that were measured, not guessed at.
+    /// MEASURED instead, and BOTH WAYS IN THE SAME TEST so the bar moves
+    /// with the band. Over one simulated minute on the shipped course,
+    /// the standard deviation of the gaps between cars moves to 0.93x
+    /// its starting value with the 65-85% band (0.68x under the old
+    /// 55-75% one — the corners now cap the fast cars to the slow cars'
+    /// pace for part of the lap, so the field equalises less), and to
+    /// 1.000x with uniform cruise speeds. On a straight the same field
+    /// spreads 27x. The guard is the GAP between varied and uniform, not
+    /// a number typed against one band.
     ///
     /// It CONVERGES rather than diverging because the starting grid is
     /// spaced quadratically and the faster far cars close those wide
@@ -580,17 +598,30 @@ mod tests {
             (gaps.iter().map(|g| (g - mean).powi(2)).sum::<f32>() / gaps.len() as f32).sqrt()
         };
 
-        let before = spread_of(&field);
-        for _ in 0..(60.0 * 60.0) as usize {
-            field.advance(1.0 / 60.0, &road, &tuning);
+        let ratio_after_a_minute = |mut field: Field| -> f32 {
+            let before = spread_of(&field);
+            for _ in 0..(60.0 * 60.0) as usize {
+                field.advance(1.0 / 60.0, &road, &tuning);
+            }
+            spread_of(&field) / before.max(1.0)
+        };
+
+        let varied = ratio_after_a_minute(field.clone());
+        let mut same = field;
+        for car in same.cars.iter_mut() {
+            car.cruise = (CRUISE_MIN + CRUISE_MAX) / 2.0;
         }
-        let after = spread_of(&field);
-        let ratio = after / before.max(1.0);
+        let uniform = ratio_after_a_minute(same);
 
         assert!(
-            (ratio - 1.0).abs() > 0.10,
-            "the field held formation (gap spread moved {ratio:.3}x over a \
-             minute) — the cruise band is not varying across the cars"
+            (uniform - 1.0).abs() < 0.005,
+            "uniform cruise speeds should hold formation exactly, moved {uniform:.3}x"
+        );
+        assert!(
+            (varied - uniform).abs() > 0.03,
+            "the field held formation (gap spread moved {varied:.3}x over a \
+             minute, against {uniform:.3}x uniform) — the cruise band is not \
+             varying across the cars"
         );
     }
 

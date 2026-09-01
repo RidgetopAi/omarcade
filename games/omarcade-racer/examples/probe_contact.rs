@@ -28,16 +28,25 @@ mod collide;
 mod traffic;
 #[path = "../src/track.rs"]
 mod track;
+#[path = "../src/art.rs"]
+mod art;
+#[path = "../src/crash.rs"]
+mod crash;
+#[path = "../src/structures.rs"]
+mod structures;
+#[path = "../src/scenery.rs"]
+mod scenery;
+#[path = "../src/render.rs"]
+mod render;
 
 use drive::{Drive, Tuning};
 use omarcade_core::Theme;
+use render::{rival_scale, CAMERA_FILL, CAR_ART_PIXELS_PER_HALF_WIDTH};
 use road::Camera;
 use track::grand_prix;
 
-/// Mirrors `render.rs`. If these move, this probe is measuring a scene
-/// the game does not draw.
-const CAMERA_FILL: f32 = 0.85;
-const CAR_ART_PIXELS_PER_HALF_WIDTH: f32 = 70.0;
+/// The car sprite's ink, in source pixels. If the art changes, this
+/// probe is measuring a car the game does not draw.
 const CAR_INK_ROWS: f32 = 22.0;
 const CAR_INK_COLS: f32 = 44.0;
 
@@ -89,7 +98,9 @@ fn main() {
     let mut d = 4000.0f32;
     while d > 20.0 {
         if let Some(p) = road.project(&camera, player.z, 0.0, player.z + d, W, H) {
-            let scale = p.half_width / CAR_ART_PIXELS_PER_HALF_WIDTH;
+            // THE RENDERER'S RULE, compression included — the hitbox is
+            // the art as drawn, not the art as perspective would draw it.
+            let scale = rival_scale(p.half_width / CAR_ART_PIXELS_PER_HALF_WIDTH, player_scale);
             let h = CAR_INK_ROWS * scale;
             // A car ahead is drawn standing on the road at p.y.
             let bottom = p.y;
@@ -116,9 +127,9 @@ fn main() {
             println!("    The shipped threshold was 1729 units — {:.1}x too far.", 1729.0 / d);
             println!("    At 1729 units a car draws {:.0}% of the player's height.",
                      (CAR_INK_ROWS
-                        * (road.project(&camera, player.z, 0.0, player.z + 1729.0, W, H)
+                        * rival_scale(road.project(&camera, player.z, 0.0, player.z + 1729.0, W, H)
                             .map(|p| p.half_width).unwrap_or(0.0)
-                            / CAR_ART_PIXELS_PER_HALF_WIDTH))
+                            / CAR_ART_PIXELS_PER_HALF_WIDTH, player_scale))
                         / player_h * 100.0);
         }
         None => println!("\n  ⚠️  never overlapped — the projection or the anchors are wrong"),

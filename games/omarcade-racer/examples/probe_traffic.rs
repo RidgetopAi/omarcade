@@ -191,11 +191,13 @@ fn main() {
     }
 
     println!("\n  WHAT TO LOOK FOR");
-    println!("    · ~12 passes a lap with 5 cars and recycling at 0.33 laps. That");
+    println!("    · ~11 passes a lap with 5 cars and recycling at 0.33 laps. That");
     println!("      number is DERIVED, not a preference: a car is recycled after the");
-    println!("      player travels 0.33 laps (~30s), reappears ~1.5 draw distances");
-    println!("      ahead and is re-passed ~7s later, so each car cycles about every");
-    println!("      36s — 2.5 passes per car per lap, 12 across the field.");
+    println!("      player travels 0.33 laps (~29s), reappears ~1.5 draw distances");
+    println!("      ahead and is re-passed ~9s later at the 65-85% band's mean closing");
+    println!("      speed, so each car cycles about every 38s — 2.3 passes per car per");
+    println!("      lap, 11 across the field. (12 under the old 55-75% band; the band");
+    println!("      moved up so cars can be SEEN before they are hit — see probe_warning.)");
     println!("      ⚠️ An earlier version of this note said 'one pass per car per");
     println!("      lap'. That described a FIXED FIELD and was written before");
     println!("      recycling existed; against a stream it is simply the wrong bar.");

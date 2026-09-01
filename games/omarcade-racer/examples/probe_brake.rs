@@ -23,6 +23,10 @@ mod drive;
 mod art;
 #[path = "../src/scenery.rs"]
 mod scenery;
+#[path = "../src/structures.rs"]
+mod structures;
+#[path = "../src/track.rs"]
+mod track;
 #[path = "../src/render.rs"]
 mod render;
 

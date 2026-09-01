@@ -224,6 +224,62 @@ impl Sprite {
     }
 
     /// How many pixels actually draw. Transparent cells are not counted.
+    /// The bounding box of the sprite's INK: `(x0, y0, x1, y1)`,
+    /// inclusive, or `None` for a sprite with no lit pixels.
+    ///
+    /// Art is authored on a grid that is usually bigger than the drawing
+    /// on it, and the difference matters the moment something is
+    /// positioned or scaled by size. A 160-wide gantry whose ink spans 126
+    /// columns, scaled by its GRID width to span a road, draws a structure
+    /// only 79% of the road wide and floating clear of both verges. A
+    /// billboard whose posts run past the bottom of its panel, scaled by
+    /// its whole HEIGHT, comes out two thirds the intended size with posts
+    /// too short to see.
+    ///
+    /// Computed rather than authored so a redraw with different padding is
+    /// followed automatically — a hardcoded bound silently goes wrong the
+    /// first time the art changes.
+    pub fn ink_bounds(&self) -> Option<(u16, u16, u16, u16)> {
+        let first = self.pixels.first()?;
+        let mut b = (first.x, first.y, first.x, first.y);
+        for p in &self.pixels {
+            b.0 = b.0.min(p.x);
+            b.1 = b.1.min(p.y);
+            b.2 = b.2.max(p.x);
+            b.3 = b.3.max(p.y);
+        }
+        Some(b)
+    }
+
+    /// How far the ink's horizontal centre sits from the grid's, in
+    /// pixels. Zero when the padding is symmetric.
+    ///
+    /// Anything that centres this sprite on something — a road's centre
+    /// line, a lane — has to correct by this, or lopsided padding puts the
+    /// drawing off by exactly this much while the sprite looks correctly
+    /// placed.
+    pub fn ink_centre_bias(&self) -> f32 {
+        match self.ink_bounds() {
+            Some((x0, _, x1, _)) => {
+                (x0 as f32 + x1 as f32 + 1.0) / 2.0 - self.width as f32 / 2.0
+            }
+            None => 0.0,
+        }
+    }
+
+    /// How many blank rows sit below the ink.
+    ///
+    /// [`Sprite::draw_ground`] stands a sprite on its grid's bottom edge,
+    /// so trailing blank rows hang the drawing in the air by exactly this
+    /// many scaled pixels. Adding this back to the ground line is what
+    /// puts the object ON the ground rather than above it.
+    pub fn ink_foot_gap(&self) -> f32 {
+        match self.ink_bounds() {
+            Some((_, _, _, y1)) => (self.height - 1 - y1) as f32,
+            None => 0.0,
+        }
+    }
+
     pub fn ink(&self) -> usize {
         self.pixels.len()
     }

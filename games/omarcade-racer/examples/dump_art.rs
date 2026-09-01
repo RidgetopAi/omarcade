@@ -24,6 +24,10 @@ mod art;
 mod road;
 #[path = "../src/drive.rs"]
 mod drive;
+#[path = "../src/structures.rs"]
+mod structures;
+#[path = "../src/track.rs"]
+mod track;
 #[path = "../src/render.rs"]
 mod render;
 #[path = "../src/scenery.rs"]
@@ -63,9 +67,10 @@ fn main() {
             "heights" => draw_gantry_heights(&mut c, &theme),
             "structures" => draw_structures(&mut c, &art, &theme),
             "proportion" => draw_proportion(&mut c, &art, &theme),
+            "lap" => draw_lap(&mut c, &art, &theme),
             other => {
                 eprintln!(
-                    "unknown scene {other:?} — try: sheet | road | curve | lean | roll | drive | gantry | heights | structures | proportion"
+                    "unknown scene {other:?} — try: sheet | road | curve | lean | roll | drive | gantry | heights | structures | proportion | lap"
                 );
                 std::process::exit(2);
             }
@@ -985,4 +990,64 @@ fn draw_proportion(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
 
     c.fill_rect(pw as i32 - 1, 0, 2, H, theme.foreground);
     println!("\n    left: as drawn · right: cut. Same road, same distance, same car.\n");
+}
+
+/// The real course, at several points around the lap.
+///
+/// Not a debug arrangement: this renders the SHIPPED placements on the
+/// SHIPPED track through the game's own renderer, so what it shows is
+/// what is going to be driven. The `structures` scene next to it places
+/// things by hand to judge the art; this one judges the PLACEMENT.
+fn draw_lap(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
+    let road = track::grand_prix().build();
+    let tuning = Tuning::from_corner(&road, 1.5);
+    let mile = track::UNITS_PER_MILE;
+
+    // Four points chosen to show what the lap contains: the start line
+    // itself, the first pair of billboards, the back straight pair, and
+    // the approach to the Hard right.
+    // ⚠️ Stops picked in REACHES, not miles. The car sees 24,000 units —
+    // a twentieth of a mile — so "mile 0.10" and "mile 0.12" are two
+    // completely different, non-overlapping views, and a stop chosen in
+    // miles lands nowhere near what it was meant to show.
+    // ⚠️ Stops picked so a structure is NEAR, and that is a much tighter
+    // window than it sounds. The projection is hyperbolic: a thing at half
+    // the draw distance is not half the size, it is a fiftieth. At 0.5
+    // reach a billboard is three pixels of half-width. Only the nearest
+    // few percent of the visible road holds anything big enough to judge,
+    // so each stop sits just BEHIND a placement rather than a long way
+    // back from it.
+    let reach = road.draw_distance() as f32 * road.segment_length();
+    let placements = structures::shipped();
+    let stops = [
+        ("the start line", -0.05 * reach),
+        ("first billboard", placements[1].z - 0.05 * reach),
+        ("second billboard", placements[2].z - 0.05 * reach),
+        ("back straight", placements[4].z - 0.05 * reach),
+    ];
+    let _ = mile;
+
+    let pw = W / 2;
+    let ph = H / 2;
+
+    println!("\n  the shipped placements on the shipped course\n");
+
+    for (i, (label, z)) in stops.iter().enumerate() {
+        let x0 = (i as u32 % 2) * pw;
+        let y0 = (i as u32 / 2) * ph;
+
+        let mut car = Drive::new();
+        car.speed = tuning.top_speed * 0.8;
+        car.z = road.wrap(*z);
+
+        render::draw_road_into(
+            c, art, theme, &road, &tuning, &car, 0.0, &[], x0, y0, pw, ph,
+        );
+        println!("    {label:<22} mile {:.3}  (reach {:.1})", z / mile, z / reach);
+    }
+
+    c.fill_rect(pw as i32 - 1, 0, 2, H, theme.foreground);
+    c.fill_rect(0, ph as i32 - 1, W, 2, theme.foreground);
+    println!("\n    top-left start line · top-right first billboards");
+    println!("    bottom-left down the straight · bottom-right back straight pair\n");
 }

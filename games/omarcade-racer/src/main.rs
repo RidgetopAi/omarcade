@@ -15,6 +15,7 @@ mod drive;
 mod render;
 mod road;
 mod scenery;
+mod structures;
 mod track;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};

@@ -542,6 +542,14 @@ impl Art {
         }
     }
 
+    /// The rows of the billboard sprite that are the PANEL.
+    ///
+    /// Exposed as a method so placement never has to know the constant's
+    /// name, and so a redraw changes one number in one place.
+    pub fn billboard_panel_rows(&self) -> (usize, usize) {
+        BILLBOARD_PANEL_ROWS
+    }
+
     /// The rival livery for a given traffic slot.
     ///
     /// Wraps, so callers can index by lane, by car id, or by anything

@@ -18,6 +18,7 @@ use crate::art::Art;
 use crate::drive::{Drive, Tuning};
 use crate::road::{Camera, Road, Segment};
 use crate::scenery;
+use crate::structures;
 
 /// The most the grass may differ from the road in luminance.
 ///
@@ -301,6 +302,24 @@ pub fn draw_road_into(
     // — a fraction of verge screen-width, then a multiple of the road's
     // screen half-width — and both smeared into diagonal rays converging
     // on the horizon, because both shrink with distance.
+    // Structures BEFORE the props and the traffic: they are the biggest
+    // things on the track and the furthest from the camera at any given
+    // moment, so anything nearer has to be able to paint over them. A
+    // billboard drawn last would sit on top of the car passing it.
+    structures::draw(
+        c,
+        art,
+        road,
+        &camera,
+        car.z,
+        x_offset,
+        &structures::shipped(),
+        fx,
+        fy,
+        fw,
+        fh,
+    );
+
     let mut props = scenery::visible_props(road, car.z, art.prop_kinds());
     props.sort_by(|a, b| b.z.total_cmp(&a.z));
     for prop in &props {

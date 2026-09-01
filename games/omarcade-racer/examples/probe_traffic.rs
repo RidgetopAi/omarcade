@@ -19,6 +19,8 @@ mod road;
 mod drive;
 #[path = "../src/track.rs"]
 mod track;
+#[path = "../src/collide.rs"]
+mod collide;
 #[path = "../src/traffic.rs"]
 mod traffic;
 
@@ -62,6 +64,7 @@ fn main() {
     let mut player = Drive::new();
 
     println!("\n  TRAFFIC — is it passable?\n");
+
     println!(
         "  player top speed {:.0} u/s · cruise band {:.0}-{:.0} u/s ({:.0}-{:.0}%)",
         tuning.top_speed,
@@ -144,6 +147,7 @@ fn main() {
         t / (travelled / length).max(0.01),
     );
     println!("  {} overtakes", passes.len());
+
 
     if passes.is_empty() {
         println!("\n  ⚠️  NO OVERTAKES. Traffic is either too fast to catch or the");

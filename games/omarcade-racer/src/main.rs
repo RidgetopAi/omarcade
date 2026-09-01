@@ -222,6 +222,12 @@ impl Game for Racer {
             return;
         }
 
+        // Where the car was before this frame's move, for the swept
+        // collision check below. A frame at 30fps covers more ground than
+        // a car occupies, so testing only the new position steps clean
+        // over traffic.
+        let prev_z = self.car.z;
+
         self.car.update(
             dt,
             self.throttle(),
@@ -243,7 +249,7 @@ impl Game for Racer {
         // Did that step put us into anything? Checked AFTER the move,
         // so the frame the player drives into a car is the frame it
         // registers rather than the one after.
-        if let Some(hit) = collide::check(&self.car, &self.traffic, &self.road) {
+        if let Some(hit) = collide::check(&self.car, prev_z, &self.traffic, &self.road) {
             self.crash = Some(crash::Explosion::start(hit.z, hit.x));
         }
     }

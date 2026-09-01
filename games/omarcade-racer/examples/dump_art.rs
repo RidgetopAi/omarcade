@@ -1201,7 +1201,9 @@ fn draw_crash_scene(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
     field.cars[0].z = road.wrap(car.z + road.segment_length() * 2.0);
     field.cars[0].x = car.x;
 
-    let hit = collide::check(&car, &field, &road);
+    // Swept: the scene places the car just ahead, so sweep from a point
+    // behind it to represent the frame in which contact happened.
+    let hit = collide::check(&car, road.wrap(car.z - road.segment_length()), &field, &road);
 
     let cols = 3u32;
     let rows = 2u32;

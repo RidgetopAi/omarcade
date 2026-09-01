@@ -31,14 +31,28 @@ use crate::traffic::Field;
 /// racer and is a property of the art rather than a number anyone chose.
 pub const CAR_WIDTH_HALF_WIDTHS: f32 = 44.0 / 70.0;
 
-/// How long a car is, as a multiple of its own width.
+/// How far ahead a car must be before its sprite stops overlapping the
+/// player's, in SEGMENTS.
 ///
-/// The sprite is drawn from behind and has no length, so this is the one
-/// number here that cannot be read off the art. 2.5 is a single-seater's
-/// proportion — long enough that a rear-end shunt registers before the
-/// sprites interpenetrate, short enough that cars are not colliding with
-/// clear air.
-pub const CAR_LENGTH_RATIO: f32 = 2.5;
+/// ⚠️ MEASURED THROUGH THE PROJECTION, NOT DERIVED FROM THE ROAD'S WIDTH.
+/// The first version of this computed a car's length as 2.5x its width in
+/// the road's LATERAL units and got 1729 — which is 5.4x too far. Brian
+/// crashed into a car that was visibly most of the way up the road and
+/// sent a screenshot; at 1729 units a car draws 12% of the player's
+/// height, a small sprite near the horizon.
+///
+/// THE MISTAKE WAS TREATING TWO AUTHORING NUMBERS AS ONE SCALE. The
+/// road's width (2200 units) and the track's segment length (200 units)
+/// are independent — nothing ever required them to agree — so "2.5 times
+/// the car's width" is a sentence about lateral units and means nothing
+/// along z. There is no conversion between them to get right; the
+/// relationship only exists in the projection.
+///
+/// So it is measured there: `probe_contact` walks a car toward the
+/// player through the real camera and reports where the drawn sprites
+/// first touch. The answer is 1.6 segments. Re-run that probe if the
+/// camera fill, the draw distance, or the car art changes.
+pub const CONTACT_SEGMENTS: f32 = 1.6;
 
 /// What the player hit.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,14 +69,15 @@ pub struct Hit {
     pub closing: f32,
 }
 
-/// A car's length in world units, from the road's own width.
+/// The separation at which two cars are touching, in world units.
 ///
-/// Everything scales off `Road::width` so a wider or narrower course
-/// carries the cars with it rather than silently changing how much room
-/// there is to overtake.
-pub fn car_length_units(road: &Road) -> f32 {
-    let half_width_units = road.width() / 2.0;
-    CAR_WIDTH_HALF_WIDTHS * half_width_units * CAR_LENGTH_RATIO
+/// In SEGMENTS, because that is the unit the projection actually works
+/// in — the player's own sprite is sized from a probe one segment ahead
+/// (see `render.rs`), so segments are what the drawn scene is calibrated
+/// against. The road's lateral width is a different scale entirely and
+/// cannot be converted to this one.
+pub fn contact_distance(road: &Road) -> f32 {
+    CONTACT_SEGMENTS * road.segment_length()
 }
 
 /// Has the player hit a traffic car?
@@ -79,9 +94,34 @@ pub fn car_length_units(road: &Road) -> f32 {
 /// samples. This is the Breakout tunnelling bug (session 2) in a new
 /// place; if `top_speed` rises or the dt clamp loosens, that test fails
 /// and a swept check becomes necessary.
-pub fn check(player: &Drive, traffic: &Field, road: &Road) -> Option<Hit> {
+pub fn check(
+    player: &Drive,
+    prev_z: f32,
+    traffic: &Field,
+    road: &Road,
+) -> Option<Hit> {
     let length = road.length();
-    let car_len = car_length_units(road);
+    let contact = contact_distance(road);
+
+    // ⚠️ SWEPT, NOT AN OVERLAP TEST. This is the Breakout tunnelling bug
+    // (session 2) and it is REAL here, not theoretical: once the contact
+    // range was measured properly at 320 units, a single frame at 30fps
+    // covers 533 and at the clamped 15fps covers 1067. A car can sit
+    // entirely between two samples.
+    //
+    // The first version tested the player's CURRENT position only. It
+    // passed its own tunnelling guard because the threshold was 1729
+    // units — five times too large — so the bug was hidden by another
+    // bug. Fixing the threshold made the guard fail immediately, which
+    // is exactly why it was written as an assertion.
+    //
+    // The sweep is over the segment the player travelled this frame:
+    // anything whose contact band that segment crosses was hit, however
+    // briefly.
+    let travelled = (player.z - prev_z).rem_euclid(length);
+    // A wrap or a reset contributes nothing rather than a near-full-lap
+    // sweep that would collide with the entire field.
+    let travelled = if travelled > length / 2.0 { 0.0 } else { travelled };
 
     for (i, car) in traffic.cars.iter().enumerate() {
         // Lateral overlap: the sprites are drawn touching when their
@@ -90,13 +130,18 @@ pub fn check(player: &Drive, traffic: &Field, road: &Road) -> Option<Hit> {
             continue;
         }
 
-        // Longitudinal overlap, wrapped. The shortest distance around
-        // the loop either way — a car just over the start line and a
-        // player just short of it are touching, however far apart their
-        // raw z values are.
-        let d = (player.z - car.z).rem_euclid(length);
-        let separation = d.min(length - d);
-        if separation >= car_len {
+        // How far ahead of where the player STARTED this frame the car
+        // is. Everything is measured forward from there.
+        let ahead_of_start = (car.z - prev_z).rem_euclid(length);
+
+        // The car's contact band, as an interval forward from prev_z.
+        // The sweep covers [0, travelled]; the band is the car's
+        // position plus or minus the contact range.
+        let band_near = ahead_of_start - contact;
+        let band_far = ahead_of_start + contact;
+
+        // Do the swept interval and the contact band overlap?
+        if band_far < 0.0 || band_near > travelled {
             continue;
         }
 
@@ -132,29 +177,29 @@ mod tests {
     #[test]
     fn driving_into_the_back_of_a_car_is_a_hit() {
         let road = course();
-        let car_len = car_length_units(&road);
+        let contact = contact_distance(&road);
         let traffic = one_car_at(&road, 10_000.0, 0.0);
 
         let player = Drive {
-            z: road.wrap(10_000.0 - car_len * 0.5),
+            z: road.wrap(10_000.0 - contact * 0.5),
             x: 0.0,
             speed: 12_000.0,
         };
-        assert!(check(&player, &traffic, &road).is_some());
+        assert!(check(&player, road.wrap(player.z - road.segment_length()), &traffic, &road).is_some());
     }
 
     #[test]
     fn a_car_a_clear_gap_ahead_is_not_a_hit() {
         let road = course();
-        let car_len = car_length_units(&road);
+        let contact = contact_distance(&road);
         let traffic = one_car_at(&road, 10_000.0, 0.0);
 
         let player = Drive {
-            z: road.wrap(10_000.0 - car_len * 1.5),
+            z: road.wrap(10_000.0 - contact * 1.5),
             x: 0.0,
             speed: 12_000.0,
         };
-        assert!(check(&player, &traffic, &road).is_none());
+        assert!(check(&player, road.wrap(player.z - road.segment_length()), &traffic, &road).is_none());
     }
 
     #[test]
@@ -171,7 +216,7 @@ mod tests {
             speed: 12_000.0,
         };
         assert!(
-            check(&player, &traffic, &road).is_none(),
+            check(&player, road.wrap(player.z - road.segment_length()), &traffic, &road).is_none(),
             "a pass with {:.2} half-widths of lateral gap registered as a hit",
             1.2_f32
         );
@@ -196,7 +241,7 @@ mod tests {
             speed: 12_000.0,
         };
         assert!(
-            check(&player, &traffic, &road).is_some(),
+            check(&player, road.wrap(player.z - road.segment_length()), &traffic, &road).is_some(),
             "cars overlapping by a third of their width did not register"
         );
     }
@@ -208,49 +253,77 @@ mod tests {
         // coordinates read.
         let road = course();
         let length = road.length();
-        let car_len = car_length_units(&road);
+        let contact = contact_distance(&road);
 
-        let traffic = one_car_at(&road, car_len * 0.25, 0.0);
+        let traffic = one_car_at(&road, contact * 0.25, 0.0);
         let player = Drive {
-            z: road.wrap(length - car_len * 0.25),
+            z: road.wrap(length - contact * 0.25),
             x: 0.0,
             speed: 12_000.0,
         };
         assert!(
-            check(&player, &traffic, &road).is_some(),
+            check(&player, road.wrap(player.z - road.segment_length()), &traffic, &road).is_some(),
             "contact across the start line was missed — the z comparison \
              is not wrapping"
         );
     }
 
-    /// ⚠️ THE TUNNELLING GUARD. This is the Breakout bug (session 2) in
-    /// a new place: overlap testing is only valid while a single frame
-    /// moves less than the object being tested against.
+    /// ⚠️ THE TUNNELLING GUARD, and it EARNED ITS KEEP.
     ///
-    /// `main.rs` clamps dt to 1/15s. At the shipped top speed the player
-    /// covers well under a car length in that time, so nothing can pass
-    /// through a car between two samples. If top speed rises or the
-    /// clamp loosens, THIS TEST FAILS and a swept check is required —
-    /// which is the point of writing it as an assertion rather than a
-    /// note in a comment.
+    /// Written first as "a frame must move less than the contact range",
+    /// which passed only because the contact range was 1729 units — five
+    /// times too large. Brian crashed into a car most of the way up the
+    /// road and sent a screenshot; measuring the real contact distance
+    /// (320 units, `probe_contact`) made this test fail immediately,
+    /// because at 30fps a frame covers 533 units and at the clamped
+    /// 15fps it covers 1067. One bug was hiding the other.
+    ///
+    /// So `check` is SWEPT now, and this asserts the property that
+    /// actually matters: a car sitting entirely between two samples is
+    /// still hit. The old formulation is deliberately not restored —
+    /// requiring the frame to be shorter than a car would cap top speed
+    /// at a third of its current value.
     #[test]
     fn a_frame_cannot_step_over_a_car() {
         use crate::drive::Tuning;
 
         let road = course();
         let tuning = Tuning::from_corner(&road, 1.5);
-        let car_len = car_length_units(&road);
+        let contact = contact_distance(&road);
 
-        // The dt clamp in main.rs. Stated here so the test fails if the
-        // two ever disagree about the worst case.
+        // The dt clamp in main.rs — the worst case a frame can be.
         const MAX_DT: f32 = 1.0 / 15.0;
-
         let step = tuning.top_speed * MAX_DT;
         assert!(
-            step < car_len,
-            "at {MAX_DT:.3}s a frame covers {step:.0} units against a \
-             {car_len:.0}-unit car — collisions can tunnel, and overlap \
-             testing is no longer sound"
+            step > contact,
+            "this test is vacuous: a frame ({step:.0}) no longer outruns the \
+             contact range ({contact:.0}), so there is nothing to tunnel"
+        );
+
+        // A car placed squarely in the middle of one frame's travel:
+        // present at neither the start position nor the end position.
+        let start_z = road.wrap(10_000.0);
+        let end_z = road.wrap(start_z + step);
+        let traffic = one_car_at(&road, start_z + step * 0.5, 0.0);
+
+        let player = Drive {
+            z: end_z,
+            x: 0.0,
+            speed: tuning.top_speed,
+        };
+
+        // Prove the setup: neither endpoint alone would find it.
+        let at_end = (player.z - traffic.cars[0].z).rem_euclid(road.length());
+        let sep_end = at_end.min(road.length() - at_end);
+        assert!(
+            sep_end > contact,
+            "fixture is wrong — the car is within contact of the END position, \
+             so this would pass without any sweep"
+        );
+
+        assert!(
+            check(&player, start_z, &traffic, &road).is_some(),
+            "a car sitting between two frames was stepped clean over"
         );
     }
 
@@ -259,6 +332,6 @@ mod tests {
         let road = course();
         let traffic = Field::default();
         let player = Drive::new();
-        assert!(check(&player, &traffic, &road).is_none());
+        assert!(check(&player, road.wrap(player.z - road.segment_length()), &traffic, &road).is_none());
     }
 }

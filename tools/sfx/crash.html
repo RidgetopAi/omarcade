@@ -1,0 +1,464 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Omaprix crash playground</title>
+<style>
+  :root{
+    --bg:#0d1013; --panel:#151a1f; --line:#232b33; --ink:#c8d3dc;
+    --dim:#7b8794; --hot:#ffb454; --trace:#4ade80; --fire:#f97316;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:13px/1.5 ui-monospace,"JetBrains Mono",Menlo,monospace}
+  header{padding:10px 16px;border-bottom:1px solid var(--line);
+         display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  h1{font-size:14px;margin:0;font-weight:600;letter-spacing:.02em}
+  .sub{color:var(--dim);font-size:11px}
+  #wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px;padding:12px}
+  @media(max-width:900px){#wrap{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px}
+  .card h2{font-size:11px;margin:0 0 8px;color:var(--dim);font-weight:600;
+           text-transform:uppercase;letter-spacing:.08em}
+  canvas{width:100%;display:block;background:#0a0d10;border-radius:4px}
+  .row{display:flex;align-items:center;gap:8px;margin:5px 0}
+  .row label{flex:0 0 130px;font-size:11px;color:var(--dim)}
+  .row input[type=range]{flex:1;min-width:0;accent-color:var(--hot)}
+  .row .val{flex:0 0 62px;text-align:right;font-size:11px;color:var(--hot)}
+  button{background:#1e262e;color:var(--ink);border:1px solid var(--line);
+         border-radius:4px;padding:7px 13px;cursor:pointer;font:inherit;font-size:12px}
+  button:hover{border-color:var(--hot);color:var(--hot)}
+  button.big{background:#7f1d1d;border-color:#b91c1c;color:#fecaca;font-weight:600;
+             width:100%;padding:11px;font-size:13px}
+  button.big:hover{background:#991b1b;color:#fff}
+  .grp{border-top:1px solid var(--line);margin-top:10px;padding-top:8px}
+  .note{color:var(--dim);font-size:10.5px;margin:2px 0 7px;line-height:1.45}
+  #dump{width:100%;height:140px;background:#0a0d10;color:var(--trace);
+        border:1px solid var(--line);border-radius:4px;font:11px/1.5 ui-monospace,monospace;
+        padding:8px;resize:vertical}
+  kbd{background:#1e262e;border:1px solid var(--line);border-radius:3px;
+      padding:1px 5px;font-size:10.5px}
+</style>
+
+<header>
+  <h1>OMAPRIX · crash playground</h1>
+  <span class="sub">a one-shot with a shape · the fireball burns for 1.4 s and the sound must fit it</span>
+</header>
+
+<div id="wrap">
+  <div>
+    <div class="card">
+      <h2>The shape, against the fireball</h2>
+      <div class="note">BURN_TIME is 1.4 s — a real budget from crash.rs, not a guess.
+        The sound has to be over when the fire is. The bars are the three stages; the
+        line is the envelope they add up to.</div>
+      <canvas id="shape" height="150"></canvas>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Oscilloscope — the last crash</h2>
+      <div class="note">An impact starts at full deflection and decays. If the trace ramps
+        UP at the start, the hit has no attack and will read as a whoomph rather than a
+        collision.</div>
+      <canvas id="scope" height="180"></canvas>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Spectrum</h2>
+      <canvas id="spec" height="140"></canvas>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Hit it</h2>
+      <button class="big" id="bang">CRASH</button>
+      <div class="row" style="margin-top:10px">
+        <label>impact speed</label>
+        <input type="range" id="force" min="0.2" max="1" step="0.01" value="0.9">
+        <span class="val" id="forcev">0.90</span>
+      </div>
+      <div class="note">A shunt at full speed should sound worse than a gentle one. This
+        is the only thing the game varies — everything else is fixed shape.
+        <kbd>space</kbd> also fires it.</div>
+      <div style="margin-top:6px;display:flex;gap:8px">
+        <button id="power">▶ start audio</button>
+        <button id="repeat">×3</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>1 · Impact</h2>
+      <div class="note">The hit. Sharp, broadband, over in a blink — this is the part that
+        makes it a collision rather than an explosion.</div>
+      <div class="row"><label>length</label>
+        <input type="range" id="ilen" min="0.01" max="0.25" step="0.005" value="0.08">
+        <span class="val" id="ilenv"></span></div>
+      <div class="row"><label>tone</label>
+        <input type="range" id="ihz" min="40" max="400" step="5" value="150">
+        <span class="val" id="ihzv"></span></div>
+      <div class="row"><label>crack (noise)</label>
+        <input type="range" id="icrack" min="0" max="1" step="0.02" value="0.7">
+        <span class="val" id="icrackv"></span></div>
+      <div class="row"><label>brightness</label>
+        <input type="range" id="icol" min="500" max="12000" step="100" value="4200">
+        <span class="val" id="icolv"></span></div>
+      <div class="row"><label>level</label>
+        <input type="range" id="ilevel" min="0" max="1" step="0.02" value="0.8">
+        <span class="val" id="ilevelv"></span></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>2 · Crumple</h2>
+      <div class="note">Metal deforming. A few uneven hits rather than one — this is what
+        stops it sounding like a single drum.</div>
+      <div class="row"><label>length</label>
+        <input type="range" id="clen" min="0.05" max="0.7" step="0.01" value="0.3">
+        <span class="val" id="clenv"></span></div>
+      <div class="row"><label>pieces</label>
+        <input type="range" id="cbits" min="0" max="10" step="1" value="4">
+        <span class="val" id="cbitsv"></span></div>
+      <div class="row"><label>pitch</label>
+        <input type="range" id="chz" min="200" max="4000" step="50" value="1400">
+        <span class="val" id="chzv"></span></div>
+      <div class="row"><label>level</label>
+        <input type="range" id="clevel" min="0" max="1" step="0.02" value="0.42">
+        <span class="val" id="clevelv"></span></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>3 · Burn</h2>
+      <div class="note">The fireball. Must be gone by 1.4 s, because that is when the
+        sprite stops burning.</div>
+      <div class="row"><label>length</label>
+        <input type="range" id="blen" min="0.2" max="1.4" step="0.02" value="1.1">
+        <span class="val" id="blenv"></span></div>
+      <div class="row"><label>roar colour</label>
+        <input type="range" id="bcol" min="150" max="3000" step="50" value="700">
+        <span class="val" id="bcolv"></span></div>
+      <div class="row"><label>flicker</label>
+        <input type="range" id="bflick" min="0" max="30" step="1" value="9">
+        <span class="val" id="bflickv"></span></div>
+      <div class="row"><label>whoosh in</label>
+        <input type="range" id="bwhoosh" min="0" max="0.4" step="0.01" value="0.12">
+        <span class="val" id="bwhooshv"></span></div>
+      <div class="row"><label>level</label>
+        <input type="range" id="blevel" min="0" max="1" step="0.02" value="0.34">
+        <span class="val" id="blevelv"></span></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Settings</h2>
+      <div style="display:flex;gap:8px;margin-bottom:6px">
+        <button id="copy">copy settings</button>
+        <button id="reset">reset</button>
+      </div>
+      <textarea id="dump" readonly></textarea>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// From crash.rs. The sound has to live inside this.
+const BURN_TIME = 1.4;
+
+const $ = id => document.getElementById(id);
+const val = id => parseFloat($(id).value);
+
+let ctx = null, running = false, ana = null, master = null;
+let lastTrace = new Float32Array(0);
+
+function makeNoise(c, seconds) {
+  const n = Math.max(Math.floor(c.sampleRate * seconds), 1);
+  const buf = c.createBuffer(1, n, c.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const s = c.createBufferSource();
+  s.buffer = buf;
+  return s;
+}
+
+function start() {
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  master = ctx.createGain();
+  ana = ctx.createAnalyser();
+  ana.fftSize = 8192;
+  ana.smoothingTimeConstant = 0.2;
+  master.connect(ana); ana.connect(ctx.destination);
+  running = true;
+  $("power").textContent = "■ stop audio";
+  $("power").classList.add("on");
+}
+
+/// One crash, scheduled from `at`.
+function bang(at, force) {
+  const f = 0.45 + 0.55 * force;   // how hard the hit was
+
+  // ── 1. IMPACT ─────────────────────────────────────────────
+  // A struck thing starts at full deflection. Both layers use
+  // setValueAtTime then a downward ramp — never a fade in.
+  const ilen = val("ilen");
+  {
+    const o = ctx.createOscillator();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(val("ihz") * 2.2, at);
+    o.frequency.exponentialRampToValueAtTime(val("ihz") * 0.6, at + ilen);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(val("ilevel") * f, at);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + ilen);
+    o.connect(g); g.connect(master);
+    o.start(at); o.stop(at + ilen + 0.02);
+
+    const n = makeNoise(ctx, ilen + 0.05);
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass"; bp.frequency.value = val("icol"); bp.Q.value = 0.7;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(val("ilevel") * val("icrack") * f, at);
+    ng.gain.exponentialRampToValueAtTime(0.0001, at + ilen * 0.8);
+    n.connect(bp); bp.connect(ng); ng.connect(master);
+    n.start(at); n.stop(at + ilen + 0.05);
+  }
+
+  // ── 2. CRUMPLE ────────────────────────────────────────────
+  // Several uneven hits, not one. Spacing and pitch both jittered,
+  // because metal folding is not periodic.
+  const clen = val("clen"), bits = Math.round(val("cbits"));
+  for (let i = 0; i < bits; i++) {
+    const t = at + ilen * 0.6 + (clen * (i + Math.random() * 0.8)) / Math.max(bits, 1);
+    const dur = 0.02 + Math.random() * 0.05;
+    const o = ctx.createOscillator();
+    o.type = "square";
+    const hz = val("chz") * (0.55 + Math.random() * 0.9);
+    o.frequency.setValueAtTime(hz, t);
+    o.frequency.exponentialRampToValueAtTime(hz * 0.7, t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(val("clevel") * f * (0.5 + Math.random() * 0.5), t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass"; bp.frequency.value = hz * 1.5; bp.Q.value = 2.2;
+    o.connect(bp); bp.connect(g); g.connect(master);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+
+  // ── 3. BURN ───────────────────────────────────────────────
+  // Filtered noise that swells and dies inside BURN_TIME.
+  {
+    const blen = Math.min(val("blen"), BURN_TIME);
+    const wh = val("bwhoosh");
+    const n = makeNoise(ctx, blen + 0.1);
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(val("bcol") * 2.5, at);
+    lp.frequency.exponentialRampToValueAtTime(Math.max(val("bcol") * 0.5, 60), at + blen);
+
+    const g = ctx.createGain();
+    // The whoosh: the fire takes a moment to catch. Zero means the
+    // roar is there from the instant of impact.
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(val("blevel") * f, at + Math.max(wh, 0.005));
+    g.gain.exponentialRampToValueAtTime(0.0001, at + blen);
+
+    // Flicker, so the fire is alive rather than a wash.
+    const fl = ctx.createOscillator();
+    fl.type = "sine";
+    fl.frequency.value = val("bflick");
+    const fd = ctx.createGain();
+    fd.gain.value = val("bflick") > 0 ? 0.3 : 0;
+    fl.connect(fd); fd.connect(g.gain);
+    fl.start(at); fl.stop(at + blen);
+
+    n.connect(lp); lp.connect(g); g.connect(master);
+    n.start(at); n.stop(at + blen + 0.1);
+  }
+
+  captureTrace();
+}
+
+/// Grab the waveform shortly after firing, so the scope shows the crash.
+function captureTrace() {
+  const buf = new Float32Array(ana.fftSize);
+  let frames = 0;
+  const grab = () => {
+    ana.getFloatTimeDomainData(buf);
+    const peak = buf.reduce((a, b) => Math.max(a, Math.abs(b)), 0);
+    if (peak > 0.02 || frames > 30) { lastTrace = buf.slice(); return; }
+    frames++; requestAnimationFrame(grab);
+  };
+  requestAnimationFrame(grab);
+}
+
+function fit(cv) {
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(r.width * d)) {
+    cv.width = Math.round(r.width * d);
+    cv.height = Math.round(parseInt(cv.getAttribute("height")) * d);
+  }
+  const g = cv.getContext("2d");
+  g.setTransform(d, 0, 0, d, 0, 0);
+  return { g, w: r.width, h: parseInt(cv.getAttribute("height")) };
+}
+
+function draw() {
+  requestAnimationFrame(draw);
+  drawShape(); drawScope(); drawSpec();
+}
+
+function drawShape() {
+  const { g, w, h } = fit($("shape"));
+  g.clearRect(0, 0, w, h);
+  const pad = 26, ww = w - pad * 2, base = h - 26;
+  const span = BURN_TIME + 0.2;
+  const X = t => pad + ww * (t / span);
+
+  // The 1.4 s budget.
+  g.strokeStyle = "#7f1d1d"; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(X(BURN_TIME), 8); g.lineTo(X(BURN_TIME), base); g.stroke();
+  g.fillStyle = "#fca5a5"; g.font = "10px monospace";
+  g.fillText("BURN_TIME 1.4 s", X(BURN_TIME) - 84, 18);
+
+  g.strokeStyle = "#2a343d"; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(pad, base); g.lineTo(w - pad, base); g.stroke();
+  for (let t = 0; t <= BURN_TIME; t += 0.2) {
+    g.strokeStyle = "#1a222a";
+    g.beginPath(); g.moveTo(X(t), 8); g.lineTo(X(t), base); g.stroke();
+    g.fillStyle = "#5b6773"; g.font = "9px monospace";
+    g.fillText(t.toFixed(1), X(t) - 7, h - 10);
+  }
+
+  const ilen = val("ilen"), clen = val("clen"), blen = Math.min(val("blen"), BURN_TIME);
+  const stages = [
+    { at: 0, len: ilen, col: "#ffb454", name: "impact" },
+    { at: ilen * 0.6, len: clen, col: "#a78bfa", name: "crumple" },
+    { at: 0, len: blen, col: "#f97316", name: "burn" },
+  ];
+  stages.forEach((s, i) => {
+    const y = 20 + i * 15;
+    g.fillStyle = s.col;
+    g.globalAlpha = 0.75;
+    g.fillRect(X(s.at), y, Math.max(X(s.at + s.len) - X(s.at), 2), 10);
+    g.globalAlpha = 1;
+    g.font = "9px monospace";
+    g.fillText(s.name, X(s.at + s.len) + 4, y + 9);
+  });
+
+  // The combined envelope.
+  g.strokeStyle = "#4ade80"; g.lineWidth = 1.6; g.beginPath();
+  for (let px = 0; px <= ww; px++) {
+    const t = span * px / ww;
+    const imp = t < ilen ? Math.exp(-t / (ilen * 0.35)) * val("ilevel") : 0;
+    const cru = t > ilen * 0.6 && t < ilen * 0.6 + clen
+      ? Math.exp(-(t - ilen * 0.6) / (clen * 0.5)) * val("clevel") : 0;
+    const wh = Math.max(val("bwhoosh"), 0.005);
+    const bur = t < blen
+      ? (t < wh ? t / wh : Math.exp(-(t - wh) / (blen * 0.4))) * val("blevel") : 0;
+    const v = Math.min(imp + cru + bur, 1);
+    const y = base - v * (base - 66);
+    px ? g.lineTo(pad + px, y) : g.moveTo(pad + px, y);
+  }
+  g.stroke();
+}
+
+function drawScope() {
+  const { g, w, h } = fit($("scope"));
+  g.clearRect(0, 0, w, h);
+  g.strokeStyle = "#1a222a";
+  for (let i = 1; i < 6; i++) {
+    const y = h * i / 6;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+  }
+  if (!lastTrace.length) {
+    g.fillStyle = "#5b6773"; g.font = "12px monospace";
+    g.fillText(running ? "hit CRASH" : "press start audio", 12, h / 2);
+    return;
+  }
+  g.strokeStyle = "#4ade80"; g.lineWidth = 1.2; g.beginPath();
+  for (let i = 0; i < lastTrace.length; i++) {
+    const x = w * i / lastTrace.length, y = h / 2 - lastTrace[i] * h * 0.45;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  }
+  g.stroke();
+}
+
+function drawSpec() {
+  const { g, w, h } = fit($("spec"));
+  g.clearRect(0, 0, w, h);
+  if (!running) return;
+  const d = new Uint8Array(ana.frequencyBinCount);
+  ana.getByteFrequencyData(d);
+  const maxHz = 10000, bins = Math.round(d.length * maxHz / (ctx.sampleRate / 2));
+  g.fillStyle = "#f97316";
+  for (let i = 0; i < bins; i++) {
+    const x = w * i / bins, bh = h * d[i] / 255;
+    g.fillRect(x, h - bh, Math.max(w / bins, 1), bh);
+  }
+  g.fillStyle = "#7b8794"; g.font = "9px monospace";
+  g.fillText("0", 2, h - 2); g.fillText("10 kHz", w - 40, h - 2);
+}
+
+const KNOBS = ["force","ilen","ihz","icrack","icol","ilevel",
+               "clen","cbits","chz","clevel",
+               "blen","bcol","bflick","bwhoosh","blevel"];
+const FMT = {
+  force: v => v.toFixed(2),
+  ilen: v => (v * 1000).toFixed(0) + " ms", ihz: v => v.toFixed(0) + " Hz",
+  icrack: v => v.toFixed(2), icol: v => (v / 1000).toFixed(1) + "k",
+  ilevel: v => v.toFixed(2),
+  clen: v => (v * 1000).toFixed(0) + " ms", cbits: v => v.toFixed(0),
+  chz: v => v.toFixed(0) + " Hz", clevel: v => v.toFixed(2),
+  blen: v => v.toFixed(2) + " s", bcol: v => v.toFixed(0) + " Hz",
+  bflick: v => v.toFixed(0) + " Hz", bwhoosh: v => (v * 1000).toFixed(0) + " ms",
+  blevel: v => v.toFixed(2),
+};
+KNOBS.forEach(k => {
+  const el = $(k), o = $(k + "v");
+  const upd = () => { if (o) o.textContent = FMT[k](val(k)); dump(); };
+  el.addEventListener("input", upd); upd();
+});
+
+function fire() {
+  if (!running) start();
+  bang(ctx.currentTime + 0.02, val("force"));
+}
+
+$("bang").addEventListener("click", fire);
+$("repeat").addEventListener("click", () => {
+  if (!running) start();
+  for (let i = 0; i < 3; i++) bang(ctx.currentTime + 0.02 + i * 1.7, val("force"));
+});
+$("power").addEventListener("click", () => {
+  if (!running) start();
+  else { ctx.close(); running = false; lastTrace = new Float32Array(0);
+         $("power").textContent = "▶ start audio"; $("power").classList.remove("on"); }
+});
+addEventListener("keydown", e => {
+  if (e.code === "Space") { e.preventDefault(); fire(); }
+});
+
+$("reset").addEventListener("click", () => location.reload());
+$("copy").addEventListener("click", () => {
+  $("dump").select(); document.execCommand("copy");
+  $("copy").textContent = "copied ✓";
+  setTimeout(() => $("copy").textContent = "copy settings", 1200);
+});
+
+function dump() {
+  $("dump").value =
+`CRASH SETTINGS
+impact_len      ${val("ilen")}
+impact_hz       ${val("ihz")}
+impact_crack    ${val("icrack")}
+impact_colour   ${val("icol")}
+impact_level    ${val("ilevel")}
+crumple_len     ${val("clen")}
+crumple_bits    ${val("cbits")}
+crumple_hz      ${val("chz")}
+crumple_level   ${val("clevel")}
+burn_len        ${val("blen")}
+burn_colour     ${val("bcol")}
+burn_flicker    ${val("bflick")}
+burn_whoosh     ${val("bwhoosh")}
+burn_level      ${val("blevel")}`;
+}
+
+dump(); draw();
+</script>

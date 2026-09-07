@@ -30,8 +30,8 @@ mod track;
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::scores::ScoreFile;
 use omarcade_core::{
-    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Roll, Theme, VoiceId,
-    VoiceParams,
+    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Roll, SoundId, Theme,
+    VoiceId, VoiceParams,
 };
 
 use art::Art;
@@ -114,6 +114,14 @@ struct Racer {
     tyres: VoiceId,
     /// What the car is driving on. Silent on tarmac.
     surface: VoiceId,
+    /// The crash, as a one-shot.
+    bang: SoundId,
+    /// How hard the last impact was, 0..=1.
+    ///
+    /// ⚠️ CAPTURED BEFORE THE REWIND. `car.speed` is set to zero at the
+    /// point of contact, so reading it when the sound is played would
+    /// make every shunt sound like a gentle nudge.
+    impact: Option<f32>,
     /// Whether the engine has been started yet — it begins at the green
     /// light rather than at the menu, so a car that is not running does
     /// not idle at the player.
@@ -149,7 +157,13 @@ struct Racer {
 }
 
 impl Racer {
-    fn new(theme: Theme, engine: VoiceId, tyres: VoiceId, surface: VoiceId) -> Self {
+    fn new(
+        theme: Theme,
+        engine: VoiceId,
+        tyres: VoiceId,
+        surface: VoiceId,
+        bang: SoundId,
+    ) -> Self {
         let art = Art::load(&theme);
         // The shipped course. `render::demo_track()` is still there and is
         // still what the visual scenes use — it is one bend, sized to be
@@ -198,6 +212,8 @@ impl Racer {
             engine,
             tyres,
             surface,
+            bang,
+            impact: None,
             engine_running: false,
             race,
             grid_z: start_z,
@@ -260,7 +276,7 @@ impl Racer {
 
     /// Back to the grid for a fresh qualifying lap.
     fn restart(&mut self) {
-        *self = Racer::new(self.theme, self.engine, self.tyres, self.surface);
+        *self = Racer::new(self.theme, self.engine, self.tyres, self.surface, self.bang);
     }
 
     /// React to what the race reported this frame.
@@ -343,6 +359,13 @@ impl Racer {
             self.surface,
             VoiceParams::surface(kind, self.car.speed, throttle),
         );
+
+        // The crash itself: fired once, on the frame the impact was
+        // captured. `take` is what makes it once rather than every frame
+        // the wreck is burning.
+        if let Some(force) = self.impact.take() {
+            audio.play_with(self.bang, force, 1.0);
+        }
 
         // A crash ducks the engine away and lets it back over the
         // recovery window — which is derived from the tuning, so it is
@@ -536,6 +559,16 @@ impl Game for Racer {
                 // saw exactly that. The race counts distance by signed z
                 // steps, so the rewind is ground to re-drive, as it should
                 // be.
+                // How hard the hit was, taken BEFORE the line below
+                // zeroes it. A shunt at full speed and a brush at a
+                // crawl are different sounds, and after the rewind they
+                // are the same number.
+                self.impact = Some(if self.tuning.top_speed > 0.0 {
+                    (self.car.speed / self.tuning.top_speed).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                });
+
                 self.car.z = self.road.wrap(hit.player_z);
                 self.car.speed = 0.0;
                 self.crash = Some(crash::Explosion::start(hit.z, hit.x));
@@ -633,10 +666,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let surface = audio.register(Box::new(sound::Surface::new(
         track::grand_prix().build().marking_units(),
     )));
+    let bang = audio.register_sound(Box::new(sound::Crash::new()));
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
-        .run(Racer::new(theme, engine, tyres, surface), audio)?;
+        .run(Racer::new(theme, engine, tyres, surface, bang), audio)?;
 
     Ok(())
 }
@@ -658,7 +692,13 @@ mod tests {
     }
 
     fn racer() -> Racer {
-        Racer::new(Theme::load(), VoiceId::NONE, VoiceId::NONE, VoiceId::NONE)
+        Racer::new(
+            Theme::load(),
+            VoiceId::NONE,
+            VoiceId::NONE,
+            VoiceId::NONE,
+            SoundId::NONE,
+        )
     }
 
     /// A racer past the lights, on its qualifying lap, so a test about
@@ -685,7 +725,13 @@ mod tests {
 
     #[test]
     fn the_grid_and_the_lights_pay_nothing() {
-        let mut g = Racer::new(Theme::default(), VoiceId::NONE, VoiceId::NONE, VoiceId::NONE);
+        let mut g = Racer::new(
+            Theme::default(),
+            VoiceId::NONE,
+            VoiceId::NONE,
+            VoiceId::NONE,
+            SoundId::NONE,
+        );
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..30 {
             step(&mut g, 1.0 / 60.0);
@@ -856,6 +902,55 @@ mod tests {
             step(&mut g, 1.0 / 60.0);
         }
         assert!(g.crash.is_none(), "the fireball never burned out");
+    }
+
+    /// The crash sound is scaled by how hard the hit was — and that
+    /// number has to be taken before the rewind zeroes it.
+    #[test]
+    fn the_impact_speed_is_captured_before_the_car_is_stopped() {
+        // ⚠️ `car.speed = 0.0` happens AT the point of contact, in the
+        // same block that lights the fireball. Read the speed when the
+        // sound is played and every shunt is a gentle nudge, because by
+        // then the car has been stopped. This asserts the capture
+        // happens on the right side of that line.
+        let mut g = on_track();
+        g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
+        g.traffic.cars[0].x = g.car.x;
+        g.car.speed = g.tuning.top_speed * 0.9;
+
+        assert!(g.impact.is_none(), "started with an impact pending");
+        step(&mut g, 1.0 / 60.0);
+
+        // `sound()` runs inside update and takes it, so by here it has
+        // been consumed — which is itself the once-not-every-frame
+        // guarantee. Check the car really was stopped, so the capture
+        // could not have read a live speed afterwards.
+        assert_eq!(g.car.speed, 0.0, "fixture: the wreck should be stopped");
+        assert!(
+            g.impact.is_none(),
+            "the impact should be consumed by the frame that played it",
+        );
+    }
+
+    /// A crash fires its sound ONCE, not on every frame it burns.
+    #[test]
+    fn a_burning_wreck_does_not_retrigger_its_crash_every_frame() {
+        let mut g = on_track();
+        g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
+        g.traffic.cars[0].x = g.car.x;
+        g.car.speed = g.tuning.top_speed * 0.5;
+
+        step(&mut g, 1.0 / 60.0);
+        assert!(g.crash.is_some(), "fixture: should be burning");
+
+        // Every later frame of the burn must leave nothing pending.
+        for _ in 0..30 {
+            step(&mut g, 1.0 / 60.0);
+            assert!(
+                g.impact.is_none(),
+                "a burning wreck queued another crash sound",
+            );
+        }
     }
 
     /// Input must not drive a wreck.

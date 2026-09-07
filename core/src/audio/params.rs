@@ -36,6 +36,11 @@ impl VoiceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SoundId(pub(crate) u16);
 
+impl SoundId {
+    /// A sound that is registered nowhere. See [`VoiceId::NONE`].
+    pub const NONE: SoundId = SoundId(u16::MAX);
+}
+
 /// How many parameters one voice carries.
 ///
 /// Four covers every sound in the suite today (the engine uses one, the

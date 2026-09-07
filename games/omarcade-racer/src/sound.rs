@@ -687,6 +687,202 @@ impl Voice for Surface {
     }
 }
 
+/// The crash: impact, crumple, burn.
+///
+/// # A one-shot with a deadline
+///
+/// Unlike the three continuous voices, this has a SHAPE rather than
+/// parameters that track the car — it fires once and gets out of the
+/// way. The shape has a real budget: [`crash::BURN_TIME`] is 1.4 s,
+/// which is how long the fireball sprite burns, and a sound still going
+/// after the fire has gone out is describing something that is not on
+/// screen.
+///
+/// # The three stages, and why they are separate
+///
+/// **Impact** is the hit — sharp, low, over in a sixth of a second. This
+/// is the part that makes it a collision rather than an explosion, and
+/// it starts at full deflection because a struck thing always does.
+///
+/// **Crumple** is metal folding: a couple of uneven hits, jittered in
+/// both time and pitch. Take them away and the crash is a single drum.
+///
+/// **Burn** is the fireball, and it takes a moment to catch — the whoosh
+/// is why the fire sounds like it is starting rather than like it was
+/// always there.
+///
+/// # What the game varies
+///
+/// One thing: how hard the hit was. Everything else is fixed shape. The
+/// impact speed must be read BEFORE `main.rs` zeroes `car.speed` at the
+/// point of contact, or every crash sounds like a gentle nudge.
+pub struct Crash {
+    /// Seconds since the impact. Past the burn, this voice is done.
+    t: f32,
+    /// How hard the hit was, 0..=1.
+    force: f32,
+    alive: bool,
+    /// Where the next crumple fold lands, and how hard.
+    folds: [(f32, f32, f32); CRUMPLE_BITS],
+    impact_lp: Lowpass,
+    burn_lp: Lowpass,
+    noise: u32,
+}
+
+/// Brian's tuning, found by ear in `tools/sfx/crash.html`.
+///
+/// He made it BIGGER and HEAVIER throughout: the impact twice as long
+/// and a third lower, the crumple slower with half as many but larger
+/// folds, the fire brighter and slower to catch. Every level he left
+/// exactly as it was — the balance between the three stages was right,
+/// the character was not.
+const IMPACT_LEN: f32 = 0.16;
+const IMPACT_HZ: f32 = 95.0;
+const IMPACT_CRACK: f32 = 0.68;
+const IMPACT_COLOUR: f32 = 3300.0;
+const IMPACT_LEVEL: f32 = 0.80;
+
+const CRUMPLE_LEN: f32 = 0.37;
+const CRUMPLE_BITS: usize = 2;
+const CRUMPLE_HZ: f32 = 850.0;
+const CRUMPLE_LEVEL: f32 = 0.42;
+
+/// ⚠️ Must not exceed [`crash::BURN_TIME`] (1.4 s) — asserted in tests.
+const BURN_LEN: f32 = 1.10;
+const BURN_COLOUR: f32 = 1050.0;
+const BURN_FLICKER: f32 = 13.0;
+/// How long the fire takes to catch. Zero would mean the roar is there
+/// from the instant of impact, which reads as an explosion rather than
+/// as something catching light.
+const BURN_WHOOSH: f32 = 0.22;
+const BURN_LEVEL: f32 = 0.34;
+
+impl Crash {
+    pub fn new() -> Crash {
+        Crash {
+            t: 0.0,
+            force: 1.0,
+            alive: false,
+            folds: [(0.0, 0.0, 0.0); CRUMPLE_BITS],
+            impact_lp: Lowpass::default(),
+            burn_lp: Lowpass::default(),
+            noise: 0xdead_beef,
+        }
+    }
+
+    fn white(&mut self) -> f32 {
+        self.noise ^= self.noise << 13;
+        self.noise ^= self.noise >> 17;
+        self.noise ^= self.noise << 5;
+        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+}
+
+impl Default for Crash {
+    fn default() -> Self {
+        Crash::new()
+    }
+}
+
+impl Voice for Crash {
+    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
+        if !self.alive {
+            for s in out.iter_mut() {
+                *s = 0.0;
+            }
+            return;
+        }
+
+        let dt = 1.0 / sample_rate;
+        // A harder hit is louder and a little lower; a gentle nudge
+        // should not sound like a shunt at 190 mph.
+        let f = 0.45 + 0.55 * self.force;
+
+        for sample in out.iter_mut() {
+            self.t += dt;
+            let t = self.t;
+            let mut v = 0.0;
+
+            // ── 1. IMPACT. Starts at full deflection and decays.
+            if t < IMPACT_LEN {
+                let env = (-t / (IMPACT_LEN * 0.35)).exp();
+                // The tone drops as it decays, the way a struck panel does.
+                let hz = IMPACT_HZ * (2.2 - 1.6 * (t / IMPACT_LEN));
+                // COSINE: sin() is zero at t=0 and would fade the hit IN,
+                // which costs it the attack that makes it an impact.
+                let body = (TAU * hz * t).cos() * env;
+                let n = self.white();
+                let crack =
+                    self.impact_lp.tick(n, IMPACT_COLOUR, sample_rate) * env * IMPACT_CRACK;
+                v += (body + crack) * IMPACT_LEVEL * f;
+            }
+
+            // ── 2. CRUMPLE. A couple of uneven folds.
+            let start = IMPACT_LEN * 0.6;
+            if t >= start && t < start + CRUMPLE_LEN {
+                for (i, fold) in self.folds.iter().enumerate() {
+                    let (at, hz, gain) = *fold;
+                    let since = t - start - at;
+                    if since < 0.0 || since > 0.09 {
+                        continue;
+                    }
+                    let env = (-since / 0.028).exp();
+                    // Square-ish, because folding metal is not a sine.
+                    let ph = (hz * since).fract();
+                    let sq = if ph < 0.5 { 1.0 } else { -1.0 };
+                    let _ = i;
+                    v += sq * env * gain * CRUMPLE_LEVEL * f;
+                }
+            }
+
+            // ── 3. BURN. Swells in, then dies inside the budget.
+            if t < BURN_LEN {
+                let env = if t < BURN_WHOOSH {
+                    t / BURN_WHOOSH
+                } else {
+                    (-(t - BURN_WHOOSH) / (BURN_LEN * 0.4)).exp()
+                };
+                let flicker = 1.0 + (TAU * BURN_FLICKER * t).sin() * 0.3;
+                let n = self.white();
+                let roar = self.burn_lp.tick(n, BURN_COLOUR, sample_rate);
+                v += roar * env * flicker * BURN_LEVEL * f;
+            }
+
+            *sample = v.clamp(-1.0, 1.0);
+        }
+
+        if self.t > BURN_LEN {
+            self.alive = false;
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.alive
+    }
+
+    /// Start a crash. `gain` carries how hard the hit was.
+    fn retrigger(&mut self, gain: f32, _pitch: f32) {
+        self.t = 0.0;
+        self.force = gain.clamp(0.0, 1.0);
+        self.alive = true;
+        self.impact_lp = Lowpass::default();
+        self.burn_lp = Lowpass::default();
+
+        // Lay out the folds: uneven in time, pitch and weight, because
+        // metal does not fold on a metronome. Derived from the noise
+        // source so no allocation and no `rand` on the audio thread.
+        for i in 0..CRUMPLE_BITS {
+            let a = self.white().abs();
+            let b = self.white().abs();
+            let c = self.white().abs();
+            let at = CRUMPLE_LEN * (i as f32 + 0.2 + a * 0.7) / CRUMPLE_BITS as f32;
+            let hz = CRUMPLE_HZ * (0.55 + b * 0.9);
+            let gain = 0.5 + c * 0.5;
+            self.folds[i] = (at, hz, gain);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -971,6 +1167,93 @@ mod tests {
                     assert!(s.is_finite(), "non-finite on surface {kind}");
                     assert!(s.abs() <= 1.0, "clipped on surface {kind}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn the_crash_fits_inside_the_fireball() {
+        // ⚠️ THE BUDGET. crash::BURN_TIME is how long the fireball
+        // sprite burns; a sound still going after the fire has gone out
+        // is describing something that is not on screen. Asserted
+        // against the real constant, so a retune of the sprite is caught
+        // here rather than noticed by ear three sessions later.
+        assert!(
+            BURN_LEN <= crate::crash::BURN_TIME,
+            "the burn sound ({BURN_LEN}s) outlasts the fireball ({}s)",
+            crate::crash::BURN_TIME,
+        );
+
+        let mut c = Crash::new();
+        c.retrigger(1.0, 1.0);
+        // Render past the burn and check it has actually stopped.
+        let mut buf = vec![0.0; (48_000.0 * crate::crash::BURN_TIME) as usize + 4_800];
+        c.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+        assert!(!c.alive(), "the crash should retire itself");
+
+        let tail_from = (48_000.0 * crate::crash::BURN_TIME) as usize;
+        let tail = buf[tail_from..].iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(tail < 1e-4, "still sounding after the fire went out: {tail}");
+    }
+
+    #[test]
+    fn a_silent_crash_voice_costs_nothing_until_it_is_fired() {
+        let mut c = Crash::new();
+        let mut buf = vec![0.0; 4_800];
+        c.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+        assert!(buf.iter().all(|s| *s == 0.0), "an unfired crash must be silent");
+        assert!(!c.alive());
+    }
+
+    #[test]
+    fn a_harder_hit_is_a_louder_crash() {
+        // The game captures the impact speed BEFORE zeroing it, so this
+        // number is real. If it stopped mattering, every shunt would
+        // sound like every other one.
+        let peak_at = |force: f32| {
+            let mut c = Crash::new();
+            c.retrigger(force, 1.0);
+            let mut buf = vec![0.0; 24_000];
+            c.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+            buf.iter().fold(0.0f32, |a, b| a.max(b.abs()))
+        };
+        let gentle = peak_at(0.2);
+        let hard = peak_at(1.0);
+        assert!(gentle > 0.0, "even a gentle hit should be audible");
+        assert!(
+            hard > gentle * 1.3,
+            "a full-speed shunt ({hard}) should clearly beat a nudge ({gentle})",
+        );
+    }
+
+    #[test]
+    fn the_crash_starts_with_its_attack_not_a_fade() {
+        // A struck thing starts at full deflection. The rumble tooth got
+        // this wrong by using sin(), which is zero at t=0, and every hit
+        // faded in. The first millisecond should already be loud.
+        let mut c = Crash::new();
+        c.retrigger(1.0, 1.0);
+        let mut buf = vec![0.0; 24_000];
+        c.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+
+        let first_ms = buf[..48].iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        let overall = buf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(
+            first_ms > overall * 0.4,
+            "the impact fades in: {first_ms} in the first ms against a peak of {overall}",
+        );
+    }
+
+    #[test]
+    fn a_crash_never_clips_or_goes_non_finite() {
+        for force in [0.0f32, 0.5, 1.0] {
+            let mut c = Crash::new();
+            c.retrigger(force, 1.0);
+            let mut buf = vec![0.0; 72_000];
+            c.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+            for s in buf {
+                assert!(s.is_finite(), "non-finite at force {force}");
+                assert!(s.abs() <= 1.0, "clipped at force {force}");
             }
         }
     }

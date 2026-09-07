@@ -211,6 +211,20 @@ pub struct Drive {
 /// look nothing like a rendering change.
 pub const RUMBLE_FRACTION: f32 = 0.13;
 
+/// How much of a half-width a car occupies, side to side.
+///
+/// DERIVED: the player sprite's ink is 44 columns wide, and
+/// `render::CAR_ART_PIXELS_PER_HALF_WIDTH` is 70 — so a car covers
+/// 44/70 of a half-width on screen. Two cars whose lateral positions
+/// differ by less than this are drawn OVERLAPPING, which is exactly when
+/// a collision should register.
+///
+/// The road is 2.0 half-widths wide, so three cars abreast come to 1.886
+/// and barely fit. Gaps are real but tight, which is the right feel for a
+/// racer and is a property of the art rather than a number anyone chose.
+pub const CAR_WIDTH_HALF_WIDTHS: f32 = 44.0 / 70.0;
+
+
 /// What the car is driving on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
@@ -241,6 +255,59 @@ impl Surface {
             Surface::Road => 1.0,
             Surface::Rumble => 0.85,
             Surface::Grass => 0.45,
+        }
+    }
+
+    /// The surface under the car's WHEELS, given the centre position.
+    ///
+    /// # Why this is not [`Surface::at`]
+    ///
+    /// They answer different questions and both are right for their
+    /// caller. `at` asks *where is the car's reference point*, which is
+    /// what the speed cap wants: the physics models the car as a point,
+    /// and moving it to the wheels would narrow the usable road by 36%
+    /// and invalidate every number derived from the old width —
+    /// `Pacer::EXACT`, the qualifying cut, the allowances, the tuning
+    /// Brian drove and approved.
+    ///
+    /// This asks *is any part of the car touching that surface*, which
+    /// is what SOUND wants, because you hear what the tyres hit and not
+    /// where the centre of mass is.
+    ///
+    /// The difference is not small. The car is
+    /// [`CAR_WIDTH_HALF_WIDTHS`](CAR_WIDTH_HALF_WIDTHS)
+    /// = 0.629 across and the rumble strip is
+    /// [`RUMBLE_FRACTION`] = 0.13 wide — the car is **4.8 times wider
+    /// than the strip**, so a wheel can be fully on the teeth while the
+    /// centre is still on clean tarmac. Brian heard exactly that: the
+    /// rattle arriving late, after the car was visibly on the strip.
+    ///
+    /// # The two boundaries move differently, and that is deliberate
+    ///
+    /// The **outer wheel** decides the rumble: one wheel on the teeth
+    /// rattles the whole car, which is exactly the warning the strip
+    /// exists to give.
+    ///
+    /// The **centre** decides the grass: you are off the road when the
+    /// car is off the road. Taking grass from the outer wheel too would
+    /// wash the moment a wheel brushed the verge — at a centre of 0.69
+    /// the outer wheel is just past 1.0 while the car is still on
+    /// tarmac at full speed, so you would hear yourself ploughing a
+    /// field with nothing slowing you down. A brushed verge is a
+    /// rattle, not a wash.
+    ///
+    /// The result is a rumble that spans 0.556 to 1.000 instead of a
+    /// 0.13-wide sliver: a real warning zone, ending exactly where the
+    /// physics says the car has left the road.
+    pub fn under_wheels(x: f32) -> Surface {
+        // Half the car's width: how far each wheel sits from the centre.
+        let reach = CAR_WIDTH_HALF_WIDTHS * 0.5;
+        if x.abs() > 1.0 {
+            Surface::Grass
+        } else if x.abs() + reach > 1.0 - RUMBLE_FRACTION {
+            Surface::Rumble
+        } else {
+            Surface::Road
         }
     }
 
@@ -666,6 +733,108 @@ mod tests {
             car.x = x;
             assert_eq!(car.surface(), want, "at x={x}");
         }
+    }
+
+    #[test]
+    fn a_wheel_reaches_the_strip_before_the_centre_does() {
+        // Brian heard the rattle arrive late. The car is 4.8x wider than
+        // a rumble strip, so the outer wheel is fully on the teeth while
+        // the centre is still on tarmac.
+        let reach = CAR_WIDTH_HALF_WIDTHS * 0.5;
+        let just_on = 1.0 - RUMBLE_FRACTION - reach + 0.01;
+
+        assert_eq!(
+            Surface::at(just_on),
+            Surface::Road,
+            "the centre is still on tarmac here",
+        );
+        assert_eq!(
+            Surface::under_wheels(just_on),
+            Surface::Rumble,
+            "but a wheel is already on the strip, which is what you hear",
+        );
+    }
+
+    #[test]
+    fn a_brushed_verge_rattles_rather_than_washing() {
+        // The outer wheel decides the rumble; the CENTRE decides the
+        // grass. At 0.69 the outer wheel is just past the road edge but
+        // the car is still driving normally at full speed — hearing a
+        // grass wash there would be describing a different car.
+        assert_eq!(Surface::under_wheels(0.69), Surface::Rumble);
+        assert_eq!(Surface::under_wheels(0.99), Surface::Rumble);
+        assert_eq!(Surface::under_wheels(1.01), Surface::Grass);
+    }
+
+    #[test]
+    fn the_rumble_warning_zone_is_wide_enough_to_be_a_warning() {
+        // Taking BOTH boundaries from the outer wheel left a 0.13-wide
+        // sliver of rumble before grass — a blip, not a warning. Read
+        // this way it spans from the first wheel touching the teeth to
+        // the car actually leaving the road.
+        let reach = CAR_WIDTH_HALF_WIDTHS * 0.5;
+        let starts = 1.0 - RUMBLE_FRACTION - reach;
+        let ends = 1.0;
+        assert!(
+            ends - starts > 0.4,
+            "the rumble zone is only {:.3} wide", ends - starts,
+        );
+    }
+
+    #[test]
+    fn the_wheel_rule_never_reports_a_better_surface_than_the_centre() {
+        // A wheel can only reach WORSE ground than the centre, never
+        // better: the surfaces are symmetric and get worse outward.
+        let rank = |s: Surface| match s {
+            Surface::Road => 0,
+            Surface::Rumble => 1,
+            Surface::Grass => 2,
+        };
+        let mut x = -1.6;
+        while x <= 1.6 {
+            assert!(
+                rank(Surface::under_wheels(x)) >= rank(Surface::at(x)),
+                "at x={x} the wheels reported better ground than the centre",
+            );
+            x += 0.01;
+        }
+    }
+
+    #[test]
+    fn the_wheel_rule_is_symmetric() {
+        // Left and right must behave identically; the road is symmetric
+        // and so is the car.
+        let mut x = 0.0;
+        while x <= 1.6 {
+            assert_eq!(
+                Surface::under_wheels(x),
+                Surface::under_wheels(-x),
+                "asymmetric at x={x}",
+            );
+            x += 0.01;
+        }
+    }
+
+    #[test]
+    fn the_physics_still_uses_the_centre() {
+        // ⚠️ THE GUARD ON THE WHOLE CHANGE. Moving the speed cap to the
+        // wheels narrows the usable road by 36% and invalidates
+        // Pacer::EXACT, the qualifying cut, the allowances and the
+        // tuning Brian drove. Sound moved; handling deliberately did
+        // not. If someone "fixes" the inconsistency later, this says why
+        // it is not one.
+        let mut d = Drive::new();
+        d.x = 0.80; // a wheel is on the strip here, the centre is not
+        assert_eq!(
+            Surface::under_wheels(d.x),
+            Surface::Rumble,
+            "fixture: a wheel should be on the strip at this position",
+        );
+        assert_eq!(
+            d.surface(),
+            Surface::Road,
+            "the SPEED CAP must still read the centre — see Surface::under_wheels",
+        );
     }
 
     /// Grass costs real speed. THE BUG THIS EXISTS FOR: `off_road()` was

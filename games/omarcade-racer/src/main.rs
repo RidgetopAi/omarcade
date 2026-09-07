@@ -330,7 +330,11 @@ impl Racer {
         // What is under the wheels. The voice is silent on tarmac, so
         // this is set unconditionally rather than gated here — the same
         // idempotent every-frame call as the others.
-        let kind = match self.car.surface() {
+        // What the WHEELS are on, not what the centre is over. The car
+        // is 4.8x wider than a rumble strip, so the centre rule made the
+        // rattle arrive late — see `Surface::under_wheels`. The physics
+        // deliberately still uses the centre.
+        let kind = match drive::Surface::under_wheels(self.car.x) {
             drive::Surface::Road => sound::SURFACE_ROAD,
             drive::Surface::Rumble => sound::SURFACE_RUMBLE,
             drive::Surface::Grass => sound::SURFACE_GRASS,

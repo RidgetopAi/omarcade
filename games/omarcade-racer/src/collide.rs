@@ -18,18 +18,13 @@ use crate::drive::Drive;
 use crate::road::Road;
 use crate::traffic::Field;
 
-/// How much of a half-width a car occupies, side to side.
+/// How wide a car is, in half-widths.
 ///
-/// DERIVED: the player sprite's ink is 44 columns wide, and
-/// `render::CAR_ART_PIXELS_PER_HALF_WIDTH` is 70 — so a car covers
-/// 44/70 of a half-width on screen. Two cars whose lateral positions
-/// differ by less than this are drawn OVERLAPPING, which is exactly when
-/// a collision should register.
-///
-/// The road is 2.0 half-widths wide, so three cars abreast come to 1.886
-/// and barely fit. Gaps are real but tight, which is the right feel for a
-/// racer and is a property of the art rather than a number anyone chose.
-pub const CAR_WIDTH_HALF_WIDTHS: f32 = 44.0 / 70.0;
+/// Re-exported: the constant describes the CAR, so it lives in
+/// [`drive`](crate::drive) with the rest of the car. It stays visible
+/// here because this module's collision test is written in terms of it
+/// and reads better that way.
+pub use crate::drive::CAR_WIDTH_HALF_WIDTHS;
 
 /// How far ahead a car must be before its sprite stops overlapping the
 /// player's, in SEGMENTS.

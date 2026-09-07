@@ -109,7 +109,7 @@ impl WinitBackend {
 impl super::Backend for WinitBackend {
     type Error = Error;
 
-    fn run<G: Game>(self, game: G) -> Result<(), Error> {
+    fn run<G: Game>(self, game: G, audio: crate::AudioSystem) -> Result<(), Error> {
         let event_loop = EventLoop::new()?;
 
         // Wait, not Poll: block until there is something to do. With
@@ -122,9 +122,16 @@ impl super::Backend for WinitBackend {
             Idle::Animate { .. } => ControlFlow::WaitUntil(Instant::now()),
         });
 
+        // Every voice is registered by now, so opening the device here
+        // is what makes registration startup-only: from this point the
+        // audio thread is live and nothing new may be handed to it.
+        let mut audio = audio;
+        audio.start();
+
         let mut app = App {
             cfg: self,
             game,
+            audio,
             window: None,
             surface: None,
             last_frame: None,
@@ -148,6 +155,8 @@ impl super::Backend for WinitBackend {
 struct App<G: Game> {
     cfg: WinitBackend,
     game: G,
+    /// Outlives every frame: dropping this stops the stream.
+    audio: crate::AudioSystem,
     /// `Rc` because softbuffer's `Surface` holds the window too, and a
     /// struct owning both a window and a borrow of it cannot be
     /// expressed safely.
@@ -195,7 +204,10 @@ impl<G: Game> App<G> {
         let now = Instant::now();
         let dt = self.last_frame.map_or(0.0, |t| (now - t).as_secs_f32());
         self.last_frame = Some(now);
-        self.game.update(dt);
+        {
+            let mut audio = self.audio.handle();
+            self.game.update(dt, &mut audio);
+        }
 
         let mut buffer = surface.buffer_mut()?;
 
@@ -284,6 +296,23 @@ impl<G: Game> ApplicationHandler for App<G> {
                 let Some(key) = translate_key(code) else {
                     return;
                 };
+
+                // Volume belongs to the SUITE, not to any game, so these
+                // never reach `on_input`. If they did, every title would
+                // have to remember to forward three keys it does not
+                // care about, and the first one to forget would ship
+                // with mute silently doing nothing.
+                if matches!(key, Key::M | Key::Minus | Key::Equals) {
+                    if state == ElementState::Pressed {
+                        match key {
+                            Key::M => self.audio.toggle_mute(),
+                            Key::Minus => self.audio.nudge_volume(false),
+                            _ => self.audio.nudge_volume(true),
+                        }
+                    }
+                    return;
+                }
+
                 let event = match state {
                     ElementState::Pressed => InputEvent::KeyDown(key),
                     ElementState::Released => InputEvent::KeyUp(key),
@@ -358,6 +387,9 @@ fn translate_key(code: KeyCode) -> Option<Key> {
         KeyCode::Enter | KeyCode::NumpadEnter => Key::Enter,
         KeyCode::Escape => Key::Escape,
         KeyCode::KeyP => Key::P,
+        KeyCode::KeyM => Key::M,
+        KeyCode::Minus | KeyCode::NumpadSubtract => Key::Minus,
+        KeyCode::Equal | KeyCode::NumpadAdd => Key::Equals,
         _ => return None,
     })
 }

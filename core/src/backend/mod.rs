@@ -304,6 +304,13 @@ pub enum Key {
     Enter,
     Escape,
     P,
+    /// Mute. Handled by the backend, never delivered to a game — see
+    /// [`Game::update`] and the volume note in [`crate::audio`].
+    M,
+    /// Volume down. Backend-handled, like [`Key::M`].
+    Minus,
+    /// Volume up. Backend-handled, like [`Key::M`].
+    Equals,
 }
 
 /// What the platform tells the game about.
@@ -326,8 +333,26 @@ pub trait Game {
     /// Handle one input event. Return `false` to quit.
     fn on_input(&mut self, event: InputEvent) -> bool;
 
-    /// Advance simulation by `dt` seconds.
-    fn update(&mut self, dt: f32);
+    /// Advance simulation by `dt` seconds, and say what it sounds like.
+    ///
+    /// Audio arrives here rather than in a method of its own because
+    /// sound is *caused* by simulation — a ball hits a brick, a car
+    /// passes — and splitting the two would mean remembering, between
+    /// two calls, what just happened in order to play it.
+    ///
+    /// [`Audio`](crate::audio::Audio) is borrowed for the frame exactly
+    /// as [`Canvas`] is:
+    /// it allocates nothing and outlives nothing. Continuous sounds are
+    /// set every frame with this frame's numbers; one-shots are fired
+    /// as the events that cause them occur.
+    ///
+    /// A game that wants no sound ignores the parameter.
+    ///
+    /// ⚠️ `M`, `-` and `=` never arrive at [`on_input`](Game::on_input):
+    /// the backend takes them for volume before a game sees them. Volume
+    /// is a property of the suite rather than of any one title, so a
+    /// game cannot give those keys another meaning.
+    fn update(&mut self, dt: f32, audio: &mut crate::audio::Audio<'_>);
 
     /// Paint the current state.
     fn render(&mut self, canvas: &mut Canvas<'_>);
@@ -345,7 +370,13 @@ pub trait Backend {
     type Error;
 
     /// Run `game` to completion, returning when it quits.
-    fn run<G: Game>(self, game: G) -> Result<(), Self::Error>;
+    ///
+    /// `audio` is taken by value because the stream must outlive every
+    /// frame and stop when the run does — the same lifetime as the
+    /// window. A game that wants no sound passes
+    /// [`AudioSystem::new`](crate::AudioSystem::new) and never touches
+    /// it again.
+    fn run<G: Game>(self, game: G, audio: crate::AudioSystem) -> Result<(), Self::Error>;
 }
 
 #[cfg(test)]

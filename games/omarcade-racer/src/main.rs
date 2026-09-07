@@ -23,12 +23,16 @@ mod render;
 mod road;
 mod scenery;
 mod score;
+mod sound;
 mod structures;
 mod track;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::scores::ScoreFile;
-use omarcade_core::{Backend, Canvas, Game, InputEvent, Key, Roll, Theme};
+use omarcade_core::{
+    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Roll, Theme, VoiceId,
+    VoiceParams,
+};
 
 use art::Art;
 use drive::{Drive, Tuning};
@@ -103,6 +107,12 @@ struct Racer {
     /// lane before the traffic is dangerous again. Derived from how long
     /// it takes to reach the slowest car's pace — `crash::recovery_time`.
     recovering: f32,
+    /// The engine voice, registered before the stream started.
+    engine: VoiceId,
+    /// Whether the engine has been started yet — it begins at the green
+    /// light rather than at the menu, so a car that is not running does
+    /// not idle at the player.
+    engine_running: bool,
     /// The run: qualifying, the grid, the clock, the laps. Every limit
     /// in it is derived from the reference driver at start-up.
     race: Race,
@@ -134,7 +144,7 @@ struct Racer {
 }
 
 impl Racer {
-    fn new(theme: Theme) -> Self {
+    fn new(theme: Theme, engine: VoiceId) -> Self {
         let art = Art::load(&theme);
         // The shipped course. `render::demo_track()` is still there and is
         // still what the visual scenes use — it is one bend, sized to be
@@ -180,6 +190,8 @@ impl Racer {
             traffic,
             crash: None,
             recovering: 0.0,
+            engine,
+            engine_running: false,
             race,
             grid_z: start_z,
             flash: None,
@@ -241,7 +253,7 @@ impl Racer {
 
     /// Back to the grid for a fresh qualifying lap.
     fn restart(&mut self) {
-        *self = Racer::new(self.theme);
+        *self = Racer::new(self.theme, self.engine);
     }
 
     /// React to what the race reported this frame.
@@ -268,6 +280,48 @@ impl Racer {
     }
 
     /// Steering input as -1..1, from the two held flags.
+    /// Say what this frame sounds like.
+    ///
+    /// Kept out of `update` proper because the simulation above is long
+    /// enough already, and because everything here is a READ of state
+    /// the frame has already settled — sound is downstream of the
+    /// simulation, never a participant in it.
+    fn sound(&mut self, audio: &mut Audio<'_>, event: Option<Event>) {
+        // The engine starts at the green light, not at the menu: a car
+        // that is not running should not idle at the player through the
+        // attract screen.
+        let should_run = !matches!(self.race.phase, Phase::Over(_) | Phase::Finished { .. });
+        if should_run != self.engine_running {
+            self.engine_running = should_run;
+            if should_run {
+                audio.start(self.engine);
+            } else {
+                audio.stop(self.engine);
+            }
+        }
+
+        // This frame's numbers, every frame. `set` is idempotent, so
+        // there is deliberately no change detection to write here.
+        let throttle = if self.tuning.top_speed > 0.0 {
+            self.car.speed / self.tuning.top_speed
+        } else {
+            0.0
+        };
+        audio.set(self.engine, VoiceParams::engine(throttle));
+
+        // A crash ducks the engine away and lets it back over the
+        // recovery window — which is derived from the tuning, so it is
+        // already exactly as long as the player is out of control.
+        if matches!(event, Some(Event::Over(_))) {
+            audio.duck(VoiceId::NONE, 0.0, 0.15);
+        }
+        if self.crash.is_some() {
+            audio.duck(VoiceId::NONE, 0.15, 0.12);
+        } else if self.recovering > 0.0 {
+            audio.unduck(crash::recovery_time(&self.tuning).max(0.2));
+        }
+    }
+
     fn steer(&self) -> f32 {
         match (self.left_held, self.right_held) {
             (true, false) => -1.0,
@@ -339,7 +393,7 @@ impl Game for Racer {
         true
     }
 
-    fn update(&mut self, dt: f32) {
+    fn update(&mut self, dt: f32, audio: &mut Audio<'_>) {
         // A dt spike — a dragged window, a stalled compositor — must not
         // teleport the car through a corner or past a rival. Clamping to
         // roughly four frames keeps a hitch as a hitch.
@@ -466,6 +520,7 @@ impl Game for Racer {
             self.ledger.distance(self.race.travelled());
         }
         self.on_event(event);
+        self.sound(audio, event);
     }
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
@@ -532,9 +587,15 @@ pub fn flash_for(event: Event) -> Option<Flash> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let theme = Theme::load();
 
+    // Registration is startup-only: every voice must exist before
+    // `run` opens the device, because after that nothing may be handed
+    // to the audio thread.
+    let mut audio = AudioSystem::new();
+    let engine = audio.register(Box::new(sound::Engine::new()));
+
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
-        .run(Racer::new(theme))?;
+        .run(Racer::new(theme, engine), audio)?;
 
     Ok(())
 }
@@ -543,8 +604,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
+    /// Advance the game one frame, silently.
+    ///
+    /// The audio system here never opens a device — `start()` is not
+    /// called — so every command goes into the ring and nowhere else.
+    /// That is exactly the path a machine with no sound card takes,
+    /// which makes every test below a standing check that the silent
+    /// path keeps working.
+    fn step(g: &mut Racer, dt: f32) {
+        let mut audio = AudioSystem::new();
+        g.update(dt, &mut audio.handle());
+    }
+
     fn racer() -> Racer {
-        Racer::new(Theme::load())
+        Racer::new(Theme::load(), VoiceId::NONE)
     }
 
     /// A racer past the lights, on its qualifying lap, so a test about
@@ -559,7 +632,7 @@ mod tests {
         let mut g = on_track();
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..60 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         assert!(g.race.travelled() > 0.0, "the car never moved");
         // At least the ground the car stands on. Equal unless a crash
@@ -571,10 +644,10 @@ mod tests {
 
     #[test]
     fn the_grid_and_the_lights_pay_nothing() {
-        let mut g = Racer::new(Theme::default());
+        let mut g = Racer::new(Theme::default(), VoiceId::NONE);
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..30 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         assert!(matches!(g.race.phase, Phase::Countdown { .. }));
         assert_eq!(g.ledger.total(), 0);
@@ -594,7 +667,7 @@ mod tests {
         let mut g = on_track();
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..60 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         let banked = g.ledger.total();
         assert!(banked > 0);
@@ -662,7 +735,7 @@ mod tests {
         let mut g = on_track();
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..120 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         assert!(g.car.speed > 0.0, "the car never moved");
         assert!(g.car.z > 0.0, "the car never advanced down the track");
@@ -676,11 +749,11 @@ mod tests {
         let mut g = on_track();
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..600 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         let before = g.car.z;
 
-        g.update(2.0);
+        step(&mut g, 2.0);
         let jumped = g.car.z - before;
         let one_frame = g.tuning.top_speed / 60.0;
         assert!(
@@ -699,7 +772,7 @@ mod tests {
         let mut last = g.roll.phase();
         let mut moved = false;
         for _ in 0..600 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
             let step = (g.roll.phase() - last).abs();
             assert!(
                 step <= omarcade_core::sprite::MAX_ROLL_PER_FRAME + 1e-6,
@@ -729,17 +802,17 @@ mod tests {
 
         assert!(g.crash.is_none(), "started already crashed");
 
-        g.update(1.0 / 60.0);
+        step(&mut g, 1.0 / 60.0);
         assert!(g.crash.is_some(), "drove into a car and nothing happened");
 
         // The car is stopped while it burns — that is the cost, since the
         // plan's fail state is a missed checkpoint rather than the crash.
-        g.update(1.0 / 60.0);
+        step(&mut g, 1.0 / 60.0);
         assert_eq!(g.car.speed, 0.0, "a burning wreck is still moving");
 
         // And it ends on its own.
         for _ in 0..(crash::BURN_TIME * 120.0) as usize {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         assert!(g.crash.is_none(), "the fireball never burned out");
     }
@@ -751,12 +824,12 @@ mod tests {
         g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
         g.traffic.cars[0].x = g.car.x;
         g.car.speed = g.tuning.top_speed * 0.5;
-        g.update(1.0 / 60.0);
+        step(&mut g, 1.0 / 60.0);
         assert!(g.crash.is_some());
 
         g.throttle_held = true;
         for _ in 0..30 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
             assert_eq!(
                 g.car.speed, 0.0,
                 "the throttle moved the car while it was a fireball"
@@ -774,14 +847,14 @@ mod tests {
         g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
         g.traffic.cars[0].x = g.car.x;
         g.car.speed = g.tuning.top_speed * 0.5;
-        g.update(1.0 / 60.0);
+        step(&mut g, 1.0 / 60.0);
         assert!(g.crash.is_some());
 
         // Watch a car that is NOT the one that was hit.
         let watched = 2;
         let before = g.traffic.cars[watched].z;
         for _ in 0..60 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         assert!(
             (g.traffic.cars[watched].z - before).abs() > 1.0,
@@ -849,7 +922,7 @@ mod tests {
         let clock = g.race.clock;
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..30 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         assert_eq!(g.car.z, car_z, "the car moved during the countdown");
         assert_eq!(g.car.speed, 0.0);
@@ -864,7 +937,7 @@ mod tests {
         let mut g = racer();
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..((race::COUNTDOWN_SECONDS + 1.0) * 60.0) as usize {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         assert_eq!(g.race.phase, Phase::Qualifying);
         assert!(g.car.speed > 0.0, "the car never moved after the green light");
@@ -880,7 +953,7 @@ mod tests {
         g.race.clock = 30.0;
         g.crash = Some(crash::Explosion::start(g.car.z + 500.0, 0.0));
         for _ in 0..12 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         assert!(g.crash.is_some(), "fixture: the fire should still be burning");
         assert!(
@@ -945,7 +1018,7 @@ mod tests {
         g.car.speed = g.tuning.top_speed;
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..(3.0 * 60.0) as usize {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         assert_eq!(g.car.speed, 0.0, "the car kept going after the flag");
     }
@@ -960,10 +1033,10 @@ mod tests {
         g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
         g.traffic.cars[0].x = g.car.x;
         g.car.speed = g.tuning.top_speed * 0.5;
-        g.update(1.0 / 60.0);
+        step(&mut g, 1.0 / 60.0);
         assert!(g.crash.is_some(), "fixture: no first crash");
         while g.crash.is_some() {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
         }
         let window = crash::recovery_time(&g.tuning);
         assert!(window > 1.0, "the window is too short to matter: {window}");
@@ -979,7 +1052,7 @@ mod tests {
         g.throttle_held = true;
         let mut t = 0.0;
         while t < window - 0.1 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
             t += 1.0 / 60.0;
             assert!(g.crash.is_none(), "crashed {t:.2}s into a {window:.2}s recovery window");
             // Keep the target car just ahead so the geometry stays a hit.
@@ -988,7 +1061,7 @@ mod tests {
         }
         // The window ends; the same car is now a crash.
         for _ in 0..30 {
-            g.update(1.0 / 60.0);
+            step(&mut g, 1.0 / 60.0);
             if g.crash.is_some() {
                 return;
             }

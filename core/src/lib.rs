@@ -7,7 +7,12 @@
 //! [`geom`] is the shared vector and rectangle maths every title so
 //! far has needed, [`sprite`] turns authored pixel art into drawable
 //! pixels, and [`theme`] reads the live Omarchy palette.
+//!
+//! [`audio`] is the second seam: core owns the output stream, the mixer
+//! and the volume, and games hand it sounds. A game's engine noise
+//! lives in that game, so a title that wants none pays for none.
 
+pub mod audio;
 pub mod backend;
 pub mod ease;
 pub mod geom;
@@ -16,6 +21,7 @@ pub mod sprite;
 pub mod text;
 pub mod theme;
 
+pub use audio::{Audio, AudioSystem, SoundId, Voice, VoiceId, VoiceParams};
 pub use backend::{Backend, Canvas, Color, Game, InputEvent, Key};
 pub use geom::{Axis, Rect, Vec2};
 pub use sprite::{Pose, Roll, Sprite};

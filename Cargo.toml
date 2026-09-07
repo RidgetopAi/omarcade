@@ -17,8 +17,11 @@ authors = ["Brian Ridgetopai"]
 # drifting onto a different winit than core.
 #
 # Note which crates are absent by design: no game package depends on
-# winit or softbuffer. They cannot import what they do not list.
+# winit, softbuffer or cpal. They cannot import what they do not list —
+# a game reaches the speakers through omarcade-core's audio seam or not
+# at all.
 [workspace.dependencies]
+cpal = "0.18.2"
 winit = "0.30.13"
 softbuffer = "0.4.8"
 toml = "1.1.4"

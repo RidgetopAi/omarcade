@@ -19,7 +19,7 @@ mod state;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::scores::ScoreFile;
-use omarcade_core::{Backend, Canvas, Game, InputEvent, Key, Theme};
+use omarcade_core::{Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Theme};
 
 use physics::Accumulator;
 use state::{GameState, Phase};
@@ -122,7 +122,7 @@ impl Game for Breakout {
         true
     }
 
-    fn update(&mut self, dt: f32) {
+    fn update(&mut self, dt: f32, _audio: &mut Audio<'_>) {
         physics::step(&mut self.state, &mut self.accumulator, dt);
 
         if matches!(self.state.phase, Phase::Won | Phase::Lost) {
@@ -143,7 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // redraws on its own. There is a ball to move now, so the loop
         // paces itself with WaitUntil — still never Poll.
         .idle(Idle::Animate { fps: 60 })
-        .run(Breakout::new(theme))?;
+        .run(Breakout::new(theme), AudioSystem::new())?;
 
     Ok(())
 }

@@ -15,7 +15,7 @@ mod state;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::scores::ScoreFile;
-use omarcade_core::{Backend, Canvas, Game, InputEvent, Key, Theme};
+use omarcade_core::{Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Theme};
 
 use ai::Opponent;
 use physics::Accumulator;
@@ -180,7 +180,7 @@ impl Game for Pong {
         true
     }
 
-    fn update(&mut self, dt: f32) {
+    fn update(&mut self, dt: f32, _audio: &mut Audio<'_>) {
         // The opponent decides before time advances, so its choice is
         // acted on by the same physics step the player's input is.
         self.opponent.update(&mut self.state, dt);
@@ -201,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
-        .run(Pong::new(theme))?;
+        .run(Pong::new(theme), AudioSystem::new())?;
 
     Ok(())
 }

@@ -109,6 +109,9 @@ struct Racer {
     recovering: f32,
     /// The engine voice, registered before the stream started.
     engine: VoiceId,
+    /// The tyre voice. Always running while the car is; it is the
+    /// `lean` parameter that decides whether it is audible.
+    tyres: VoiceId,
     /// Whether the engine has been started yet — it begins at the green
     /// light rather than at the menu, so a car that is not running does
     /// not idle at the player.
@@ -144,7 +147,7 @@ struct Racer {
 }
 
 impl Racer {
-    fn new(theme: Theme, engine: VoiceId) -> Self {
+    fn new(theme: Theme, engine: VoiceId, tyres: VoiceId) -> Self {
         let art = Art::load(&theme);
         // The shipped course. `render::demo_track()` is still there and is
         // still what the visual scenes use — it is one bend, sized to be
@@ -191,6 +194,7 @@ impl Racer {
             crash: None,
             recovering: 0.0,
             engine,
+            tyres,
             engine_running: false,
             race,
             grid_z: start_z,
@@ -253,7 +257,7 @@ impl Racer {
 
     /// Back to the grid for a fresh qualifying lap.
     fn restart(&mut self) {
-        *self = Racer::new(self.theme, self.engine);
+        *self = Racer::new(self.theme, self.engine, self.tyres);
     }
 
     /// React to what the race reported this frame.
@@ -295,8 +299,10 @@ impl Racer {
             self.engine_running = should_run;
             if should_run {
                 audio.start(self.engine);
+                audio.start(self.tyres);
             } else {
                 audio.stop(self.engine);
+                audio.stop(self.tyres);
             }
         }
 
@@ -308,6 +314,13 @@ impl Racer {
             0.0
         };
         audio.set(self.engine, VoiceParams::engine(throttle));
+
+        // The tyres. `cornering` is already a signed 0..1 lean, so the
+        // squeal only needs its magnitude — a left-hander and a
+        // right-hander sound the same, because the tyres do not care
+        // which way the load is going.
+        let lean = self.car.cornering(&self.road, &self.tuning).abs();
+        audio.set(self.tyres, VoiceParams::squeal(lean, throttle));
 
         // A crash ducks the engine away and lets it back over the
         // recovery window — which is derived from the tuning, so it is
@@ -592,10 +605,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // to the audio thread.
     let mut audio = AudioSystem::new();
     let engine = audio.register(Box::new(sound::Engine::new()));
+    let tyres = audio.register(Box::new(sound::Squeal::new()));
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
-        .run(Racer::new(theme, engine), audio)?;
+        .run(Racer::new(theme, engine, tyres), audio)?;
 
     Ok(())
 }
@@ -617,7 +631,7 @@ mod tests {
     }
 
     fn racer() -> Racer {
-        Racer::new(Theme::load(), VoiceId::NONE)
+        Racer::new(Theme::load(), VoiceId::NONE, VoiceId::NONE)
     }
 
     /// A racer past the lights, on its qualifying lap, so a test about
@@ -644,7 +658,7 @@ mod tests {
 
     #[test]
     fn the_grid_and_the_lights_pay_nothing() {
-        let mut g = Racer::new(Theme::default(), VoiceId::NONE);
+        let mut g = Racer::new(Theme::default(), VoiceId::NONE, VoiceId::NONE);
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..30 {
             step(&mut g, 1.0 / 60.0);

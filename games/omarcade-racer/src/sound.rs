@@ -305,6 +305,174 @@ impl Voice for Engine {
     }
 }
 
+/// Tyre squeal — a warning, not a report.
+///
+/// # Why it starts before the limit
+///
+/// Brian's call, and the threshold is not a typed number. `track.rs`
+/// names its bends against the physics limit and says what each means:
+///
+/// ```text
+///   0.55  comfortably holdable      0.95  holdable, but working
+///   1.30  flat out goes off         1.80  as hard as the car leans
+/// ```
+///
+/// Divided by `FULL_LEAN_CURVE`, [`Drive::cornering`] returns 0.31 /
+/// 0.53 / 0.72 / 1.00 at those bends. Squeal begins at [`THRESHOLD`],
+/// below the Firm mark — so the first hint arrives while the car is
+/// still holdable and the player can still do something about it. A
+/// squeal that begins at the limit is a report; one that begins under it
+/// is a warning, and that is the difference between a car that talks to
+/// you and one that complains.
+///
+/// # Why it is an oscillator and not filtered noise
+///
+/// It was filtered noise first, and Brian's verdict was "sounds like
+/// static, and not high pitched static either." He was right, and it was
+/// structural rather than a tuning miss: a bandpass passes a BAND — 114
+/// Hz wide at Q=11 — and the ear hears a band of noise as noise wherever
+/// it is centred. A pitch needs energy in a line, which means an
+/// oscillator. Noise belongs UNDER it as road grit, where being static
+/// is exactly right because it is not carrying the note.
+///
+/// (This is the second time on this project that a control could not
+/// express the thing it named. See LESSONS L033.)
+pub struct Squeal {
+    phase: f32,
+    vib_phase: f32,
+    slip_phase: f32,
+    level: f32,
+    hp: Highpass,
+    grit: Resonator,
+    noise: u32,
+}
+
+/// Where squeal begins, in [`Drive::cornering`] units. Below the Firm
+/// bend (0.53) on purpose — see the type docs.
+const THRESHOLD: f32 = 0.42;
+/// Where it is fully present. Just past MustBrake (0.72).
+const FULL_BY: f32 = 0.78;
+const SQUEAL_LEVEL: f32 = 0.20;
+
+/// Brian's tuning, found by ear in `tools/sfx/squeal.html`.
+///
+/// He widened the range I had: a LOWER base pitch with a STEEPER rise,
+/// so the squeal is calmer than mine when barely leaning (1571 Hz vs
+/// 1779 at Gentle) and higher when the car is genuinely at it (2440 vs
+/// 2400 at Hard). Quiet while you are fine, urgent fast when you are
+/// not — a better warning curve than the one it replaced.
+const PITCH_HZ: f32 = 1180.0;
+const PITCH_RISE: f32 = 1260.0;
+/// How far the pitch falls as speed is scrubbed off.
+const SLIDE: f32 = 480.0;
+/// Pulse duty. 25% is nasal; lower is more piercing, 50% is hollow.
+const DUTY: f32 = 0.25;
+const SCREECH_LEVEL: f32 = 0.52;
+/// The tyre catching and releasing. Without it a steady oscillator is a
+/// test tone rather than rubber.
+const VIBRATO_HZ: f32 = 16.0;
+const VIBRATO_DEPTH: f32 = 95.0;
+/// The stick-slip cycle. Brian more than doubled this (34 -> 75): much
+/// more tyre, much less tone.
+const SLIP_HZ: f32 = 75.0;
+const SLIP_DEPTH: f32 = 0.46;
+const SLIP_WITH_SPEED: f32 = 52.0;
+const GRIT_LEVEL: f32 = 0.28;
+const GRIT_HZ: f32 = 2800.0;
+/// Keeps the squeal clear of the engine rather than fighting it.
+const HIGHPASS_HZ: f32 = 1100.0;
+
+/// A one-pole highpass: the input minus its own lowpassed self.
+#[derive(Default)]
+struct Highpass {
+    y: f32,
+}
+
+impl Highpass {
+    fn tick(&mut self, x: f32, hz: f32, sample_rate: f32) -> f32 {
+        let a = 1.0 - (-TAU * hz / sample_rate).exp();
+        self.y += a * (x - self.y);
+        x - self.y
+    }
+}
+
+impl Squeal {
+    pub fn new() -> Squeal {
+        Squeal {
+            phase: 0.0,
+            vib_phase: 0.0,
+            slip_phase: 0.0,
+            level: 0.0,
+            hp: Highpass::default(),
+            grit: Resonator::default(),
+            noise: 0x9e37_79b9,
+        }
+    }
+
+    /// How loud the squeal is at this lean: silent below the threshold,
+    /// full by [`FULL_BY`], smoothstepped between so the first hint
+    /// fades in rather than switching on.
+    fn amount(lean: f32) -> f32 {
+        if lean <= THRESHOLD {
+            return 0.0;
+        }
+        let t = ((lean - THRESHOLD) / (FULL_BY - THRESHOLD)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    fn white(&mut self) -> f32 {
+        self.noise ^= self.noise << 13;
+        self.noise ^= self.noise >> 17;
+        self.noise ^= self.noise << 5;
+        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+}
+
+impl Default for Squeal {
+    fn default() -> Self {
+        Squeal::new()
+    }
+}
+
+impl Voice for Squeal {
+    fn render(&mut self, out: &mut [f32], params: VoiceParams, sample_rate: f32) {
+        let lean = params.get(0).clamp(0.0, 1.0);
+        let speed = params.get(1).clamp(0.0, 1.0);
+        let target = Squeal::amount(lean) * SQUEAL_LEVEL;
+        let dt = 1.0 / sample_rate;
+
+        for sample in out.iter_mut() {
+            // Smooth, for the same reason the engine's throttle is
+            // smoothed: the game sets this 60 times a second and a
+            // stepped gain is a click.
+            self.level += (target - self.level).clamp(-4.0 * dt, 4.0 * dt);
+
+            // Pitch rises with lean and falls as speed is scrubbed off.
+            self.vib_phase = (self.vib_phase + VIBRATO_HZ * dt).fract();
+            let vib = (TAU * self.vib_phase).sin() * VIBRATO_DEPTH;
+            let hz = (PITCH_HZ + PITCH_RISE * lean - SLIDE * (1.0 - speed) + vib).max(80.0);
+
+            // A narrow-duty pulse: +1 for the first `DUTY` of the cycle,
+            // -1 after. Nasal rather than hollow, which is what makes it
+            // read as a screech.
+            self.phase = (self.phase + hz * dt).fract();
+            let screech = if self.phase < DUTY { 1.0 } else { -1.0 };
+
+            // Road grit under the screech.
+            let n = self.white();
+            let grit = self.grit.tick(n, GRIT_HZ, 1.2, sample_rate) * GRIT_LEVEL;
+
+            // The grip-release cycle, on the amplitude of both layers.
+            let slip_hz = SLIP_HZ + SLIP_WITH_SPEED * speed;
+            self.slip_phase = (self.slip_phase + slip_hz * dt).fract();
+            let slip = 1.0 - SLIP_DEPTH * 0.5 * (1.0 + (TAU * self.slip_phase).sin());
+
+            let mix = (screech * SCREECH_LEVEL + grit) * slip;
+            *sample = self.hp.tick(mix, HIGHPASS_HZ, sample_rate) * self.level;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +549,88 @@ mod tests {
                 (got - want).abs() <= 3.0,
                 "at throttle {throttle} fired {got}/s, wanted about {want}",
             );
+        }
+    }
+
+    /// The bends, in `Drive::cornering` units. `track.rs` states what
+    /// each means; these are those numbers divided by FULL_LEAN_CURVE.
+    const GENTLE: f32 = 0.55 / 1.8;
+    const FIRM: f32 = 0.95 / 1.8;
+    const MUST_BRAKE: f32 = 1.30 / 1.8;
+
+    #[test]
+    fn the_squeal_warns_before_the_limit_rather_than_reporting_it() {
+        // THE decision behind this voice, asserted against the track's
+        // own vocabulary rather than against typed numbers. If a retune
+        // of the bends or of FULL_LEAN_CURVE moves these, the squeal has
+        // stopped being a warning and this test should say so.
+        assert_eq!(
+            Squeal::amount(GENTLE),
+            0.0,
+            "a comfortably holdable bend must be silent",
+        );
+
+        let firm = Squeal::amount(FIRM);
+        assert!(
+            firm > 0.05 && firm < 0.5,
+            "a Firm bend is holdable but working: audible, not shouting (got {firm})",
+        );
+
+        let must_brake = Squeal::amount(MUST_BRAKE);
+        assert!(
+            must_brake > 0.8,
+            "by the point where flat out goes off it should be loud (got {must_brake})",
+        );
+
+        assert!(firm < must_brake, "the warning must grow with the lean");
+    }
+
+    #[test]
+    fn the_squeal_is_pitched_rather_than_noisy() {
+        // The bug Brian caught: filtered noise reads as static however
+        // it is centred. A pitched source repeats; noise does not. So
+        // correlate the signal with itself one period later — a tone
+        // scores high, static scores near zero.
+        let mut sq = Squeal::new();
+        let sr = 48_000.0;
+        let mut buf = vec![0.0; 24_000];
+        sq.render(&mut buf, VoiceParams::squeal(1.0, 0.8), sr);
+
+        let hz = PITCH_HZ + PITCH_RISE - SLIDE * 0.2;
+        let lag = (sr / hz).round() as usize;
+        let tail = &buf[8_000..];
+        let (mut num, mut den) = (0.0f32, 0.0f32);
+        for i in 0..tail.len() - lag {
+            num += tail[i] * tail[i + lag];
+            den += tail[i] * tail[i];
+        }
+        let correlation = num / den.max(1e-9);
+        assert!(
+            correlation > 0.25,
+            "the screech should repeat at its own pitch; correlation {correlation} \
+             means this is noise, not a tone",
+        );
+    }
+
+    #[test]
+    fn a_gentle_bend_makes_no_sound_at_all() {
+        let mut sq = Squeal::new();
+        let mut buf = vec![0.0; 4_800];
+        sq.render(&mut buf, VoiceParams::squeal(GENTLE, 0.9), 48_000.0);
+        let peak = buf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(peak < 1e-4, "silence below the threshold, got {peak}");
+    }
+
+    #[test]
+    fn the_squeal_never_clips_or_goes_non_finite() {
+        let mut sq = Squeal::new();
+        for (lean, speed) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (1.0, 0.0)] {
+            let mut buf = vec![0.0; 9_600];
+            sq.render(&mut buf, VoiceParams::squeal(lean, speed), 48_000.0);
+            for s in buf {
+                assert!(s.is_finite(), "non-finite at lean {lean} speed {speed}");
+                assert!(s.abs() <= 1.0, "clipped at lean {lean} speed {speed}");
+            }
         }
     }
 

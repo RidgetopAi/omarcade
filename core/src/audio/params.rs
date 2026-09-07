@@ -86,9 +86,15 @@ impl VoiceParams {
     }
 
     /// Tyre squeal at `lean` in 0..=1 — normally
-    /// `Drive::cornering().abs()`.
-    pub fn squeal(lean: f32) -> VoiceParams {
-        VoiceParams([lean.clamp(0.0, 1.0), 0.0, 0.0, 0.0])
+    /// `Drive::cornering().abs()` — and how fast the tyres are being
+    /// dragged over the road.
+    ///
+    /// Speed is a second parameter rather than folded into `lean`
+    /// because the two do different jobs: lean decides whether the tyre
+    /// is complaining at all, and speed decides how fast it grips and
+    /// releases while it does.
+    pub fn squeal(lean: f32, speed: f32) -> VoiceParams {
+        VoiceParams([lean.clamp(0.0, 1.0), speed.clamp(0.0, 1.0), 0.0, 0.0])
     }
 
     /// Surface noise: which surface, and how fast we are crossing it.

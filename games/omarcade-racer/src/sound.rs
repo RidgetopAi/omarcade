@@ -347,11 +347,21 @@ pub struct Squeal {
     noise: u32,
 }
 
-/// Where squeal begins, in [`Drive::cornering`] units. Below the Firm
-/// bend (0.53) on purpose — see the type docs.
-const THRESHOLD: f32 = 0.42;
-/// Where it is fully present. Just past MustBrake (0.72).
-const FULL_BY: f32 = 0.78;
+/// Where squeal begins, in [`Drive::grip_used`] units — **fractions of
+/// the grip limit**, where 1.0 is the bend the car must brake for.
+///
+/// 0.75 means "within a quarter of the limit". Below the limit on
+/// purpose: that is what makes this a warning you can act on rather
+/// than a report of a corner you have already lost.
+///
+/// ⚠️ NOT in `cornering` units. It was, and it was wrong: `cornering`
+/// scales with speed, so slowing for a hard bend made the signal FALL
+/// and the hardest corners on the track squealed least. Brian drove a
+/// lap and heard nothing anywhere, which is exactly what that bug
+/// sounds like.
+const THRESHOLD: f32 = 0.75;
+/// Fully present just past the limit.
+const FULL_BY: f32 = 1.05;
 const SQUEAL_LEVEL: f32 = 0.20;
 
 /// Brian's tuning, found by ear in `tools/sfx/squeal.html`.
@@ -552,11 +562,17 @@ mod tests {
         }
     }
 
-    /// The bends, in `Drive::cornering` units. `track.rs` states what
-    /// each means; these are those numbers divided by FULL_LEAN_CURVE.
-    const GENTLE: f32 = 0.55 / 1.8;
-    const FIRM: f32 = 0.95 / 1.8;
-    const MUST_BRAKE: f32 = 1.30 / 1.8;
+    /// The bends, in [`Drive::grip_used`] units — fractions of the grip
+    /// limit, taken FLAT OUT. `track.rs` states what each means, and
+    /// BRAKE_BEND is 1.0, so a bend's curve IS its grip fraction at full
+    /// speed.
+    const GENTLE: f32 = 0.55;
+    const FIRM: f32 = 0.95;
+    const MUST_BRAKE: f32 = 1.30;
+    /// A hard bend taken at a sensible speed. The case that was silent
+    /// before `grip_used` existed: slowing down used to make the signal
+    /// fall, so the corners most worth warning about warned least.
+    const HARD_AT_SEVENTY: f32 = 1.80 * 0.70;
 
     #[test]
     fn the_squeal_warns_before_the_limit_rather_than_reporting_it() {
@@ -572,17 +588,33 @@ mod tests {
 
         let firm = Squeal::amount(FIRM);
         assert!(
-            firm > 0.05 && firm < 0.5,
-            "a Firm bend is holdable but working: audible, not shouting (got {firm})",
+            firm > 0.2,
+            "a Firm bend taken flat out is working the tyres: audible (got {firm})",
         );
 
         let must_brake = Squeal::amount(MUST_BRAKE);
         assert!(
-            must_brake > 0.8,
-            "by the point where flat out goes off it should be loud (got {must_brake})",
+            must_brake > 0.9,
+            "past the limit it should be loud (got {must_brake})",
         );
 
-        assert!(firm < must_brake, "the warning must grow with the lean");
+        assert!(firm < must_brake, "the warning must grow with the grip used");
+    }
+
+    #[test]
+    fn a_hard_bend_still_squeals_when_you_slow_for_it() {
+        // THE BUG BRIAN FOUND. Measured against lean, slowing for a hard
+        // bend made the signal fall below the threshold, so the corners
+        // that most need a warning were the quietest on the track — he
+        // drove a lap and heard nothing anywhere. Measured against the
+        // grip limit, a hard bend is still a lot of corner for the speed
+        // being carried, and still says so.
+        let slowed = Squeal::amount(HARD_AT_SEVENTY);
+        assert!(
+            slowed > 0.5,
+            "a Hard bend at 70% speed is still near the limit and must \
+             warn (got {slowed})",
+        );
     }
 
     #[test]
@@ -616,7 +648,7 @@ mod tests {
     fn a_gentle_bend_makes_no_sound_at_all() {
         let mut sq = Squeal::new();
         let mut buf = vec![0.0; 4_800];
-        sq.render(&mut buf, VoiceParams::squeal(GENTLE, 0.9), 48_000.0);
+        sq.render(&mut buf, VoiceParams::squeal(GENTLE * 0.9, 0.9), 48_000.0);
         let peak = buf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
         assert!(peak < 1e-4, "silence below the threshold, got {peak}");
     }

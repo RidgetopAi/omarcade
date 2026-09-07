@@ -439,6 +439,34 @@ impl Drive {
     /// This is deliberately the *bend*, not the steering input: the car
     /// leans because it is going round a corner, not because a key is
     /// held. Holding left on a straight should not bank the car.
+    /// How much of the available grip this corner is using, where
+    /// **1.0 is the limit** — the bend the car must brake for.
+    ///
+    /// [`Drive::cornering`] answers a different question, and the
+    /// difference is the whole reason this exists. `cornering` is scaled
+    /// so 1.0 is *as hard as the car ever leans*, which is a fraction of
+    /// full lean, not a fraction of the limit. Slow down and it falls —
+    /// which is right for a renderer deciding how far to tilt the car,
+    /// and exactly wrong for anything asking "am I near losing it?",
+    /// because the hardest bends are precisely the ones you do not take
+    /// flat out.
+    ///
+    /// Measured against [`BRAKE_BEND`] instead, 1.0 means at the limit
+    /// whatever the speed: a Hard bend taken slowly still reads high,
+    /// because it is still a lot of corner for the speed being carried.
+    ///
+    /// This is what the tyre squeal listens to. Brian drove a lap and
+    /// heard nothing at all on the bends that cannot be taken flat —
+    /// the signal was falling away exactly where the warning was needed.
+    pub fn grip_used(&self, road: &Road, tuning: &Tuning) -> f32 {
+        let authority = if tuning.top_speed > 0.0 {
+            (self.speed / tuning.top_speed).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (road.curve_at(self.z).abs() * authority / BRAKE_BEND).min(4.0)
+    }
+
     pub fn cornering(&self, road: &Road, tuning: &Tuning) -> f32 {
         let authority = if tuning.top_speed > 0.0 {
             (self.speed / tuning.top_speed).clamp(0.0, 1.0)

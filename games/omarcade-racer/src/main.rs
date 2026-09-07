@@ -315,11 +315,11 @@ impl Racer {
         };
         audio.set(self.engine, VoiceParams::engine(throttle));
 
-        // The tyres. `cornering` is already a signed 0..1 lean, so the
-        // squeal only needs its magnitude — a left-hander and a
-        // right-hander sound the same, because the tyres do not care
-        // which way the load is going.
-        let lean = self.car.cornering(&self.road, &self.tuning).abs();
+        // The tyres listen to GRIP USED, not to lean. `cornering` falls
+        // as you slow, so the bends that cannot be taken flat — the ones
+        // that most need a warning — produced the least signal. See
+        // `Drive::grip_used`.
+        let lean = self.car.grip_used(&self.road, &self.tuning);
         audio.set(self.tyres, VoiceParams::squeal(lean, throttle));
 
         // A crash ducks the engine away and lets it back over the

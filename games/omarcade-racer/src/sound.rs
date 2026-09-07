@@ -883,6 +883,147 @@ impl Voice for Crash {
     }
 }
 
+/// A car going by — a Doppler whoosh, for CLOSE passes only.
+///
+/// # Why not every pass
+///
+/// The player overtakes about eleven cars a lap, some thirty-five over a
+/// race. A whoosh for each is wallpaper, and wallpaper is worse than
+/// silence: it trains the ear to stop listening to the channel, which
+/// costs the sounds that do matter. Brian's call was close passes only.
+///
+/// # What "close" turned out to mean
+///
+/// Much closer than it sounds. The road is 2.0 half-widths across and a
+/// car is 0.629 of that, so nearly every overtake is already within a
+/// car's width — measured over three laps of `Pacer::EXACT`, a
+/// threshold at the touching distance still fired on 72% of passes,
+/// nearly eight a lap.
+///
+/// The measured distribution (probe_traffic) is:
+///
+/// ```text
+///   closest 0.140 · 25th 0.323 · median 0.470 · 75th 0.684 · widest 1.023
+/// ```
+///
+/// So [`CLOSE_ENOUGH`] sits near the 25th percentile: the closest
+/// quarter of passes, about two or three a lap. Rare enough to be a
+/// moment rather than a texture.
+pub struct Pass {
+    t: f32,
+    /// 0 at the threshold, 1 for a pass that nearly touched.
+    intensity: f32,
+    alive: bool,
+    body: Lowpass,
+    air: Lowpass,
+    noise: u32,
+}
+
+/// How close a pass must be to make a sound, in half-widths between
+/// centres.
+///
+/// ⚠️ NOT the car's width, which would fire on three passes in four.
+/// See the type docs: this is the 25th percentile of the measured
+/// distribution, chosen so a whoosh stays rare enough to mean something.
+pub const CLOSE_ENOUGH: f32 = 0.33;
+
+const PASS_LEN: f32 = 0.42;
+/// The whoosh sweeps DOWN as the car goes by — the Doppler shift of
+/// something that was coming towards you and is now going away.
+const PASS_HZ_START: f32 = 900.0;
+const PASS_HZ_END: f32 = 260.0;
+const PASS_LEVEL: f32 = 0.26;
+
+impl Pass {
+    pub fn new() -> Pass {
+        Pass {
+            t: 0.0,
+            intensity: 0.0,
+            alive: false,
+            body: Lowpass::default(),
+            air: Lowpass::default(),
+            noise: 0x517c_c1b7,
+        }
+    }
+
+    /// How loud a pass at this gap should be, or `None` if it is too
+    /// far away to make a sound at all.
+    pub fn intensity_for(gap: f32) -> Option<f32> {
+        if gap >= CLOSE_ENOUGH {
+            return None;
+        }
+        // Nearly touching is 1.0, right on the threshold is 0.0, so a
+        // genuine near miss stands out from a merely close pass rather
+        // than every qualifying pass sounding identical.
+        Some((1.0 - gap / CLOSE_ENOUGH).clamp(0.0, 1.0))
+    }
+
+    fn white(&mut self) -> f32 {
+        self.noise ^= self.noise << 13;
+        self.noise ^= self.noise >> 17;
+        self.noise ^= self.noise << 5;
+        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+}
+
+impl Default for Pass {
+    fn default() -> Self {
+        Pass::new()
+    }
+}
+
+impl Voice for Pass {
+    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
+        if !self.alive {
+            for s in out.iter_mut() {
+                *s = 0.0;
+            }
+            return;
+        }
+
+        let dt = 1.0 / sample_rate;
+        for sample in out.iter_mut() {
+            self.t += dt;
+            if self.t >= PASS_LEN {
+                *sample = 0.0;
+                continue;
+            }
+
+            let phase = self.t / PASS_LEN;
+            // Swell and fall: the car is loudest as it draws level.
+            let env = (phase * std::f32::consts::PI).sin();
+            // The Doppler sweep.
+            let hz = PASS_HZ_START + (PASS_HZ_END - PASS_HZ_START) * phase;
+
+            let n = self.white();
+            let body = self.body.tick(n, hz, sample_rate);
+            // A brighter layer that fades faster, so the pass has some
+            // edge as it goes by rather than being a pure rumble.
+            let air = self.air.tick(n, hz * 3.0, sample_rate) * (1.0 - phase) * 0.4;
+
+            let level = PASS_LEVEL * (0.4 + 0.6 * self.intensity);
+            *sample = ((body + air) * env * level).clamp(-1.0, 1.0);
+        }
+
+        if self.t >= PASS_LEN {
+            self.alive = false;
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.alive
+    }
+
+    /// `gain` carries the intensity from [`Pass::intensity_for`].
+    fn retrigger(&mut self, gain: f32, _pitch: f32) {
+        self.t = 0.0;
+        self.intensity = gain.clamp(0.0, 1.0);
+        self.alive = true;
+        self.body = Lowpass::default();
+        self.air = Lowpass::default();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1256,6 +1397,64 @@ mod tests {
                 assert!(s.abs() <= 1.0, "clipped at force {force}");
             }
         }
+    }
+
+    #[test]
+    fn only_genuinely_close_passes_make_a_sound() {
+        // ⚠️ THE THRESHOLD IS NOT THE CAR'S WIDTH. The road is 2.0
+        // half-widths across and a car is 0.629, so nearly every
+        // overtake is already within a car's width — measured over three
+        // laps, a threshold at the touching distance fired on 72% of
+        // passes, almost eight a lap. That is wallpaper, which is what
+        // Brian's "close ones only" was avoiding.
+        assert!(
+            CLOSE_ENOUGH < crate::drive::CAR_WIDTH_HALF_WIDTHS,
+            "a threshold at or above the car's width fires on most passes",
+        );
+
+        // The measured distribution: closest 0.140, 25th 0.323,
+        // median 0.470, widest 1.023.
+        assert!(Pass::intensity_for(0.140).is_some(), "a near miss must be heard");
+        assert!(Pass::intensity_for(0.470).is_none(), "a median pass must be silent");
+        assert!(Pass::intensity_for(1.023).is_none(), "a wide pass must be silent");
+    }
+
+    #[test]
+    fn a_nearer_miss_is_a_louder_whoosh() {
+        // Every qualifying pass sounding identical would waste the one
+        // thing this sound is for.
+        let near = Pass::intensity_for(0.05).expect("a near miss qualifies");
+        let edge = Pass::intensity_for(CLOSE_ENOUGH * 0.95).expect("just inside qualifies");
+        assert!(near > edge * 2.0, "near {near} should clearly beat edge {edge}");
+        assert!(near <= 1.0 && edge >= 0.0);
+    }
+
+    #[test]
+    fn a_pass_swells_and_fades_rather_than_starting_loud() {
+        // Unlike a crash, a pass is not an impact: the car approaches,
+        // draws level and goes. Starting at full volume would read as a
+        // hit rather than as something going by.
+        let mut p = Pass::new();
+        p.retrigger(1.0, 1.0);
+        let mut buf = vec![0.0; 24_000];
+        p.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+
+        let first = buf[..240].iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        let peak = buf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(peak > 0.01, "a close pass should be audible");
+        assert!(
+            first < peak * 0.5,
+            "the whoosh starts at full volume ({first} of {peak}) — that is an impact",
+        );
+    }
+
+    #[test]
+    fn a_pass_retires_itself() {
+        let mut p = Pass::new();
+        p.retrigger(1.0, 1.0);
+        let mut buf = vec![0.0; (48_000.0 * PASS_LEN) as usize + 2_400];
+        p.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+        assert!(!p.alive(), "a pass should end on its own");
     }
 
     #[test]

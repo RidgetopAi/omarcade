@@ -124,7 +124,7 @@ fn main() {
         let prev_z = player.z;
         Pacer::EXACT.step(&mut player, &road, &tuning, DT);
         field.advance(DT, &road, &tuning);
-        field.recycle(player.z, &road);
+        field.recycle(player.z, player.x, &road);
         for (i, c) in field.cars.iter().enumerate() {
             hist[i].push(seen(&road, &cam, &player, c.z, c.x));
             if hist[i].len() > 180 {

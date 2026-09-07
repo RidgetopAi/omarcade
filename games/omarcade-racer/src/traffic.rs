@@ -228,6 +228,11 @@ pub struct Field {
     /// the pass is detected, so the scoring rule and the recycling rule
     /// cannot disagree about what a pass is.
     passes: u32,
+    /// How close each of those passes was, in half-widths between the
+    /// two cars' centres. Parallel to `passes` and drained by the same
+    /// call, so the two can never disagree. See
+    /// [`Field::pass_gaps`].
+    gaps: Vec<f32>,
 }
 
 impl Field {
@@ -282,6 +287,9 @@ impl Field {
             .collect();
 
         Field {
+            // Sized once so the audio-facing drain never allocates
+            // mid-lap; a frame cannot pass more cars than there are.
+            gaps: Vec::with_capacity(16),
             cars,
             last_player_z: None,
             passes: 0,
@@ -335,8 +343,31 @@ impl Field {
 
     /// Cars overtaken since the last call. Drains the count, so the
     /// ledger sees each pass exactly once however often it asks.
+    ///
+    /// See [`take_pass_gaps`](Self::take_pass_gaps) for how CLOSE they
+    /// were, which is a different question and has a different caller.
     pub fn take_passes(&mut self) -> u32 {
+        self.gaps.clear();
         std::mem::take(&mut self.passes)
+    }
+
+    /// How close each pass since the last call was, in half-widths
+    /// between the two cars' centres.
+    ///
+    /// # Why the gap and not just the count
+    ///
+    /// The score pays for every pass, so the ledger only needs to know
+    /// how many. Sound is the opposite: a whoosh for all eleven passes a
+    /// lap is wallpaper, and wallpaper is worse than silence because it
+    /// trains the ear to ignore the channel. Brian's call was that only
+    /// CLOSE passes make a noise, and closeness is a thing that has to
+    /// be measured at the moment of the pass — reconstructing it
+    /// afterwards, once both cars have moved on, is guessing.
+    ///
+    /// Drained like the count, and by the same call, so the two can
+    /// never disagree about how many passes there were.
+    pub fn pass_gaps(&self) -> &[f32] {
+        &self.gaps
     }
 
     /// Drive every car one step.
@@ -395,7 +426,15 @@ impl Field {
     ///
     /// A recycled car gets a fresh lane and cruise speed so the stream
     /// does not become the same five cars in the same order forever.
-    pub fn recycle(&mut self, player_z: f32, road: &Road) {
+    /// `player_x` is only ever RECORDED, never acted on.
+    ///
+    /// ⚠️ This does not make the traffic sighted. The rule (4a0707a3) is
+    /// that no car may DRIVE differently because of the player, and it
+    /// is guarded by `traffic_is_blind`, which exercises
+    /// [`advance`](Self::advance) — the function that moves cars. This
+    /// one only decides when a passed car may be reused and, now, notes
+    /// how close the pass was. Nothing here changes where any car goes.
+    pub fn recycle(&mut self, player_z: f32, player_x: f32, road: &Road) {
         let visible = road.draw_distance() as f32 * road.segment_length();
         let length = road.length();
 
@@ -438,6 +477,10 @@ impl Field {
                     if was_ahead <= step && ahead > length / 2.0 {
                         car.since_passed = Some(0.0);
                         self.passes += 1;
+                        // Measured HERE, at the moment of the pass.
+                        // Both cars move on immediately afterwards, so
+                        // reconstructing this later would be a guess.
+                        self.gaps.push((player_x - car.x).abs());
                     }
                 }
                 Some(travelled) => {
@@ -725,7 +768,7 @@ mod tests {
         for car in &mut field.cars {
             car.z = road.wrap(player_z - road.length() * (RECYCLE_BEHIND_LAPS + 0.05));
         }
-        field.recycle(player_z, &road);
+        field.recycle(player_z, 0.0, &road);
 
         for car in &field.cars {
             let mut gap = car.z - player_z;
@@ -773,7 +816,7 @@ mod tests {
         while (player.z - start_player_z).rem_euclid(length) < length * 0.10 {
             player.z = road.wrap(player.z + player.speed * dt);
             field.advance(dt, &road, &tuning);
-            field.recycle(player.z, &road);
+            field.recycle(player.z, player.x, &road);
 
             assert_eq!(
                 field.cars[0].recycled, 0,
@@ -808,7 +851,7 @@ mod tests {
         while (player.z - start).rem_euclid(length) < length * 0.99 {
             player.z = road.wrap(player.z + player.speed * dt);
             field.advance(dt, &road, &tuning);
-            field.recycle(player.z, &road);
+            field.recycle(player.z, player.x, &road);
             let n = field.take_passes();
             assert!(n <= 1, "one car cannot be passed {n} times in one frame");
             if n == 1 && first_pass_at.is_none() {
@@ -826,6 +869,76 @@ mod tests {
              {RECYCLE_BEHIND_LAPS} of a lap behind and should be passed again"
         );
         assert_eq!(field.cars[0].recycled as u32 + 1, total, "passes should be one more than recycles");
+    }
+
+    #[test]
+    fn a_pass_records_how_close_it_was() {
+        // The count and the gaps must agree: one gap per pass, drained
+        // together, or the sound and the score are describing different
+        // events.
+        let (road, tuning) = course();
+        let mut field = Field::grid(&road, 3);
+        let mut player = Drive::new();
+
+        // Park a car just ahead, in a known lane, and drive past it.
+        field.cars[0].z = road.wrap(player.z + 400.0);
+        field.cars[0].x = 0.5;
+        field.cars[0].speed = 0.0;
+        player.x = -0.2;
+
+        let dt = 1.0 / 60.0;
+        let mut fired = false;
+        for _ in 0..600 {
+            player.update(dt, 1.0, 0.0, 0.0, &road, &tuning);
+            field.recycle(player.z, player.x, &road);
+            if !field.pass_gaps().is_empty() {
+                let gaps = field.pass_gaps().to_vec();
+                let n = field.take_passes();
+                assert_eq!(
+                    gaps.len(),
+                    n as usize,
+                    "one gap per pass: {} gaps against {n} passes",
+                    gaps.len(),
+                );
+                // 0.5 minus -0.2 is 0.7 half-widths apart.
+                assert!(
+                    (gaps[0] - 0.7).abs() < 0.05,
+                    "recorded a gap of {} for a pass 0.7 apart",
+                    gaps[0],
+                );
+                fired = true;
+                break;
+            }
+            field.take_passes();
+        }
+        assert!(fired, "never passed the parked car");
+    }
+
+    #[test]
+    fn draining_the_count_clears_the_gaps() {
+        // They are drained by the same call on purpose: a caller that
+        // read the gaps twice would play the same whoosh twice.
+        let (road, tuning) = course();
+        let mut field = Field::grid(&road, 3);
+        let mut player = Drive::new();
+        field.cars[0].z = road.wrap(player.z + 400.0);
+        field.cars[0].speed = 0.0;
+
+        let dt = 1.0 / 60.0;
+        for _ in 0..600 {
+            player.update(dt, 1.0, 0.0, 0.0, &road, &tuning);
+            field.recycle(player.z, player.x, &road);
+            if !field.pass_gaps().is_empty() {
+                field.take_passes();
+                assert!(
+                    field.pass_gaps().is_empty(),
+                    "the gaps survived the drain and would be played again",
+                );
+                return;
+            }
+            field.take_passes();
+        }
+        panic!("never passed the parked car");
     }
 
     /// `advance` must stay blind even though `recycle` is not.
@@ -886,7 +999,7 @@ mod tests {
                 field.cars[0].z = road.wrap(player_z + length * c as f32 / 100.0);
                 let before = field.cars[0].z;
 
-                field.recycle(player_z, &road);
+                field.recycle(player_z, 0.0, &road);
                 let after = field.cars[0].z;
 
                 if (after - before).abs() < 1.0 {
@@ -939,7 +1052,7 @@ mod tests {
         for _ in 0..(120.0 / dt) as usize {
             player.z = road.wrap(player.z + player.speed * dt);
             field.advance(dt, &road, &tuning);
-            field.recycle(player.z, &road);
+            field.recycle(player.z, player.x, &road);
 
             // A recycle is a jump: the car moves much further in one
             // step than it could have driven.
@@ -1005,7 +1118,7 @@ mod tests {
         while travelled < length * RECYCLE_BEHIND_LAPS + step {
             z = road.wrap(z + step);
             travelled += step;
-            field.recycle(z, &road);
+            field.recycle(z, 0.0, &road);
             for c in field.cars.iter().filter(|c| c.livery >= 2 && c.recycled == 1) {
                 came_back.entry(c.livery).or_insert((travelled, ahead_of(c, z)));
             }

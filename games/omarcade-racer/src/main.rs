@@ -116,6 +116,13 @@ struct Racer {
     surface: VoiceId,
     /// The crash, as a one-shot.
     bang: SoundId,
+    /// A car going by, close.
+    whoosh: SoundId,
+    /// Intensities for this frame's close passes, worst first.
+    ///
+    /// A frame can pass more than one car, but they would land on top of
+    /// each other; only the closest is played.
+    near: Option<f32>,
     /// How hard the last impact was, 0..=1.
     ///
     /// ⚠️ CAPTURED BEFORE THE REWIND. `car.speed` is set to zero at the
@@ -163,6 +170,7 @@ impl Racer {
         tyres: VoiceId,
         surface: VoiceId,
         bang: SoundId,
+        whoosh: SoundId,
     ) -> Self {
         let art = Art::load(&theme);
         // The shipped course. `render::demo_track()` is still there and is
@@ -213,6 +221,8 @@ impl Racer {
             tyres,
             surface,
             bang,
+            whoosh,
+            near: None,
             impact: None,
             engine_running: false,
             race,
@@ -276,7 +286,14 @@ impl Racer {
 
     /// Back to the grid for a fresh qualifying lap.
     fn restart(&mut self) {
-        *self = Racer::new(self.theme, self.engine, self.tyres, self.surface, self.bang);
+        *self = Racer::new(
+            self.theme,
+            self.engine,
+            self.tyres,
+            self.surface,
+            self.bang,
+            self.whoosh,
+        );
     }
 
     /// React to what the race reported this frame.
@@ -381,7 +398,20 @@ impl Racer {
         // overtake. Five cars on a 2.7-mile loop cannot do that on their
         // own — measured, see `probe_traffic`. Kept a SEPARATE call so
         // `advance` stays provably blind.
-        self.traffic.recycle(self.car.z, &self.road);
+        self.traffic.recycle(self.car.z, self.car.x, &self.road);
+
+        // Which of this frame's passes, if any, was close enough to
+        // hear. Only the closest: two cars passed in one frame would
+        // land their whooshes on top of each other and read as one
+        // louder pass anyway.
+        self.near = self
+            .traffic
+            .pass_gaps()
+            .iter()
+            .filter_map(|g| sound::Pass::intensity_for(*g))
+            .fold(None, |best: Option<f32>, i| {
+                Some(best.map_or(i, |b| b.max(i)))
+            });
 
         // Every car overtaken pays, re-passes included (decision
         // 729d1f0e). Drained every frame; paid only while the run is
@@ -505,6 +535,11 @@ impl Racer {
         // the wreck is burning.
         if let Some(force) = self.impact.take() {
             audio.play_with(self.bang, force, 1.0);
+        }
+
+        // A car going by, close enough to be worth hearing.
+        if let Some(intensity) = self.near.take() {
+            audio.play_with(self.whoosh, intensity, 1.0);
         }
 
         // A crash ducks the engine away and lets it back over the
@@ -685,10 +720,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         track::grand_prix().build().marking_units(),
     )));
     let bang = audio.register_sound(Box::new(sound::Crash::new()));
+    let whoosh = audio.register_sound(Box::new(sound::Pass::new()));
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
-        .run(Racer::new(theme, engine, tyres, surface, bang), audio)?;
+        .run(
+            Racer::new(theme, engine, tyres, surface, bang, whoosh),
+            audio,
+        )?;
 
     Ok(())
 }
@@ -715,6 +754,7 @@ mod tests {
             VoiceId::NONE,
             VoiceId::NONE,
             VoiceId::NONE,
+            SoundId::NONE,
             SoundId::NONE,
         )
     }
@@ -748,6 +788,7 @@ mod tests {
             VoiceId::NONE,
             VoiceId::NONE,
             VoiceId::NONE,
+            SoundId::NONE,
             SoundId::NONE,
         );
         g.on_input(InputEvent::KeyDown(Key::Up));

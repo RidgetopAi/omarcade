@@ -91,12 +91,18 @@ fn main() {
     // is unambiguous and does not care where the start line is.
     let mut travelled = 0.0f32;
     let mut last_z = player.z;
+    // Lateral separation at every pass, for sizing the "close pass"
+    // threshold the whoosh fires on.
+    let mut pass_gaps: Vec<f32> = Vec::new();
 
     // Three laps, the race distance the plan specifies.
     while travelled < length * 3.0 && t < 900.0 {
         PACER.step(&mut player, &road, &tuning, DT);
         field.advance(DT, &road, &tuning);
-        field.recycle(player.z, &road);
+        field.recycle(player.z, player.x, &road);
+        // How close each overtake was, as the field now reports it.
+        pass_gaps.extend_from_slice(field.pass_gaps());
+        field.take_passes();
         t += DT;
 
         let mut step = player.z - last_z;
@@ -206,4 +212,29 @@ fn main() {
     println!("      collision lands; they should exist, but not be most of them");
     println!("    · an overtake much longer than a straight means the cruise band's");
     println!("      top end is too high\n");
+
+    // ── How close are the passes? ─────────────────────────────────
+    pass_gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("\n  PASS SEPARATION — lateral gap between centres, half-widths\n");
+    if pass_gaps.is_empty() {
+        println!("    no passes recorded");
+    } else {
+        let n = pass_gaps.len();
+        let pct = |p: f32| pass_gaps[((n - 1) as f32 * p) as usize];
+        println!("    {n} passes over 3 laps ({:.1} per lap)", n as f32 / 3.0);
+        println!("    closest {:.3} · 25th {:.3} · median {:.3} · 75th {:.3} · widest {:.3}",
+                 pass_gaps[0], pct(0.25), pct(0.5), pct(0.75), pass_gaps[n - 1]);
+        println!();
+        println!("    a car is {:.3} wide, so that is the touching distance",
+                 omarcade_racer_car_width());
+        for thr in [0.63f32, 0.8, 1.0, 1.26, 1.6] {
+            let hit = pass_gaps.iter().filter(|g| **g < thr).count();
+            println!("    threshold {thr:.2}: {hit:3} of {n} fire ({:.0}%, {:.1} per lap)",
+                     hit as f32 / n as f32 * 100.0, hit as f32 / 3.0);
+        }
+    }
+}
+
+fn omarcade_racer_car_width() -> f32 {
+    drive::CAR_WIDTH_HALF_WIDTHS
 }

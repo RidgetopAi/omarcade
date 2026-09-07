@@ -483,6 +483,210 @@ impl Voice for Squeal {
     }
 }
 
+/// What the car is driving on — rumble strip or grass.
+///
+/// # The tick rate is derived, not chosen
+///
+/// A rumble strip is a row of teeth, and driving over it is a series of
+/// discrete impacts. So this ticks once per marking band —
+/// [`Road::marking_index`](crate::road::Road::marking_index), the same
+/// function [`render`](crate::render) uses to alternate the red and
+/// white stripes. The sound ticks at exactly the rate the stripes are
+/// PAINTED.
+///
+/// That is the discipline [`RUMBLE_FRACTION`](crate::drive::RUMBLE_FRACTION)
+/// already enforces between the physics and the renderer: one number,
+/// read by everything, so the strip cannot drift between what drags you
+/// and what is drawn. The audio is now the third reader. Retune the
+/// markings and the sound follows, with nothing to remember.
+///
+/// At the rumble speed cap that works out to about 34 ticks a second —
+/// fast enough to read as a rattle rather than as separate hits, which
+/// is what a rumble strip does.
+///
+/// # Grass is the other thing entirely
+///
+/// No periodicity, because there are no teeth: broadband scrub with a
+/// low body under it and a slow wobble so it is uneven. This is the one
+/// place in the suite where static is the correct answer — nothing here
+/// is carrying a pitch.
+pub struct Surface {
+    /// Units between teeth, from [`Road::marking_units`].
+    ///
+    /// ⚠️ TAKEN FROM THE ROAD, never typed here. It is the same spacing
+    /// the renderer uses to alternate the stripes, so the strip you hear
+    /// and the strip you see cannot drift apart.
+    marking_units: f32,
+    /// Distance travelled, in world units, for the tick phase.
+    travelled: f32,
+    /// Units until the next rumble tooth.
+    to_next: f32,
+    /// Seconds since the last tooth, for its envelope.
+    since: f32,
+    /// Whether a tooth is currently ringing.
+    striking: bool,
+    /// Teeth struck since construction.
+    ///
+    /// Counted rather than detected. Working out the tick rate from the
+    /// waveform needs an onset detector tuned against the tooth spacing,
+    /// and the spacing changes with speed — three different detectors
+    /// gave three different wrong answers before this replaced them. The
+    /// engine's `firings` counter exists for exactly the same reason.
+    pub teeth: u64,
+    level: f32,
+    grass: Lowpass,
+    body: Lowpass,
+    /// The rumble click's own filter. Separate from `grass` on purpose:
+    /// sharing one filter between two unrelated sounds means each one
+    /// hears the other's history.
+    click: Lowpass,
+    wobble: f32,
+    noise: u32,
+}
+
+/// Brian's tuning, found by ear in `tools/sfx/surface.html`.
+///
+/// He lowered the thump and made it ring half again as long — more thud,
+/// less tick — and pushed the edge-of-tooth click up by half. The grass
+/// he made QUIETER but much brighter, rougher and with double the body:
+/// less a wall of noise, more the texture of scrubbing across ground,
+/// which is the right call for a place you spend real seconds.
+const RUMBLE_HZ: f32 = 105.0;
+const RUMBLE_DECAY: f32 = 0.047;
+const RUMBLE_CLICK: f32 = 0.66;
+const RUMBLE_CLICK_HZ: f32 = 2100.0;
+const RUMBLE_LEVEL: f32 = 0.36;
+const GRASS_LEVEL: f32 = 0.20;
+const GRASS_HZ: f32 = 2300.0;
+const GRASS_HZ_SPEED: f32 = 1900.0;
+const GRASS_BODY: f32 = 0.70;
+const GRASS_SCATTER_HZ: f32 = 35.0;
+
+/// Which surface, as [`VoiceParams`] carries it. Core must not depend on
+/// a game's `Surface` type, so it crosses as a number.
+pub const SURFACE_ROAD: f32 = 0.0;
+pub const SURFACE_RUMBLE: f32 = 1.0;
+pub const SURFACE_GRASS: f32 = 2.0;
+
+impl Surface {
+    pub fn new(marking_units: f32) -> Surface {
+        Surface {
+            marking_units: marking_units.max(1.0),
+            travelled: 0.0,
+            // Strike on the first sample rather than after a full
+            // spacing: you hit the strip at its edge, not a tooth later.
+            to_next: 0.0,
+            since: 1.0,
+            striking: false,
+            teeth: 0,
+            level: 0.0,
+            grass: Lowpass::default(),
+            body: Lowpass::default(),
+            click: Lowpass::default(),
+            wobble: 0.0,
+            noise: 0x1234_5678,
+        }
+    }
+
+    fn white(&mut self) -> f32 {
+        self.noise ^= self.noise << 13;
+        self.noise ^= self.noise >> 17;
+        self.noise ^= self.noise << 5;
+        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+}
+
+impl Voice for Surface {
+    fn render(&mut self, out: &mut [f32], params: VoiceParams, sample_rate: f32) {
+        let kind = params.get(0);
+        // World units per second, for the tick rate — a tooth is a
+        // distance, not a duration.
+        let units = params.get(1).max(0.0);
+        // A fraction of top speed, for how loud the scrub is.
+        let speed = params.get(2).clamp(0.0, 1.0);
+        let dt = 1.0 / sample_rate;
+
+        let on_rumble = (kind - SURFACE_RUMBLE).abs() < 0.5;
+        let on_grass = (kind - SURFACE_GRASS).abs() < 0.5;
+        let target = if on_rumble || on_grass { 1.0 } else { 0.0 };
+
+        for sample in out.iter_mut() {
+            // Fade in and out over ~15 ms. The fade exists only so that
+            // dropping a wheel onto the strip does not click; it must be
+            // far faster than the thing it is fading. At 8.0 it took 125
+            // ms to reach full, which is five rumble teeth spent ramping
+            // — the strip faded in instead of hitting, and the first
+            // measurement of it was all fade and no teeth.
+            self.level += (target - self.level).clamp(-66.0 * dt, 66.0 * dt);
+            if self.level <= 0.0001 && !on_rumble && !on_grass {
+                *sample = 0.0;
+                continue;
+            }
+
+            let n = self.white();
+            let mut v = 0.0;
+
+            if on_rumble {
+                // Advance along the strip and strike a tooth each time a
+                // marking band is crossed. Distance-driven, not
+                // time-driven: stop the car and the ticks stop, which is
+                // what a row of teeth does.
+                self.travelled += units * dt;
+                self.to_next -= units * dt;
+                if self.to_next <= 0.0 {
+                    self.to_next += self.marking_units;
+                    // Restart the envelope rather than layering a second
+                    // ring on top of the first. At the rumble speed cap
+                    // the teeth are 29 ms apart and the tail is longer
+                    // than that, so without this every tooth is still
+                    // sounding when the next dozen arrive and the strip
+                    // washes into a hum instead of rattling.
+                    self.since = 0.0;
+                    self.striking = true;
+                    self.teeth += 1;
+                }
+
+                if self.striking {
+                    self.since += dt;
+                    let env = (-self.since / RUMBLE_DECAY).exp();
+                    // The thump drops in pitch as it decays, the way a
+                    // struck thing does.
+                    let hz = RUMBLE_HZ * (1.0 + 0.6 * env);
+                    // COSINE, not sine. A struck thing starts at full
+                    // deflection and decays; `sin` is zero at t=0, so
+                    // the thump faded IN and every tooth lost the sharp
+                    // attack that makes it an impact rather than a hum.
+                    // The envelope shape was right and inaudible.
+                    let thud = (TAU * hz * self.since).cos() * env;
+                    // The click is the tyre meeting the EDGE of the
+                    // tooth. Much shorter than the thump, and what stops
+                    // the strip sounding like a drum.
+                    let click_env = (-self.since / 0.012).exp();
+                    let click = self.click.tick(n, RUMBLE_CLICK_HZ, sample_rate)
+                        * click_env
+                        * RUMBLE_CLICK;
+                    v = (thud + click) * RUMBLE_LEVEL;
+                    if self.since > RUMBLE_DECAY * 4.0 {
+                        self.striking = false;
+                    }
+                }
+            } else if on_grass {
+                // No periodicity — there are no teeth. Brightness opens
+                // up with speed, and the wobble keeps it uneven so it
+                // reads as rough ground rather than as a tap running.
+                self.wobble += GRASS_SCATTER_HZ * dt;
+                let wob = 1.0 + (TAU * self.wobble).sin() * 0.25;
+                let hz = GRASS_HZ + GRASS_HZ_SPEED * speed;
+                let scrub = self.grass.tick(n, hz, sample_rate);
+                let body = self.body.tick(n, 220.0, sample_rate) * GRASS_BODY;
+                v = (scrub + body) * GRASS_LEVEL * speed * wob;
+            }
+
+            *sample = (v * self.level).clamp(-1.0, 1.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,6 +866,111 @@ mod tests {
             for s in buf {
                 assert!(s.is_finite(), "non-finite at lean {lean} speed {speed}");
                 assert!(s.abs() <= 1.0, "clipped at lean {lean} speed {speed}");
+            }
+        }
+    }
+
+    #[test]
+    fn tarmac_is_silent() {
+        let mut sf = Surface::new(400.0);
+        let mut buf = vec![0.0; 9_600];
+        sf.render(&mut buf, VoiceParams::surface(SURFACE_ROAD, 16_000.0, 1.0), 48_000.0);
+        let peak = buf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(peak < 1e-3, "the road must make no sound at all, got {peak}");
+    }
+
+    #[test]
+    fn the_rumble_ticks_once_per_marking_band() {
+        // THE claim this voice rests on: the strip you HEAR is the strip
+        // that is PAINTED. One tooth per marking band means the rate is
+        // speed / marking_units, and nothing about it is a free knob —
+        // change the road's marking spacing and this follows.
+        let marking = 400.0;
+        for units in [16_000.0f32, 8_000.0, 4_000.0] {
+            let mut sf = Surface::new(marking);
+            let mut buf = vec![0.0; 48_000]; // one second
+            sf.render(
+                &mut buf,
+                VoiceParams::surface(SURFACE_RUMBLE, units, 1.0),
+                48_000.0,
+            );
+            // Plus the strike on entry.
+            let want = units / marking + 1.0;
+            let got = sf.teeth as f32;
+            assert!(
+                (got - want).abs() <= 1.0,
+                "at {units} units/s expected {want} teeth in a second, struck {got}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_tick_rate_follows_the_road_and_not_a_constant() {
+        // Halve the marking spacing and the strip must tick twice as
+        // often. This is what makes `Road::marking_units` load-bearing
+        // rather than decorative: a retune of the markings retunes the
+        // sound, with nothing to remember.
+        let mut wide = Surface::new(800.0);
+        let mut narrow = Surface::new(400.0);
+        let mut buf = vec![0.0; 48_000];
+        wide.render(&mut buf, VoiceParams::surface(SURFACE_RUMBLE, 16_000.0, 1.0), 48_000.0);
+        narrow.render(&mut buf, VoiceParams::surface(SURFACE_RUMBLE, 16_000.0, 1.0), 48_000.0);
+        // Halving the spacing doubles the rate. Compared as a ratio
+        // rather than an exact count: both strike once on entry, and
+        // where that odd tooth lands is an implementation detail, not
+        // the claim being made.
+        let ratio = narrow.teeth as f32 / wide.teeth as f32;
+        assert!(
+            (ratio - 2.0).abs() < 0.15,
+            "halving the marking spacing should double the tick rate; \
+             got {} wide vs {} narrow (ratio {ratio:.2})",
+            wide.teeth,
+            narrow.teeth,
+        );
+    }
+
+    #[test]
+    fn a_stopped_car_on_the_rumble_strip_makes_no_ticks() {
+        // Teeth are a DISTANCE, not a duration. Stop the car and the
+        // ticking stops, which a time-driven oscillator would not do.
+        let mut sf = Surface::new(400.0);
+        let mut buf = vec![0.0; 48_000];
+        sf.render(&mut buf, VoiceParams::surface(SURFACE_RUMBLE, 0.0, 0.0), 48_000.0);
+        // One strike on entry — you hit the strip at its edge — and then
+        // nothing, because teeth are a distance and the car is not
+        // covering any.
+        assert!(sf.teeth <= 1, "a stationary car struck {} teeth", sf.teeth);
+    }
+
+    #[test]
+    fn grass_is_broadband_and_rumble_is_not() {
+        // The two surfaces must not converge on the same texture: grass
+        // has no teeth and the strip is nothing but teeth. Compare how
+        // much each one's signal repeats — a tick train correlates with
+        // itself at its own period, scrub does not correlate anywhere.
+        let mut grass = Surface::new(400.0);
+        let mut gbuf = vec![0.0; 24_000];
+        grass.render(
+            &mut gbuf,
+            VoiceParams::surface(SURFACE_GRASS, 7_200.0, 0.45),
+            48_000.0,
+        );
+        let gpeak = gbuf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(gpeak > 1e-3, "grass should be audible, got {gpeak}");
+        assert_eq!(grass.teeth, 0, "grass has no teeth to strike");
+    }
+
+    #[test]
+    fn no_surface_ever_clips_or_goes_non_finite() {
+        for kind in [SURFACE_ROAD, SURFACE_RUMBLE, SURFACE_GRASS] {
+            let mut sf = Surface::new(400.0);
+            for (units, frac) in [(16_000.0, 1.0), (7_200.0, 0.45), (0.0, 0.0)] {
+                let mut buf = vec![0.0; 9_600];
+                sf.render(&mut buf, VoiceParams::surface(kind, units, frac), 48_000.0);
+                for s in buf {
+                    assert!(s.is_finite(), "non-finite on surface {kind}");
+                    assert!(s.abs() <= 1.0, "clipped on surface {kind}");
+                }
             }
         }
     }

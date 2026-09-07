@@ -1,0 +1,467 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Omaprix surface playground</title>
+<style>
+  :root{
+    --bg:#0d1013; --panel:#151a1f; --line:#232b33; --ink:#c8d3dc;
+    --dim:#7b8794; --hot:#ffb454; --trace:#4ade80; --grass:#84cc16;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:13px/1.5 ui-monospace,"JetBrains Mono",Menlo,monospace}
+  header{padding:10px 16px;border-bottom:1px solid var(--line);
+         display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  h1{font-size:14px;margin:0;font-weight:600;letter-spacing:.02em}
+  .sub{color:var(--dim);font-size:11px}
+  #wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px;padding:12px}
+  @media(max-width:900px){#wrap{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px}
+  .card h2{font-size:11px;margin:0 0 8px;color:var(--dim);font-weight:600;
+           text-transform:uppercase;letter-spacing:.08em}
+  canvas{width:100%;display:block;background:#0a0d10;border-radius:4px}
+  .row{display:flex;align-items:center;gap:8px;margin:5px 0}
+  .row label{flex:0 0 130px;font-size:11px;color:var(--dim)}
+  .row input[type=range]{flex:1;min-width:0;accent-color:var(--hot)}
+  .row .val{flex:0 0 62px;text-align:right;font-size:11px;color:var(--hot)}
+  button{background:#1e262e;color:var(--ink);border:1px solid var(--line);
+         border-radius:4px;padding:7px 13px;cursor:pointer;font:inherit;font-size:12px}
+  button:hover{border-color:var(--hot);color:var(--hot)}
+  button.on{background:var(--hot);color:#0d1013;border-color:var(--hot);font-weight:600}
+  .grp{border-top:1px solid var(--line);margin-top:10px;padding-top:8px}
+  .note{color:var(--dim);font-size:10.5px;margin:2px 0 7px;line-height:1.45}
+  #dump{width:100%;height:130px;background:#0a0d10;color:var(--trace);
+        border:1px solid var(--line);border-radius:4px;font:11px/1.5 ui-monospace,monospace;
+        padding:8px;resize:vertical}
+  #readout{font-size:11px;color:var(--dim);white-space:pre;line-height:1.6}
+  .surf{display:flex;gap:6px;margin-top:6px}
+  .surf button{flex:1}
+  kbd{background:#1e262e;border:1px solid var(--line);border-radius:3px;
+      padding:1px 5px;font-size:10.5px}
+</style>
+
+<header>
+  <h1>OMAPRIX · surface playground</h1>
+  <span class="sub">road is silent · rumble ticks at the rate the stripes are painted · grass is drag</span>
+</header>
+
+<div id="wrap">
+  <div>
+    <div class="card">
+      <h2>Where the car is</h2>
+      <div class="note">The strip you are driving on, drawn to scale. RUMBLE_FRACTION is
+        0.13 of a half-width, and it is shared with the physics — the width painted here
+        is the width that drags there. Sound should be the third thing reading it.</div>
+      <canvas id="track" height="96"></canvas>
+      <div class="row" style="margin-top:6px">
+        <label>across the road</label>
+        <input type="range" id="x" min="-1.4" max="1.4" step="0.01" value="0">
+        <span class="val" id="xv">0.00</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Oscilloscope</h2>
+      <div class="note">Rumble is discrete IMPACTS — you should see separate thumps with
+        gaps, not a continuous wall. Grass is the opposite: broadband, no periodicity.
+        If rumble looks like grass on the trace, the ticks are too fast or too soft.</div>
+      <canvas id="scope" height="180"></canvas>
+      <div class="row" style="margin-top:6px">
+        <label>time base</label>
+        <input type="range" id="tb" min="10" max="400" step="5" value="150">
+        <span class="val" id="tbv">150 ms</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Spectrum</h2>
+      <canvas id="spec" height="150"></canvas>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Driving</h2>
+      <div class="row">
+        <label>speed</label>
+        <input type="range" id="speed" min="0" max="1" step="0.01" value="0.8">
+        <span class="val" id="speedv">0.80</span>
+      </div>
+      <div class="surf">
+        <button data-x="0">Road</button>
+        <button data-x="0.93">Rumble</button>
+        <button data-x="1.2">Grass</button>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button id="power">▶ start audio</button>
+        <button id="drift">drift off and back</button>
+      </div>
+      <div class="note" style="margin-top:8px">The speed caps are real: rumble holds you
+        to 85% of top speed, grass to 45%. Hold <kbd>space</kbd> to floor it.</div>
+      <div id="readout"></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Rumble</h2>
+      <div class="note"><b>THE TICK RATE IS NOT A KNOB.</b> It comes from
+        <code>marking_index</code> — one tick per marking band, which is 400 units — so
+        the sound ticks at exactly the rate the stripes are painted. Sound and picture
+        describing one physical strip, the way RUMBLE_FRACTION already ties the physics
+        to the paint. What you tune is the character of each hit.</div>
+      <div class="row"><label>thump pitch</label>
+        <input type="range" id="rhz" min="40" max="400" step="5" value="120">
+        <span class="val" id="rhzv"></span></div>
+      <div class="row"><label>thump decay</label>
+        <input type="range" id="rdec" min="0.005" max="0.12" step="0.002" value="0.03">
+        <span class="val" id="rdecv"></span></div>
+      <div class="row"><label>click</label>
+        <input type="range" id="rclick" min="0" max="1" step="0.02" value="0.45">
+        <span class="val" id="rclickv"></span></div>
+      <div class="row"><label>click colour</label>
+        <input type="range" id="rcol" min="500" max="8000" step="100" value="2600">
+        <span class="val" id="rcolv"></span></div>
+      <div class="row"><label>level</label>
+        <input type="range" id="rlevel" min="0" max="0.8" step="0.02" value="0.34">
+        <span class="val" id="rlevelv"></span></div>
+      <div class="row"><label>divide rate by</label>
+        <input type="range" id="rdiv" min="1" max="4" step="1" value="1">
+        <span class="val" id="rdivv"></span></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Grass</h2>
+      <div class="note">Drag and scatter — broadband, and the one place static is the
+        right answer. It should feel like it is COSTING you something.</div>
+      <div class="row"><label>level</label>
+        <input type="range" id="glevel" min="0" max="0.8" step="0.02" value="0.30">
+        <span class="val" id="glevelv"></span></div>
+      <div class="row"><label>colour</label>
+        <input type="range" id="gcol" min="200" max="6000" step="50" value="1100">
+        <span class="val" id="gcolv"></span></div>
+      <div class="row"><label>colour w/ speed</label>
+        <input type="range" id="gcolspd" min="0" max="4000" step="100" value="1400">
+        <span class="val" id="gcolspdv"></span></div>
+      <div class="row"><label>body (low thud)</label>
+        <input type="range" id="gbody" min="0" max="1" step="0.02" value="0.35">
+        <span class="val" id="gbodyv"></span></div>
+      <div class="row"><label>scatter</label>
+        <input type="range" id="gscat" min="0" max="40" step="1" value="11">
+        <span class="val" id="gscatv"></span></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Settings</h2>
+      <div style="display:flex;gap:8px;margin-bottom:6px">
+        <button id="copy">copy settings</button>
+        <button id="reset">reset</button>
+      </div>
+      <textarea id="dump" readonly></textarea>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// From the game, not invented here.
+const RUMBLE_FRACTION = 0.13;      // drive.rs — shared with the renderer
+const SEGMENT_LENGTH = 200.0;      // road.rs
+const SEGMENTS_PER_MARKING = 2.0;  // road.rs — one rumble stripe
+const TOP_SPEED = 16000.0;         // probe_track
+const MARKING_UNITS = SEGMENT_LENGTH * SEGMENTS_PER_MARKING;
+
+const $ = id => document.getElementById(id);
+const val = id => parseFloat($(id).value);
+
+/// Which surface a lateral position is on. ONE implementation, matching
+/// `Surface::at` in drive.rs — the boundaries the renderer paints.
+function surfaceAt(x) {
+  const d = Math.abs(x);
+  if (d > 1.0) return "Grass";
+  if (d > 1.0 - RUMBLE_FRACTION) return "Rumble";
+  return "Road";
+}
+
+function speedCap(s) {
+  return s === "Road" ? 1.0 : s === "Rumble" ? 0.85 : 0.45;
+}
+
+let ctx = null, running = false, held = false;
+let noise, grassF, grassGain, grassBody, out, ana, master;
+let nextTick = 0, x = 0, speed = 0.8;
+
+function makeNoise(c) {
+  const n = c.sampleRate * 2;
+  const buf = c.createBuffer(1, n, c.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const s = c.createBufferSource();
+  s.buffer = buf; s.loop = true;
+  return s;
+}
+
+function start() {
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // ── Grass: filtered noise plus a low body, both scaled by speed.
+  noise = makeNoise(ctx);
+  grassF = ctx.createBiquadFilter(); grassF.type = "lowpass";
+  grassBody = ctx.createBiquadFilter(); grassBody.type = "lowpass";
+  grassBody.frequency.value = 220;
+  const bodyGain = ctx.createGain();
+  grassGain = ctx.createGain(); grassGain.gain.value = 0;
+
+  noise.connect(grassF); grassF.connect(grassGain);
+  noise.connect(grassBody); grassBody.connect(bodyGain); bodyGain.connect(grassGain);
+  window.__bodyGain = bodyGain;
+
+  master = ctx.createGain();
+  grassGain.connect(master);
+
+  ana = ctx.createAnalyser(); ana.fftSize = 4096; ana.smoothingTimeConstant = 0.4;
+  master.connect(ana); ana.connect(ctx.destination);
+
+  noise.start();
+  nextTick = ctx.currentTime + 0.05;
+  running = true;
+  scheduleRumble();
+  $("power").textContent = "■ stop audio";
+  $("power").classList.add("on");
+}
+
+/// One rumble impact: a pitched thump plus a click of grit.
+function thump(at) {
+  const dec = val("rdec");
+  const o = ctx.createOscillator();
+  o.type = "sine";
+  o.frequency.setValueAtTime(val("rhz") * 1.6, at);
+  o.frequency.exponentialRampToValueAtTime(val("rhz"), at + dec);
+
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(val("rlevel"), at);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + dec);
+  o.connect(g); g.connect(master);
+  o.start(at); o.stop(at + dec + 0.02);
+
+  // The click: the tyre hitting the edge of the tooth, not the tooth
+  // itself. Short and bright, and what stops a thump sounding like a
+  // drum.
+  const cl = val("rclick");
+  if (cl > 0.01) {
+    const n = makeNoise(ctx);
+    const f = ctx.createBiquadFilter();
+    f.type = "bandpass"; f.frequency.value = val("rcol"); f.Q.value = 1.1;
+    const cg = ctx.createGain();
+    cg.gain.setValueAtTime(val("rlevel") * cl, at);
+    cg.gain.exponentialRampToValueAtTime(0.0001, at + 0.012);
+    n.connect(f); f.connect(cg); cg.connect(master);
+    n.start(at); n.stop(at + 0.03);
+  }
+}
+
+/// Schedule ticks ahead of the clock. THE RATE IS DERIVED: one tick per
+/// marking band, so the ear and the eye are describing the same strip.
+function scheduleRumble() {
+  if (!running) return;
+  const surf = surfaceAt(x);
+  const ahead = 0.15;
+
+  if (surf === "Rumble") {
+    const units = TOP_SPEED * Math.min(speed, speedCap(surf));
+    const rate = units / (MARKING_UNITS * val("rdiv"));
+    const gap = 1 / Math.max(rate, 0.5);
+    if (nextTick < ctx.currentTime) nextTick = ctx.currentTime + 0.01;
+    while (nextTick < ctx.currentTime + ahead) {
+      thump(nextTick);
+      nextTick += gap;
+    }
+  } else {
+    nextTick = ctx.currentTime + 0.02;
+  }
+  setTimeout(scheduleRumble, 40);
+}
+
+function tick() {
+  requestAnimationFrame(tick);
+  x = val("x");
+  const surf = surfaceAt(x);
+  const wanted = held ? 1.0 : val("speed");
+  speed += (Math.min(wanted, speedCap(surf)) - speed) * 0.06;
+
+  if (running) {
+    const now = ctx.currentTime, T = 0.05;
+    const onGrass = surf === "Grass";
+    grassF.frequency.setTargetAtTime(val("gcol") + val("gcolspd") * speed, now, T);
+    window.__bodyGain.gain.setTargetAtTime(val("gbody"), now, T);
+    // Scatter: the level itself wobbles, so grass is uneven rather than
+    // a smooth hiss — a car crossing rough ground, not a tap running.
+    const wob = 1 + Math.sin(now * val("gscat")) * 0.25;
+    grassGain.gain.setTargetAtTime(onGrass ? val("glevel") * speed * wob : 0, now, T);
+    master.gain.setTargetAtTime(1, now, T);
+
+    const rate = surf === "Rumble"
+      ? TOP_SPEED * speed / (MARKING_UNITS * val("rdiv")) : 0;
+    $("readout").textContent =
+      `\nsurface  ${surf}\n` +
+      `speed    ${(speed * 100).toFixed(0)}%  (cap ${(speedCap(surf) * 100).toFixed(0)}%)\n` +
+      (surf === "Rumble" ? `ticks    ${rate.toFixed(1)}/s  (${(1000 / rate).toFixed(0)} ms)\n` : "");
+  }
+  draw();
+}
+
+function fit(cv) {
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(r.width * d)) {
+    cv.width = Math.round(r.width * d);
+    cv.height = Math.round(parseInt(cv.getAttribute("height")) * d);
+  }
+  const g = cv.getContext("2d");
+  g.setTransform(d, 0, 0, d, 0, 0);
+  return { g, w: r.width, h: parseInt(cv.getAttribute("height")) };
+}
+
+function draw() { drawTrack(); drawScope(); drawSpec(); }
+
+function drawTrack() {
+  const { g, w, h } = fit($("track"));
+  g.clearRect(0, 0, w, h);
+  const pad = 20, ww = w - pad * 2, mid = w / 2, hw = ww / 2 / 1.45;
+  const y = 20, bh = h - 46;
+
+  g.fillStyle = "#1d2a17";
+  g.fillRect(pad, y, ww, bh);
+  g.fillStyle = "#2b3138";
+  g.fillRect(mid - hw, y, hw * 2, bh);
+
+  // Rumble strips, at the shared fraction.
+  const rw = hw * RUMBLE_FRACTION;
+  for (let i = 0; i < 14; i++) {
+    g.fillStyle = i % 2 ? "#c0392b" : "#e8e8e8";
+    const sy = y + bh * i / 14, sh = bh / 14;
+    g.fillRect(mid - hw, sy, rw, sh);
+    g.fillRect(mid + hw - rw, sy, rw, sh);
+  }
+
+  const cx = mid + x * hw;
+  const surf = surfaceAt(x);
+  g.fillStyle = surf === "Road" ? "#4ade80" : surf === "Rumble" ? "#ffb454" : "#84cc16";
+  g.beginPath(); g.arc(cx, y + bh / 2, 7, 0, Math.PI * 2); g.fill();
+
+  g.fillStyle = "#8b98a5"; g.font = "10px monospace";
+  g.fillText("grass", pad + 2, h - 8);
+  g.fillText("road", mid - 14, h - 8);
+  g.fillText("grass", w - pad - 30, h - 8);
+  g.fillStyle = "#ffb454";
+  g.fillText(surf, mid - 16, y - 6);
+}
+
+function drawScope() {
+  const { g, w, h } = fit($("scope"));
+  g.clearRect(0, 0, w, h);
+  g.strokeStyle = "#1a222a";
+  for (let i = 1; i < 6; i++) {
+    const yy = h * i / 6;
+    g.beginPath(); g.moveTo(0, yy); g.lineTo(w, yy); g.stroke();
+  }
+  if (!running) {
+    g.fillStyle = "#5b6773"; g.font = "12px monospace";
+    g.fillText("press start audio", 12, h / 2);
+    return;
+  }
+  const ms = val("tb"); $("tbv").textContent = ms + " ms";
+  const n = Math.min(Math.round(ctx.sampleRate * ms / 1000), ana.fftSize);
+  const buf = new Float32Array(ana.fftSize);
+  ana.getFloatTimeDomainData(buf);
+  g.strokeStyle = "#4ade80"; g.lineWidth = 1.2; g.beginPath();
+  for (let i = 0; i < n; i++) {
+    const px = w * i / n, py = h / 2 - buf[i] * h * 0.9;
+    i ? g.lineTo(px, py) : g.moveTo(px, py);
+  }
+  g.stroke();
+}
+
+function drawSpec() {
+  const { g, w, h } = fit($("spec"));
+  g.clearRect(0, 0, w, h);
+  if (!running) return;
+  const d = new Uint8Array(ana.frequencyBinCount);
+  ana.getByteFrequencyData(d);
+  const maxHz = 8000, bins = Math.round(d.length * maxHz / (ctx.sampleRate / 2));
+  g.fillStyle = surfaceAt(x) === "Grass" ? "#84cc16" : "#4ade80";
+  for (let i = 0; i < bins; i++) {
+    const px = w * i / bins, bh = h * d[i] / 255;
+    g.fillRect(px, h - bh, Math.max(w / bins, 1), bh);
+  }
+  g.fillStyle = "#7b8794"; g.font = "9px monospace";
+  g.fillText("0", 2, h - 2); g.fillText("8 kHz", w - 34, h - 2);
+}
+
+const KNOBS = ["x","speed","rhz","rdec","rclick","rcol","rlevel","rdiv",
+               "glevel","gcol","gcolspd","gbody","gscat"];
+const FMT = {
+  x: v => v.toFixed(2), speed: v => v.toFixed(2),
+  rhz: v => v.toFixed(0) + " Hz", rdec: v => (v * 1000).toFixed(0) + " ms",
+  rclick: v => v.toFixed(2), rcol: v => (v / 1000).toFixed(1) + "k",
+  rlevel: v => v.toFixed(2), rdiv: v => "÷" + v.toFixed(0),
+  glevel: v => v.toFixed(2), gcol: v => (v / 1000).toFixed(1) + "k",
+  gcolspd: v => "+" + (v / 1000).toFixed(1) + "k",
+  gbody: v => v.toFixed(2), gscat: v => v.toFixed(0) + " Hz",
+};
+KNOBS.forEach(k => {
+  const el = $(k), o = $(k + "v");
+  const upd = () => { if (o) o.textContent = FMT[k](val(k)); dump(); };
+  el.addEventListener("input", upd); upd();
+});
+
+document.querySelectorAll("[data-x]").forEach(b =>
+  b.addEventListener("click", () => {
+    $("x").value = b.dataset.x; $("xv").textContent = parseFloat(b.dataset.x).toFixed(2);
+    if (!running) start();
+  }));
+
+$("power").addEventListener("click", () => {
+  if (!running) start();
+  else { ctx.close(); running = false;
+         $("power").textContent = "▶ start audio"; $("power").classList.remove("on"); }
+});
+
+$("drift").addEventListener("click", () => {
+  if (!running) start();
+  let t = 0;
+  const id = setInterval(() => {
+    t += 0.02;
+    const v = Math.sin(t) * 1.25;
+    $("x").value = v; $("xv").textContent = v.toFixed(2);
+    if (t >= Math.PI) clearInterval(id);
+  }, 30);
+});
+
+addEventListener("keydown", e => {
+  if (e.code === "Space") { e.preventDefault(); if (!running) start(); held = true; }
+});
+addEventListener("keyup", e => { if (e.code === "Space") held = false; });
+
+$("reset").addEventListener("click", () => location.reload());
+$("copy").addEventListener("click", () => {
+  $("dump").select(); document.execCommand("copy");
+  $("copy").textContent = "copied ✓";
+  setTimeout(() => $("copy").textContent = "copy settings", 1200);
+});
+
+function dump() {
+  $("dump").value =
+`SURFACE SETTINGS
+rumble_hz        ${val("rhz")}
+rumble_decay     ${val("rdec")}
+rumble_click     ${val("rclick")}
+rumble_click_hz  ${val("rcol")}
+rumble_level     ${val("rlevel")}
+rumble_divide    ${val("rdiv")}
+grass_level      ${val("glevel")}
+grass_colour     ${val("gcol")}
+grass_col_speed  ${val("gcolspd")}
+grass_body       ${val("gbody")}
+grass_scatter    ${val("gscat")}`;
+}
+
+dump(); tick();
+</script>

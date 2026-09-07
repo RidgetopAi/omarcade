@@ -112,6 +112,8 @@ struct Racer {
     /// The tyre voice. Always running while the car is; it is the
     /// `lean` parameter that decides whether it is audible.
     tyres: VoiceId,
+    /// What the car is driving on. Silent on tarmac.
+    surface: VoiceId,
     /// Whether the engine has been started yet — it begins at the green
     /// light rather than at the menu, so a car that is not running does
     /// not idle at the player.
@@ -147,7 +149,7 @@ struct Racer {
 }
 
 impl Racer {
-    fn new(theme: Theme, engine: VoiceId, tyres: VoiceId) -> Self {
+    fn new(theme: Theme, engine: VoiceId, tyres: VoiceId, surface: VoiceId) -> Self {
         let art = Art::load(&theme);
         // The shipped course. `render::demo_track()` is still there and is
         // still what the visual scenes use — it is one bend, sized to be
@@ -195,6 +197,7 @@ impl Racer {
             recovering: 0.0,
             engine,
             tyres,
+            surface,
             engine_running: false,
             race,
             grid_z: start_z,
@@ -257,7 +260,7 @@ impl Racer {
 
     /// Back to the grid for a fresh qualifying lap.
     fn restart(&mut self) {
-        *self = Racer::new(self.theme, self.engine, self.tyres);
+        *self = Racer::new(self.theme, self.engine, self.tyres, self.surface);
     }
 
     /// React to what the race reported this frame.
@@ -300,9 +303,11 @@ impl Racer {
             if should_run {
                 audio.start(self.engine);
                 audio.start(self.tyres);
+                audio.start(self.surface);
             } else {
                 audio.stop(self.engine);
                 audio.stop(self.tyres);
+                audio.stop(self.surface);
             }
         }
 
@@ -321,6 +326,19 @@ impl Racer {
         // `Drive::grip_used`.
         let lean = self.car.grip_used(&self.road, &self.tuning);
         audio.set(self.tyres, VoiceParams::squeal(lean, throttle));
+
+        // What is under the wheels. The voice is silent on tarmac, so
+        // this is set unconditionally rather than gated here — the same
+        // idempotent every-frame call as the others.
+        let kind = match self.car.surface() {
+            drive::Surface::Road => sound::SURFACE_ROAD,
+            drive::Surface::Rumble => sound::SURFACE_RUMBLE,
+            drive::Surface::Grass => sound::SURFACE_GRASS,
+        };
+        audio.set(
+            self.surface,
+            VoiceParams::surface(kind, self.car.speed, throttle),
+        );
 
         // A crash ducks the engine away and lets it back over the
         // recovery window — which is derived from the tuning, so it is
@@ -606,10 +624,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut audio = AudioSystem::new();
     let engine = audio.register(Box::new(sound::Engine::new()));
     let tyres = audio.register(Box::new(sound::Squeal::new()));
+    // The surface voice ticks once per marking band, so it needs the
+    // road's own spacing — never a number typed in the sound module.
+    let surface = audio.register(Box::new(sound::Surface::new(
+        track::grand_prix().build().marking_units(),
+    )));
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
-        .run(Racer::new(theme, engine, tyres), audio)?;
+        .run(Racer::new(theme, engine, tyres, surface), audio)?;
 
     Ok(())
 }
@@ -631,7 +654,7 @@ mod tests {
     }
 
     fn racer() -> Racer {
-        Racer::new(Theme::load(), VoiceId::NONE, VoiceId::NONE)
+        Racer::new(Theme::load(), VoiceId::NONE, VoiceId::NONE, VoiceId::NONE)
     }
 
     /// A racer past the lights, on its qualifying lap, so a test about
@@ -658,7 +681,7 @@ mod tests {
 
     #[test]
     fn the_grid_and_the_lights_pay_nothing() {
-        let mut g = Racer::new(Theme::default(), VoiceId::NONE, VoiceId::NONE);
+        let mut g = Racer::new(Theme::default(), VoiceId::NONE, VoiceId::NONE, VoiceId::NONE);
         g.on_input(InputEvent::KeyDown(Key::Up));
         for _ in 0..30 {
             step(&mut g, 1.0 / 60.0);

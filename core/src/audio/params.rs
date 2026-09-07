@@ -102,8 +102,17 @@ impl VoiceParams {
     /// The surface arrives as a number because this crate's audio layer
     /// must not depend on any game's `Surface` type — the same reason
     /// core knows nothing about cars.
-    pub fn surface(kind: f32, speed: f32) -> VoiceParams {
-        VoiceParams([kind, speed.max(0.0), 0.0, 0.0])
+    ///
+    /// ⚠️ TWO SPEEDS, IN DIFFERENT UNITS, because the two things a
+    /// surface voice does need different ones. A rumble strip ticks once
+    /// per tooth, which is a distance, so it needs WORLD UNITS per
+    /// second. Grass gets louder the faster you scrub across it, which
+    /// is a fraction of what the car can do, so it needs 0..=1. Folding
+    /// them into one number means one of the two is wrong, and the
+    /// symptom would be a rumble that ticks at the wrong rate or a
+    /// grass that is silent at every speed.
+    pub fn surface(kind: f32, units_per_second: f32, fraction: f32) -> VoiceParams {
+        VoiceParams([kind, units_per_second.max(0.0), fraction.clamp(0.0, 1.0), 0.0])
     }
 }
 

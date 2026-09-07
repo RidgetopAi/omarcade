@@ -268,6 +268,19 @@ impl Road {
         (z / (self.segment_length * Self::SEGMENTS_PER_BAND)) as u32
     }
 
+    /// How far apart the markings are, in world units.
+    ///
+    /// The spacing behind [`marking_index`](Self::marking_index), for
+    /// anything that needs the distance rather than the index — the
+    /// rumble-strip sound ticks once per marking, so the ear and the eye
+    /// describe the same teeth. Exposed rather than recomputed by the
+    /// caller for the same reason [`RUMBLE_FRACTION`](crate::drive::RUMBLE_FRACTION)
+    /// is shared: two copies of a number drift, and the symptom would be
+    /// a strip that sounds subtly out of step with the one drawn.
+    pub fn marking_units(&self) -> f32 {
+        self.segment_length * Self::SEGMENTS_PER_MARKING
+    }
+
     /// Which marking band a distance falls in — the finer grouping used
     /// for rumble strips and centre-line dashes.
     pub fn marking_index(&self, z: f32) -> u32 {

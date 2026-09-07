@@ -1,0 +1,4 @@
+out/
+*.bak
+*.pre-brian
+__pycache__/

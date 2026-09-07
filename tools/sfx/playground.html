@@ -1,0 +1,595 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Omaprix engine playground</title>
+<style>
+  :root{
+    --bg:#0d1013; --panel:#151a1f; --line:#232b33; --ink:#c8d3dc;
+    --dim:#7b8794; --hot:#ffb454; --trace:#4ade80; --ref:#f472b6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:13px/1.5 ui-monospace,"JetBrains Mono",Menlo,monospace}
+  header{padding:10px 16px;border-bottom:1px solid var(--line);
+         display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  h1{font-size:14px;margin:0;font-weight:600;letter-spacing:.02em}
+  .sub{color:var(--dim);font-size:11px}
+  #wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px;padding:12px}
+  @media(max-width:900px){#wrap{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px}
+  .card h2{font-size:11px;margin:0 0 8px;color:var(--dim);font-weight:600;
+           text-transform:uppercase;letter-spacing:.08em}
+  canvas{width:100%;display:block;background:#0a0d10;border-radius:4px}
+  .row{display:flex;align-items:center;gap:8px;margin:5px 0}
+  .row label{flex:0 0 128px;font-size:11px;color:var(--dim)}
+  .row input[type=range]{flex:1;min-width:0;accent-color:var(--hot)}
+  .row .val{flex:0 0 62px;text-align:right;font-size:11px;color:var(--hot)}
+  button{background:#1e262e;color:var(--ink);border:1px solid var(--line);
+         border-radius:4px;padding:7px 13px;cursor:pointer;font:inherit;font-size:12px}
+  button:hover{border-color:var(--hot);color:var(--hot)}
+  button.on{background:var(--hot);color:#0d1013;border-color:var(--hot);font-weight:600}
+  .grp{border-top:1px solid var(--line);margin-top:10px;padding-top:8px}
+  .grp:first-of-type{border-top:0;margin-top:0}
+  .note{color:var(--dim);font-size:10.5px;margin:2px 0 7px;line-height:1.45}
+  #readout{font-size:11px;color:var(--dim);white-space:pre;line-height:1.6}
+  #dump{width:100%;height:150px;background:#0a0d10;color:var(--trace);
+        border:1px solid var(--line);border-radius:4px;font:11px/1.5 ui-monospace,monospace;
+        padding:8px;resize:vertical}
+  .pedal{display:flex;gap:8px;align-items:center;margin-top:6px}
+  kbd{background:#1e262e;border:1px solid var(--line);border-radius:3px;
+      padding:1px 5px;font-size:10.5px}
+</style>
+
+<header>
+  <h1>OMAPRIX · engine playground</h1>
+  <span class="sub">real-time V8 · move a knob, hear it now · pink line = measured Ford GT target</span>
+</header>
+
+<div id="wrap">
+  <div>
+    <div class="card">
+      <h2>Oscilloscope — time domain</h2>
+      <div class="note">Each spike is one cylinder firing. Distinct spikes = a clean pulse
+        train. Smeared together = the decay is longer than the gap and the harmonics collapse.
+        Uneven spacing between spikes IS the lope.</div>
+      <canvas id="scope" height="200"></canvas>
+      <div class="row" style="margin-top:6px">
+        <label>time base</label>
+        <input type="range" id="tb" min="1" max="60" step="1" value="20">
+        <span class="val" id="tbv">20 ms</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Spectrum — frequency domain</h2>
+      <div class="note">Orange marks = the firing rate and its harmonics. This is the
+        "multiple frequencies mixed" view: the peaks ARE the mix.</div>
+      <canvas id="spec" height="190"></canvas>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Harmonic balance — measured vs the Ford GT</h2>
+      <div class="note">Green = yours, pink = the target measured from your reference file
+        on its pull. Matching the low harmonics is what makes it thick instead of whiny.</div>
+      <canvas id="harm" height="150"></canvas>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Throttle</h2>
+      <div class="row">
+        <label>pedal</label>
+        <input type="range" id="th" min="0" max="1" step="0.005" value="0.35">
+        <span class="val" id="thv">35%</span>
+      </div>
+      <div class="pedal">
+        <button id="power">▶ start audio</button>
+        <button id="revbtn">blip the throttle</button>
+      </div>
+      <div class="note" style="margin-top:8px">Hold <kbd>space</kbd> to floor it.
+        The pedal has real inertia, like the car.</div>
+      <div id="readout"></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Tuning</h2>
+
+      <div class="grp">
+        <div class="note"><b>PITCH</b> — "too whiny / too high" lives here first.</div>
+        <div class="row"><label>idle rpm</label>
+          <input type="range" id="idle" min="400" max="1400" step="10" value="800">
+          <span class="val" id="idlev"></span></div>
+        <div class="row"><label>redline rpm</label>
+          <input type="range" id="red" min="3000" max="9000" step="50" value="5200">
+          <span class="val" id="redv"></span></div>
+        <div class="row"><label>cylinders</label>
+          <input type="range" id="cyl" min="3" max="12" step="1" value="8">
+          <span class="val" id="cylv"></span></div>
+        <div class="row"><label>rev curve</label>
+          <input type="range" id="curve" min="0.6" max="2.2" step="0.05" value="1.35">
+          <span class="val" id="curvev"></span></div>
+      </div>
+
+      <div class="grp">
+        <div class="note"><b>HARMONIC MIX</b> — your idea. Each slider is one frequency
+          in the stack, as a multiple of the firing rate. Low harmonics = weight and
+          thickness. High harmonics = bite. All the low ones near zero is exactly what
+          "wound tight" sounds like.</div>
+        <div id="harmonics"></div>
+        <div class="pedal" style="margin-top:6px">
+          <button data-preset="v8">muscle V8</button>
+          <button data-preset="even">flat</button>
+          <button data-preset="thin">thin (whiny)</button>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="note"><b>CHARACTER</b></div>
+        <div class="row"><label>lope</label>
+          <input type="range" id="lope" min="0" max="0.4" step="0.005" value="0.12">
+          <span class="val" id="lopev"></span></div>
+        <div class="row"><label>lope cleanup</label>
+          <input type="range" id="lopec" min="0" max="1" step="0.02" value="0.7">
+          <span class="val" id="lopecv"></span></div>
+        <div class="row"><label>pulse sharpness</label>
+          <input type="range" id="sharp" min="0.03" max="0.6" step="0.005" value="0.22">
+          <span class="val" id="sharpv"></span></div>
+        <div class="row"><label>growl (sub)</label>
+          <input type="range" id="growl" min="0" max="1" step="0.02" value="0.35">
+          <span class="val" id="growlv"></span></div>
+      </div>
+
+      <div class="grp">
+        <div class="note"><b>BODY</b> — the exhaust and block resonating.</div>
+        <div class="row"><label>body hz</label>
+          <input type="range" id="bhz" min="50" max="320" step="2" value="110">
+          <span class="val" id="bhzv"></span></div>
+        <div class="row"><label>body Q</label>
+          <input type="range" id="bq" min="0.4" max="12" step="0.1" value="2.4">
+          <span class="val" id="bqv"></span></div>
+        <div class="row"><label>snarl hz (idle)</label>
+          <input type="range" id="s1" min="200" max="3000" step="20" value="700">
+          <span class="val" id="s1v"></span></div>
+        <div class="row"><label>snarl hz (top)</label>
+          <input type="range" id="s2" min="400" max="5000" step="20" value="1800">
+          <span class="val" id="s2v"></span></div>
+        <div class="row"><label>snarl amount</label>
+          <input type="range" id="smix" min="0" max="1" step="0.02" value="0.34">
+          <span class="val" id="smixv"></span></div>
+        <div class="row"><label>top-end rolloff</label>
+          <input type="range" id="lp" min="800" max="12000" step="100" value="4200">
+          <span class="val" id="lpv"></span></div>
+      </div>
+
+      <div class="grp">
+        <div class="note"><b>AIR</b> — induction noise.</div>
+        <div class="row"><label>intake level</label>
+          <input type="range" id="air" min="0" max="0.5" step="0.01" value="0.10">
+          <span class="val" id="airv"></span></div>
+        <div class="row"><label>intake colour</label>
+          <input type="range" id="airc" min="200" max="8000" step="50" value="1200">
+          <span class="val" id="aircv"></span></div>
+        <div class="row"><label>volume</label>
+          <input type="range" id="vol" min="0" max="1" step="0.01" value="0.5">
+          <span class="val" id="volv"></span></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Settings — paste these back to me</h2>
+      <div class="note">When it sounds right, hit copy and paste the block into the chat.
+        I port the numbers to engine.py and then to Rust.</div>
+      <div class="pedal" style="margin-bottom:6px">
+        <button id="copy">copy settings</button>
+        <button id="reset">reset</button>
+      </div>
+      <textarea id="dump" readonly></textarea>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ── The harmonic stack. Brian's idea: a slider per partial, so the mix
+// is something you build by ear rather than a number I derive. Defaults
+// are the measured Ford GT pull, which is thick low down — the opposite
+// of the thin stack that sounded "wound tight".
+const HARM_DEFAULT = [1.00, 0.62, 0.31, 0.29, 0.46, 0.22, 0.17, 0.20, 0.12, 0.10, 0.08, 0.07];
+const HARM_TARGET  = [1.00, 0.62, 0.31, 0.29, 0.46, 0.22, 0.17, 0.20, 0.12, 0.10, 0.08, 0.07];
+const PRESETS = {
+  v8:   [1.00, 0.62, 0.31, 0.29, 0.46, 0.22, 0.17, 0.20, 0.12, 0.10, 0.08, 0.07],
+  even: [1.00, 0.70, 0.55, 0.45, 0.40, 0.34, 0.28, 0.24, 0.20, 0.17, 0.14, 0.12],
+  thin: [1.00, 0.10, 0.04, 0.03, 0.02, 0.02, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+};
+
+let harm = HARM_DEFAULT.slice();
+const $ = id => document.getElementById(id);
+const val = id => parseFloat($(id).value);
+
+// ── Build the harmonic sliders.
+const hbox = $("harmonics");
+harm.forEach((v, i) => {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML =
+    `<label>h${i + 1} &nbsp;<span style="opacity:.55">×${i + 1}</span></label>` +
+    `<input type="range" min="0" max="1" step="0.01" value="${v}" data-h="${i}">` +
+    `<span class="val" id="hv${i}">${v.toFixed(2)}</span>`;
+  hbox.appendChild(row);
+  row.querySelector("input").addEventListener("input", e => {
+    harm[i] = parseFloat(e.target.value);
+    $("hv" + i).textContent = harm[i].toFixed(2);
+    rebuildWave();
+    dump();
+  });
+});
+document.querySelectorAll("[data-preset]").forEach(b =>
+  b.addEventListener("click", () => {
+    harm = PRESETS[b.dataset.preset].slice();
+    harm.forEach((v, i) => {
+      document.querySelector(`[data-h="${i}"]`).value = v;
+      $("hv" + i).textContent = v.toFixed(2);
+    });
+    rebuildWave();
+    dump();
+  }));
+
+// ── Audio graph.
+// Built around a PeriodicWave whose harmonic amplitudes are exactly the
+// sliders above. That is the honest way to do "multiple frequencies
+// mixed": the oscillator IS the sum of the partials, so what you set is
+// literally what you hear, and the scope shows the sum.
+let ctx = null, sub = null, noise = null, running = false;
+let bodyF, snarlF, lpF, airF, master, subGain, airGain, ana;
+
+// The harmonic sliders shape the PULSE (see makePulse) rather than a
+// steady oscillator, so "rebuilding" is just invalidating the cache key
+// — the next scheduled firing picks up the new stack.
+function rebuildWave() { cacheKey = ""; }
+
+function makeNoise(c) {
+  const n = c.sampleRate * 2;
+  const buf = c.createBuffer(1, n, c.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  const src = c.createBufferSource();
+  src.buffer = buf; src.loop = true;
+  return src;
+}
+
+// ── One combustion event, rendered into a buffer.
+//
+// The harmonic sliders shape THE PULSE rather than a steady oscillator:
+// each partial is summed with the amplitude you set, then the whole
+// thing is enveloped so it is a decaying crack instead of a tone. That
+// keeps Brian's harmonic stack meaningful while making the pulse a real
+// object in time — which is what lets it be placed unevenly.
+function makePulse(c, hz, sharpness, harmonics) {
+  const dur = Math.max(1 / hz * 1.6, 0.004);
+  const n = Math.max(Math.floor(c.sampleRate * dur), 32);
+  const buf = c.createBuffer(1, n, c.sampleRate);
+  const d = buf.getChannelData(0);
+
+  // Decay as a FRACTION OF THE FIRING GAP, not a fixed number of
+  // milliseconds. The gap shrinks several times over across the rev
+  // range; an absolute decay that sits neatly inside its slot at idle is
+  // longer than the whole slot at redline, and the pulse train smears
+  // into continuous noise. (The Python generator learned this the hard
+  // way — same rule, same reason.)
+  const decay = (1 / hz) * sharpness;
+
+  for (let i = 0; i < n; i++) {
+    const t = i / c.sampleRate;
+    const env = Math.exp(-t / decay);
+    let v = 0;
+    for (let k = 0; k < harmonics.length; k++) {
+      v += harmonics[k] * Math.sin(2 * Math.PI * hz * (k + 1) * t);
+    }
+    // A little noise inside the pulse: combustion is not a clean click.
+    v += (Math.random() * 2 - 1) * 0.25;
+    d[i] = v * env;
+  }
+  // Normalise so sharpness changes TIMBRE and not loudness — otherwise
+  // every knob doubles as a volume control and nothing is comparable.
+  let peak = 0;
+  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(d[i]));
+  if (peak > 0) for (let i = 0; i < n; i++) d[i] /= peak;
+  return buf;
+}
+
+// ── The scheduler: fire cylinders, unevenly.
+//
+// THIS is the lope. Every other firing is nudged later within its slot,
+// so gaps go long-short-long-short. Shifting by a fraction of the gap
+// rather than a fixed time keeps the character identical at idle and at
+// redline; a fixed offset would vanish at high revs, exactly where you
+// notice its absence most.
+let nextFire = 0, fireParity = 0, pulseCache = null, cacheKey = "";
+
+function schedule() {
+  if (!running) return;
+  const ahead = 0.12;
+  const { hz } = firingHz(pedal);
+  const gap = 1 / hz;
+
+  const sharp = val("sharp");
+  const lopeAmt = val("lope") * (1 - val("lopec") * Math.min(Math.max(pedal, 0), 1));
+
+  // Rebuild the pulse only when it would actually differ — per-firing
+  // buffer synthesis at 400 Hz would starve the audio thread.
+  const key = `${Math.round(hz)}|${sharp.toFixed(3)}|${harm.map(v => v.toFixed(2)).join()}`;
+  if (key !== cacheKey) { pulseCache = makePulse(ctx, hz, sharp, harm); cacheKey = key; }
+
+  while (nextFire < ctx.currentTime + ahead) {
+    if (nextFire < ctx.currentTime) nextFire = ctx.currentTime + 0.005;
+
+    const src = ctx.createBufferSource();
+    src.buffer = pulseCache;
+    const g = ctx.createGain();
+    // Alternate firings sit slightly quieter as well as later: an uneven
+    // firing order gives uneven cylinder scavenging, so the lope is a
+    // difference in WEIGHT and not only in timing. This is most of what
+    // makes the burble audible rather than merely measurable.
+    g.gain.value = fireParity ? 1.0 - lopeAmt * 1.2 : 1.0;
+    src.connect(g); g.connect(bodyF);
+    src.start(nextFire);
+
+    nextFire += gap * (fireParity ? 1 + lopeAmt : 1 - lopeAmt);
+    fireParity ^= 1;
+  }
+  setTimeout(schedule, 25);
+}
+
+function start() {
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+  sub = ctx.createOscillator();          // the growl, an octave down
+  sub.type = "sine";
+  noise = makeNoise(ctx);
+
+  subGain = ctx.createGain();
+  airGain = ctx.createGain();
+  master  = ctx.createGain();
+
+  bodyF  = ctx.createBiquadFilter(); bodyF.type = "peaking";
+  snarlF = ctx.createBiquadFilter(); snarlF.type = "peaking";
+  lpF    = ctx.createBiquadFilter(); lpF.type = "lowpass";
+  airF   = ctx.createBiquadFilter(); airF.type = "lowpass";
+  ana    = ctx.createAnalyser(); ana.fftSize = 4096; ana.smoothingTimeConstant = 0.55;
+
+  sub.connect(subGain); subGain.connect(bodyF);
+  bodyF.connect(snarlF); snarlF.connect(lpF);
+  noise.connect(airF); airF.connect(airGain); airGain.connect(lpF);
+  lpF.connect(master); master.connect(ana); ana.connect(ctx.destination);
+
+  sub.start(); noise.start();
+  running = true;
+  nextFire = ctx.currentTime + 0.05; fireParity = 0; cacheKey = "";
+  schedule();
+  $("power").textContent = "\u25a0 stop audio";
+  $("power").classList.add("on");
+}
+
+// ── Pedal with inertia. A slider jumps; an engine does not, and a step
+// change in frequency is the single most synthetic-sounding thing an
+// engine model can do.
+let pedal = 0.35, target = 0.35, held = false;
+
+function firingHz(t) {
+  const idle = val("idle"), red = val("red"), cyl = val("cyl");
+  const rpm = idle + (red - idle) * Math.pow(Math.min(Math.max(t, 0), 1), val("curve"));
+  return { hz: rpm * cyl / 2 / 60, rpm };
+}
+
+function tick() {
+  requestAnimationFrame(tick);
+  target = held ? 1.0 : val("th");
+  // Rising is faster than falling, as a real throttle behaves.
+  const k = target > pedal ? 0.075 : 0.045;
+  pedal += (target - pedal) * k;
+
+  if (running) {
+    const { hz, rpm } = firingHz(pedal);
+    const now = ctx.currentTime, T = 0.02;
+    // The firing rate is applied by the SCHEDULER now, not by an
+    // oscillator frequency — see schedule().
+    sub.frequency.setTargetAtTime(hz / 2, now, T);
+    subGain.gain.setTargetAtTime(val("growl") * 0.55, now, T);
+
+    bodyF.frequency.setTargetAtTime(val("bhz"), now, T);
+    bodyF.Q.setTargetAtTime(val("bq"), now, T);
+    bodyF.gain.setTargetAtTime(9, now, T);
+
+    const snarl = val("s1") + (val("s2") - val("s1")) * pedal;
+    snarlF.frequency.setTargetAtTime(snarl, now, T);
+    snarlF.Q.setTargetAtTime(1.6, now, T);
+    snarlF.gain.setTargetAtTime(val("smix") * 16, now, T);
+
+    lpF.frequency.setTargetAtTime(val("lp") * (0.65 + 0.35 * pedal), now, T);
+    lpF.Q.setTargetAtTime(0.7, now, T);
+
+    airF.frequency.setTargetAtTime(val("airc"), now, T);
+    airGain.gain.setTargetAtTime(val("air") * (0.35 + 0.65 * pedal), now, T);
+    master.gain.setTargetAtTime(val("vol"), now, T);
+
+    $("readout").textContent =
+      `\npedal    ${(pedal * 100).toFixed(0).padStart(3)}%\n` +
+      `rpm      ${rpm.toFixed(0).padStart(5)}\n` +
+      `firing   ${hz.toFixed(1).padStart(5)} Hz\n` +
+      `ref pull  117 - 307 Hz`;
+  }
+  draw();
+}
+
+// ── The scope.
+function fit(cv) {
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(r.width * d)) {
+    cv.width = Math.round(r.width * d);
+    cv.height = Math.round(parseInt(cv.getAttribute("height")) * d);
+  }
+  const g = cv.getContext("2d");
+  g.setTransform(d, 0, 0, d, 0, 0);
+  return { g, w: r.width, h: parseInt(cv.getAttribute("height")) };
+}
+
+function draw() {
+  drawScope(); drawSpec(); drawHarm();
+}
+
+function drawScope() {
+  const { g, w, h } = fit($("scope"));
+  g.clearRect(0, 0, w, h);
+  g.strokeStyle = "#1a222a"; g.lineWidth = 1;
+  for (let i = 1; i < 8; i++) {
+    const y = h * i / 8;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+  }
+  g.strokeStyle = "#243039";
+  g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
+  if (!running) {
+    g.fillStyle = "#5b6773"; g.font = "12px monospace";
+    g.fillText("press start audio", 12, h / 2 - 8);
+    return;
+  }
+  const ms = val("tb");
+  $("tbv").textContent = ms + " ms";
+  const n = Math.min(Math.round(ctx.sampleRate * ms / 1000), ana.fftSize);
+  const buf = new Float32Array(ana.fftSize);
+  ana.getFloatTimeDomainData(buf);
+
+  // Trigger on a rising zero crossing so the trace stands still, the way
+  // a scope's trigger does. Without it the waveform slides and you cannot
+  // read the pulse shape at all.
+  let start = 0;
+  for (let i = 1; i < buf.length - n; i++) {
+    if (buf[i - 1] <= 0 && buf[i] > 0) { start = i; break; }
+  }
+  g.strokeStyle = "#4ade80"; g.lineWidth = 1.4; g.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = w * i / n, y = h / 2 - buf[start + i] * h * 0.44;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  }
+  g.stroke();
+
+  const { hz } = firingHz(pedal);
+  g.fillStyle = "#7b8794"; g.font = "10px monospace";
+  g.fillText(`${ms} ms/div · ${(1000 / hz).toFixed(1)} ms between firings`, 8, 14);
+}
+
+function drawSpec() {
+  const { g, w, h } = fit($("spec"));
+  g.clearRect(0, 0, w, h);
+  if (!running) return;
+  const d = new Uint8Array(ana.frequencyBinCount);
+  ana.getByteFrequencyData(d);
+  const nyq = ctx.sampleRate / 2, maxHz = 6000;
+  const bins = Math.round(d.length * maxHz / nyq);
+
+  g.fillStyle = "#4ade80";
+  for (let i = 0; i < bins; i++) {
+    const x = w * i / bins, bh = h * d[i] / 255;
+    g.fillRect(x, h - bh, Math.max(w / bins, 1), bh);
+  }
+  // Mark the firing rate and its harmonics.
+  const { hz } = firingHz(pedal);
+  g.font = "9px monospace";
+  for (let k = 1; k <= 12; k++) {
+    const f = hz * k;
+    if (f > maxHz) break;
+    const x = w * f / maxHz;
+    g.strokeStyle = k === 1 ? "#ffb454" : "rgba(255,180,84,.28)";
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+    if (k <= 6) { g.fillStyle = "#ffb454"; g.fillText("h" + k, x + 2, 10); }
+  }
+  g.fillStyle = "#7b8794";
+  g.fillText("0", 2, h - 2); g.fillText(maxHz / 1000 + " kHz", w - 40, h - 2);
+}
+
+function drawHarm() {
+  const { g, w, h } = fit($("harm"));
+  g.clearRect(0, 0, w, h);
+  const n = harm.length, bw = w / n, pad = 6;
+  for (let i = 0; i < n; i++) {
+    const x = i * bw;
+    const yh = (h - 20) * harm[i];
+    g.fillStyle = "#4ade80";
+    g.fillRect(x + pad, h - 16 - yh, bw - pad * 2, yh);
+    const ty = (h - 20) * HARM_TARGET[i];
+    g.strokeStyle = "#f472b6"; g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(x + pad - 1, h - 16 - ty); g.lineTo(x + bw - pad + 1, h - 16 - ty);
+    g.stroke();
+    g.fillStyle = "#7b8794"; g.font = "9px monospace";
+    g.fillText("h" + (i + 1), x + bw / 2 - 7, h - 4);
+  }
+}
+
+// ── Wiring.
+const KNOBS = ["th","idle","red","cyl","curve","lope","lopec","sharp","growl",
+               "bhz","bq","s1","s2","smix","lp","air","airc","vol"];
+const FMT = {
+  th: v => (v * 100).toFixed(0) + "%",
+  idle: v => v.toFixed(0), red: v => v.toFixed(0), cyl: v => v.toFixed(0),
+  curve: v => v.toFixed(2), lope: v => v.toFixed(3), lopec: v => v.toFixed(2),
+  sharp: v => v.toFixed(3), growl: v => v.toFixed(2),
+  bhz: v => v.toFixed(0) + " Hz", bq: v => v.toFixed(1),
+  s1: v => v.toFixed(0) + " Hz", s2: v => v.toFixed(0) + " Hz",
+  smix: v => v.toFixed(2), lp: v => (v / 1000).toFixed(1) + " kHz",
+  air: v => v.toFixed(2), airc: v => (v / 1000).toFixed(1) + " kHz",
+  vol: v => v.toFixed(2),
+};
+KNOBS.forEach(k => {
+  const el = $(k), out = $(k + "v");
+  const upd = () => { if (out) out.textContent = FMT[k](val(k)); dump(); };
+  el.addEventListener("input", upd); upd();
+});
+
+$("power").addEventListener("click", () => {
+  if (!running) { start(); }
+  else { ctx.close(); running = false;
+         $("power").textContent = "▶ start audio"; $("power").classList.remove("on"); }
+});
+
+$("revbtn").addEventListener("click", () => {
+  if (!running) start();
+  held = true; setTimeout(() => held = false, 420);
+});
+addEventListener("keydown", e => {
+  if (e.code === "Space") { e.preventDefault(); if (!running) start(); held = true; }
+});
+addEventListener("keyup", e => { if (e.code === "Space") held = false; });
+
+$("reset").addEventListener("click", () => location.reload());
+$("copy").addEventListener("click", () => {
+  $("dump").select(); document.execCommand("copy");
+  $("copy").textContent = "copied ✓";
+  setTimeout(() => $("copy").textContent = "copy settings", 1200);
+});
+
+function dump() {
+  const g = k => val(k);
+  $("dump").value =
+`ENGINE SETTINGS
+idle_rpm        ${g("idle")}
+redline_rpm     ${g("red")}
+cylinders       ${g("cyl")}
+rev_curve       ${g("curve")}
+lope            ${g("lope")}
+lope_cleanup    ${g("lopec")}
+pulse_sharpness ${g("sharp")}
+growl_sub       ${g("growl")}
+body_hz         ${g("bhz")}
+body_q          ${g("bq")}
+snarl_idle_hz   ${g("s1")}
+snarl_top_hz    ${g("s2")}
+snarl_mix       ${g("smix")}
+top_rolloff_hz  ${g("lp")}
+intake_level    ${g("air")}
+intake_colour   ${g("airc")}
+harmonics       [${harm.map(v => v.toFixed(2)).join(", ")}]`;
+}
+
+dump(); tick();
+</script>

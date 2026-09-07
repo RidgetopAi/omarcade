@@ -83,6 +83,22 @@ fn main() -> std::io::Result<()> {
         }
     }
 
+    // Is the idle actually audible? Brian hears nothing at startup, and
+    // during the countdown the engine is the ONLY voice that should be
+    // making a sound at all.
+    {
+        let mut e = sound::Engine::new();
+        for (label, th) in [("idle 0.0", 0.0f32), ("0.05", 0.05), ("0.2", 0.2)] {
+            let mut warm = vec![0.0; SR as usize];
+            e.render(&mut warm, VoiceParams::engine(th), SR);
+            let mut buf = vec![0.0; SR as usize];
+            e.render(&mut buf, VoiceParams::engine(th), SR);
+            let peak = buf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+            let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
+            println!("  {label:9} peak {peak:.4}  rms {rms:.4}");
+        }
+    }
+
     write_wav("/tmp/omaprix-engine.wav", &all)?;
     println!("\nwrote /tmp/omaprix-engine.wav ({:.1}s)", all.len() as f32 / SR);
     Ok(())

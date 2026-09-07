@@ -277,6 +277,35 @@ mod tests {
         (m, ring)
     }
 
+    /// Brian: no sound at startup until a crash, then it works.
+    ///
+    /// Reproduces the exact opening sequence the racer sends — start the
+    /// continuous voices, set them, and duck nothing — with no Play
+    /// anywhere, because a Play is what a crash adds.
+    #[test]
+    fn the_startup_sequence_makes_sound_without_a_crash_first() {
+        let (mut m, ring) = mixer(vec![
+            (Box::new(Constant(0.5)), false),  // engine
+            (Box::new(Constant(0.5)), false),  // tyres
+            (Box::new(Constant(0.5)), false),  // surface
+        ]);
+
+        // Frame one, exactly as Racer::sound sends it.
+        ring.push(Command::Enable { voice: VoiceId(0), on: true });
+        ring.push(Command::Enable { voice: VoiceId(1), on: true });
+        ring.push(Command::Enable { voice: VoiceId(2), on: true });
+        ring.push(Command::Set { voice: VoiceId(0), params: VoiceParams::engine(0.5) });
+
+        let mut out = [0.0f32; 64];
+        m.fill(&mut out, 2);
+        let peak = out.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(
+            peak > 0.01,
+            "the opening frame produced silence (peak {peak}) — this is the bug \
+             where nothing sounds until a crash",
+        );
+    }
+
     #[test]
     fn a_voice_is_silent_until_the_game_starts_it() {
         let (mut m, ring) = mixer(vec![(Box::new(Constant(0.5)), false)]);

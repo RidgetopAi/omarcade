@@ -303,6 +303,146 @@ impl Racer {
     }
 
     /// Steering input as -1..1, from the two held flags.
+    /// Advance the world by `dt`, and report what happened.
+    ///
+    /// Returns the race event this frame raised, if any, so
+    /// [`Game::update`] can sound it — see the warning there about why
+    /// sound does not live in here.
+    fn simulate(&mut self, dt: f32) -> Option<Event> {
+        if let Some(flash) = &mut self.flash {
+            flash.remaining -= dt;
+            if flash.remaining <= 0.0 {
+                self.flash = None;
+            }
+        }
+
+        // The lights. EVERYTHING holds — the car, the traffic, the clock
+        // — so the field a session starts from is the one on the grid,
+        // and the first second of the clock is the first second of
+        // driving.
+        if matches!(self.race.phase, Phase::Countdown { .. }) {
+            let event = self.race.advance(dt, self.car.z, &self.road);
+            self.on_event(event);
+            return event;
+        }
+
+        // THE TRAFFIC DRIVES WHATEVER THE PLAYER IS DOING, crash
+        // included. A field that freezes while you burn would make the
+        // restart a different race from the one you crashed out of.
+        self.traffic.advance(dt, &self.road, &self.tuning);
+
+        if let Some(fire) = &mut self.crash {
+            // Burning. The car is stopped and THE CLOCK KEEPS RUNNING —
+            // that IS the punishment, and the whole of it. A crash never
+            // ends the run; an empty clock does. Input is ignored so a
+            // held key cannot drive a wreck.
+            self.car.speed = 0.0;
+            if !fire.advance(dt) {
+                self.crash = None;
+                // Untouchable until the car could catch anything. The
+                // traffic has been driving through the wreck the whole
+                // burn; without this the first frame of throttle was
+                // a second crash.
+                self.recovering = crash::recovery_time(&self.tuning);
+            }
+            let event = self.race.advance(dt, self.car.z, &self.road);
+            self.on_event(event);
+            // Deliberately NOT recycling while burning: the player is
+            // not moving, so nothing has been overtaken, and recycling
+            // reads distance travelled since a pass.
+            return event;
+        }
+
+        // Where the car was before this frame's move, for the swept
+        // collision check below. A frame at 30fps covers more ground than
+        // a car occupies, so testing only the new position steps clean
+        // over traffic.
+        let prev_z = self.car.z;
+
+        if self.race.driving() {
+            self.car.update(
+                dt,
+                self.throttle(),
+                self.brake(),
+                self.steer(),
+                &self.road,
+                &self.tuning,
+            );
+        } else {
+            // Past the flag, or out. The car brakes itself to a stop and
+            // the keys do nothing; the banner has the next move.
+            self.car.update(dt, 0.0, 1.0, 0.0, &self.road, &self.tuning);
+        }
+        self.roll
+            .advance(self.car.speed, self.pixels_per_unit, dt);
+
+        // Supply, not driving: cars that have fallen well behind come
+        // back out at the horizon so there is always something to
+        // overtake. Five cars on a 2.7-mile loop cannot do that on their
+        // own — measured, see `probe_traffic`. Kept a SEPARATE call so
+        // `advance` stays provably blind.
+        self.traffic.recycle(self.car.z, &self.road);
+
+        // Every car overtaken pays, re-passes included (decision
+        // 729d1f0e). Drained every frame; paid only while the run is
+        // live, so a car rolling to a stop past the flag earns nothing.
+        let passes = self.traffic.take_passes();
+        if self.race.driving() {
+            self.ledger.passed(passes);
+        }
+
+        if self.recovering > 0.0 {
+            self.recovering -= dt;
+        }
+
+        // Did that step put us into anything? Checked AFTER the move,
+        // so the frame the player drives into a car is the frame it
+        // registers rather than the one after. Only while driving: a car
+        // rolling to a stop after the flag cannot crash. And not while
+        // recovering from the last one.
+        if self.race.driving() && self.recovering <= 0.0 {
+            if let Some(hit) = collide::check(&self.car, prev_z, &self.traffic, &self.road) {
+                // ⚠️ REWIND THE PLAYER TO THE POINT OF CONTACT. The check
+                // is swept, so `car.update` has already carried the car
+                // PAST where the impact happened — up to a frame's travel,
+                // which is 267 units at 60fps and 1067 at the clamped
+                // 15fps. Left there, the wreck comes to rest beyond its
+                // own fireball and the fire renders behind the car. Brian
+                // saw exactly that. The race counts distance by signed z
+                // steps, so the rewind is ground to re-drive, as it should
+                // be.
+                // How hard the hit was, taken BEFORE the line below
+                // zeroes it. A shunt at full speed and a brush at a
+                // crawl are different sounds, and after the rewind they
+                // are the same number.
+                self.impact = Some(if self.tuning.top_speed > 0.0 {
+                    (self.car.speed / self.tuning.top_speed).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                });
+
+                self.car.z = self.road.wrap(hit.player_z);
+                self.car.speed = 0.0;
+                self.crash = Some(crash::Explosion::start(hit.z, hit.x));
+            }
+        }
+
+        // The race sees the car where it ended up, rewind included.
+        let was_driving = self.race.driving();
+        let event = self.race.advance(dt, self.car.z, &self.road);
+
+        // Ground pays while the run is live. `was_driving` is read
+        // BEFORE the advance so the frame that crosses the flag still
+        // counts and the roll-out after it does not. The ledger pays on
+        // the high-water mark, so a rewind is neither a refund nor a
+        // second payday.
+        if was_driving {
+            self.ledger.distance(self.race.travelled());
+        }
+        self.on_event(event);
+        event
+    }
+
     /// Say what this frame sounds like.
     ///
     /// Kept out of `update` proper because the simulation above is long
@@ -452,142 +592,20 @@ impl Game for Racer {
     }
 
     fn update(&mut self, dt: f32, audio: &mut Audio<'_>) {
-        // A dt spike — a dragged window, a stalled compositor — must not
-        // teleport the car through a corner or past a rival. Clamping to
-        // roughly four frames keeps a hitch as a hitch.
+        // ⚠️ SOUND HAPPENS ON EVERY FRAME, WHATEVER THE SIMULATION DID.
+        //
+        // `simulate` returns early in three places — the countdown, a
+        // burning wreck, and a finished run — and each one is right to,
+        // because none of them has traffic to advance or a collision to
+        // check. But sound is not part of that decision, and hanging it
+        // off the bottom of the same function made it depend on control
+        // flow that has nothing to do with audio.
+        //
+        // The symptom was Brian's: no sound at all until the first
+        // crash. The countdown returned before the voices were ever
+        // started, and they only came up later by accident.
         let dt = dt.min(1.0 / 15.0);
-
-        if let Some(flash) = &mut self.flash {
-            flash.remaining -= dt;
-            if flash.remaining <= 0.0 {
-                self.flash = None;
-            }
-        }
-
-        // The lights. EVERYTHING holds — the car, the traffic, the clock
-        // — so the field a session starts from is the one on the grid,
-        // and the first second of the clock is the first second of
-        // driving.
-        if matches!(self.race.phase, Phase::Countdown { .. }) {
-            let event = self.race.advance(dt, self.car.z, &self.road);
-            self.on_event(event);
-            return;
-        }
-
-        // THE TRAFFIC DRIVES WHATEVER THE PLAYER IS DOING, crash
-        // included. A field that freezes while you burn would make the
-        // restart a different race from the one you crashed out of.
-        self.traffic.advance(dt, &self.road, &self.tuning);
-
-        if let Some(fire) = &mut self.crash {
-            // Burning. The car is stopped and THE CLOCK KEEPS RUNNING —
-            // that IS the punishment, and the whole of it. A crash never
-            // ends the run; an empty clock does. Input is ignored so a
-            // held key cannot drive a wreck.
-            self.car.speed = 0.0;
-            if !fire.advance(dt) {
-                self.crash = None;
-                // Untouchable until the car could catch anything. The
-                // traffic has been driving through the wreck the whole
-                // burn; without this the first frame of throttle was
-                // a second crash.
-                self.recovering = crash::recovery_time(&self.tuning);
-            }
-            let event = self.race.advance(dt, self.car.z, &self.road);
-            self.on_event(event);
-            // Deliberately NOT recycling while burning: the player is
-            // not moving, so nothing has been overtaken, and recycling
-            // reads distance travelled since a pass.
-            return;
-        }
-
-        // Where the car was before this frame's move, for the swept
-        // collision check below. A frame at 30fps covers more ground than
-        // a car occupies, so testing only the new position steps clean
-        // over traffic.
-        let prev_z = self.car.z;
-
-        if self.race.driving() {
-            self.car.update(
-                dt,
-                self.throttle(),
-                self.brake(),
-                self.steer(),
-                &self.road,
-                &self.tuning,
-            );
-        } else {
-            // Past the flag, or out. The car brakes itself to a stop and
-            // the keys do nothing; the banner has the next move.
-            self.car.update(dt, 0.0, 1.0, 0.0, &self.road, &self.tuning);
-        }
-        self.roll
-            .advance(self.car.speed, self.pixels_per_unit, dt);
-
-        // Supply, not driving: cars that have fallen well behind come
-        // back out at the horizon so there is always something to
-        // overtake. Five cars on a 2.7-mile loop cannot do that on their
-        // own — measured, see `probe_traffic`. Kept a SEPARATE call so
-        // `advance` stays provably blind.
-        self.traffic.recycle(self.car.z, &self.road);
-
-        // Every car overtaken pays, re-passes included (decision
-        // 729d1f0e). Drained every frame; paid only while the run is
-        // live, so a car rolling to a stop past the flag earns nothing.
-        let passes = self.traffic.take_passes();
-        if self.race.driving() {
-            self.ledger.passed(passes);
-        }
-
-        if self.recovering > 0.0 {
-            self.recovering -= dt;
-        }
-
-        // Did that step put us into anything? Checked AFTER the move,
-        // so the frame the player drives into a car is the frame it
-        // registers rather than the one after. Only while driving: a car
-        // rolling to a stop after the flag cannot crash. And not while
-        // recovering from the last one.
-        if self.race.driving() && self.recovering <= 0.0 {
-            if let Some(hit) = collide::check(&self.car, prev_z, &self.traffic, &self.road) {
-                // ⚠️ REWIND THE PLAYER TO THE POINT OF CONTACT. The check
-                // is swept, so `car.update` has already carried the car
-                // PAST where the impact happened — up to a frame's travel,
-                // which is 267 units at 60fps and 1067 at the clamped
-                // 15fps. Left there, the wreck comes to rest beyond its
-                // own fireball and the fire renders behind the car. Brian
-                // saw exactly that. The race counts distance by signed z
-                // steps, so the rewind is ground to re-drive, as it should
-                // be.
-                // How hard the hit was, taken BEFORE the line below
-                // zeroes it. A shunt at full speed and a brush at a
-                // crawl are different sounds, and after the rewind they
-                // are the same number.
-                self.impact = Some(if self.tuning.top_speed > 0.0 {
-                    (self.car.speed / self.tuning.top_speed).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                });
-
-                self.car.z = self.road.wrap(hit.player_z);
-                self.car.speed = 0.0;
-                self.crash = Some(crash::Explosion::start(hit.z, hit.x));
-            }
-        }
-
-        // The race sees the car where it ended up, rewind included.
-        let was_driving = self.race.driving();
-        let event = self.race.advance(dt, self.car.z, &self.road);
-
-        // Ground pays while the run is live. `was_driving` is read
-        // BEFORE the advance so the frame that crosses the flag still
-        // counts and the roll-out after it does not. The ledger pays on
-        // the high-water mark, so a rewind is neither a refund nor a
-        // second payday.
-        if was_driving {
-            self.ledger.distance(self.race.travelled());
-        }
-        self.on_event(event);
+        let event = self.simulate(dt);
         self.sound(audio, event);
     }
 
@@ -902,6 +920,49 @@ mod tests {
             step(&mut g, 1.0 / 60.0);
         }
         assert!(g.crash.is_none(), "the fireball never burned out");
+    }
+
+    /// The engine must be running from the very first frame.
+    ///
+    /// ⚠️ REGRESSION. Brian: "on start of the game there is no sound and
+    /// won't come on until a crash." `update` returned early during the
+    /// countdown — correctly, since there is no traffic to advance and
+    /// no collision to check — and `sound` was hanging off the bottom of
+    /// the same function, so it never ran. Sound is not part of the
+    /// simulation's control flow, and this asserts that it is not.
+    #[test]
+    fn the_voices_start_on_the_first_frame_even_during_the_countdown() {
+        let mut g = racer();
+        assert!(
+            matches!(g.race.phase, Phase::Countdown { .. }),
+            "fixture: a new race starts on the lights",
+        );
+        assert!(!g.engine_running, "fixture: nothing started yet");
+
+        step(&mut g, 1.0 / 60.0);
+
+        assert!(
+            g.engine_running,
+            "the voices were never started — sound is trapped behind an early return",
+        );
+    }
+
+    /// And they keep being fed while a wreck burns.
+    #[test]
+    fn the_voices_are_still_fed_while_the_wreck_burns() {
+        // The burning branch returns early too, for the same good
+        // reasons. Sound must survive that one as well.
+        let mut g = on_track();
+        g.traffic.cars[0].z = g.road.wrap(g.car.z + 100.0);
+        g.traffic.cars[0].x = g.car.x;
+        g.car.speed = g.tuning.top_speed * 0.5;
+
+        step(&mut g, 1.0 / 60.0);
+        assert!(g.crash.is_some(), "fixture: should be burning");
+        assert!(
+            g.engine_running,
+            "the voices went away while the wreck burned",
+        );
     }
 
     /// The crash sound is scaled by how hard the hit was — and that

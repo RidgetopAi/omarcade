@@ -120,6 +120,35 @@ impl Color {
         let ch = |s: u8, d: u8| (((s as u32 * a) + (d as u32 * inv) + 127) / 255) as u8;
         Color::rgb(ch(self.r, dst.r), ch(self.g, dst.g), ch(self.b, dst.b))
     }
+
+    /// `self` **added** to `dst`, scaled by `self.a`, saturating per channel.
+    ///
+    /// The difference from [`over`](Self::over) is the difference between a
+    /// translucent sticker and a light source. `over` mixes *toward* a
+    /// colour, so a white glow at 50% over a dark background lands at mid
+    /// grey — dimming anything bright underneath it. Addition only ever
+    /// brightens, which is how glow, sparks and trails actually behave.
+    ///
+    /// ⚠️ **Saturating, never wrapping.** A `u8` sum of 200 + 100 wraps to
+    /// 44: the centre of a bright effect, where the most light lands, would
+    /// render as a dark hole. That is the single failure this method exists
+    /// to make impossible, and `additive_saturates_it_does_not_wrap` guards
+    /// it.
+    ///
+    /// `a` is intensity, not coverage: at `a = 0` nothing is added, at
+    /// `a = 255` the full colour is. Two half-intensity passes and one
+    /// full-intensity pass land in the same place, which is what lets
+    /// overlapping particles accumulate light the way overlapping lights do.
+    fn plus(self, dst: Color) -> Color {
+        let a = self.a as u32;
+        // Scale the source by alpha first, then add. Rounding matches
+        // `over` so the two paths agree at the extremes.
+        let ch = |s: u8, d: u8| {
+            let scaled = ((s as u32 * a) + 127) / 255;
+            (scaled as u8).saturating_add(d)
+        };
+        Color::rgb(ch(self.r, dst.r), ch(self.g, dst.g), ch(self.b, dst.b))
+    }
 }
 
 /// A mutable view over a frame's pixels.
@@ -285,6 +314,109 @@ impl<'a> Canvas<'a> {
     /// states (paused, game over) over per-frame effects.
     pub fn veil(&mut self, color: Color) {
         self.fill_rect(0, 0, self.width, self.height, color);
+    }
+
+    /// Fill a rectangle by **adding** light, clipped to the canvas.
+    ///
+    /// The additive twin of [`fill_rect`](Self::fill_rect): same signature,
+    /// same clipping, different compositing. Use it for anything that should
+    /// read as *emitting* rather than *covering* — glow, sparks, a trail.
+    ///
+    /// ⚠️ **No opaque fast path exists here, by construction.** `fill_rect`
+    /// can memset a row when the colour is opaque because it does not care
+    /// what was underneath; addition always reads the destination first, so
+    /// every pixel costs a read, an add and a write. Expect it to cost about
+    /// what a translucent `fill_rect` costs, and reach for the plain one
+    /// whenever you actually mean "cover this".
+    ///
+    /// A colour with `a == 0` adds nothing and returns immediately.
+    /// [`Color::BLACK`] adds nothing at any alpha — zero is the identity of
+    /// addition — which makes an unset or default colour a silent no-op
+    /// rather than a visible bug.
+    pub fn fill_rect_add(&mut self, x: i32, y: i32, w: u32, h: u32, color: Color) {
+        if w == 0 || h == 0 || color.a == 0 {
+            return;
+        }
+
+        // Clipping is identical to `fill_rect` on purpose: the two paths
+        // must agree about which pixels a given rect touches, or an effect
+        // drawn both ways lands a pixel apart at the edges.
+        let x0 = x.max(0) as i64;
+        let y0 = y.max(0) as i64;
+        let x1 = ((x as i64) + (w as i64)).min(self.width as i64);
+        let y1 = ((y as i64) + (h as i64)).min(self.height as i64);
+
+        if x0 >= x1 || y0 >= y1 {
+            return; // fully off-canvas
+        }
+
+        let (x0, x1) = (x0 as usize, x1 as usize);
+        let (y0, y1) = (y0 as usize, y1 as usize);
+        let stride = self.width as usize;
+
+        for row in y0..y1 {
+            let start = row * stride;
+            for px in &mut self.buffer[start + x0..start + x1] {
+                *px = color.plus(Color::from_u32(*px)).to_u32();
+            }
+        }
+    }
+
+    /// Add light at fractional coordinates, anti-aliasing the edges.
+    ///
+    /// The additive twin of [`fill_rect_f`](Self::fill_rect_f), and the one
+    /// the particle system draws through: particles move continuously, and
+    /// snapping them to whole pixels makes a smooth arc read as a stutter.
+    ///
+    /// Edge coverage scales the intensity, exactly as it scales alpha in the
+    /// blended path — a pixel the rect half covers receives half the light.
+    pub fn fill_rect_add_f(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        // Same NaN rejection as `fill_rect_f`: a non-finite coordinate
+        // reaching the bounds maths below silently produces an empty or
+        // enormous range rather than an error.
+        if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) {
+            return;
+        }
+        if w <= 0.0 || h <= 0.0 || color.a == 0 {
+            return;
+        }
+
+        let (x0, x1) = (x, x + w);
+        let (y0, y1) = (y, y + h);
+
+        let px0 = (x0.floor().max(0.0)) as i64;
+        let py0 = (y0.floor().max(0.0)) as i64;
+        let px1 = (x1.ceil().min(self.width as f32)) as i64;
+        let py1 = (y1.ceil().min(self.height as f32)) as i64;
+        if px0 >= px1 || py0 >= py1 {
+            return;
+        }
+
+        let stride = self.width as usize;
+        for py in py0..py1 {
+            let cy = (y1.min(py as f32 + 1.0) - y0.max(py as f32)).clamp(0.0, 1.0);
+            if cy <= 0.0 {
+                continue;
+            }
+            let start = py as usize * stride;
+
+            for px in px0..px1 {
+                let cx = (x1.min(px as f32 + 1.0) - x0.max(px as f32)).clamp(0.0, 1.0);
+                if cx <= 0.0 {
+                    continue;
+                }
+
+                let cover = cx * cy * (color.a as f32 / 255.0);
+                let a = (cover * 255.0).round() as u8;
+                if a == 0 {
+                    continue;
+                }
+
+                let i = start + px as usize;
+                let src = color.with_alpha(a);
+                self.buffer[i] = src.plus(Color::from_u32(self.buffer[i])).to_u32();
+            }
+        }
     }
 }
 
@@ -615,7 +747,7 @@ mod blend_tests {
         let mut buf = canvas_of(3, 3, Color::BLACK);
         let mut c = Canvas::new(&mut buf, 3, 3);
         c.fill_rect_f(1.0, 1.0, 1.0, 1.0, Color::WHITE);
-        assert_eq!(Color::from_u32(buf[1 * 3 + 1]).r, 255, "centre must be full");
+        assert_eq!(Color::from_u32(buf[3 + 1]).r, 255, "centre must be full");
         assert_eq!(Color::from_u32(buf[0]).r, 0, "corner must be untouched");
     }
 
@@ -676,5 +808,204 @@ mod blend_tests {
         let mid = a.lerp(b, 0.5);
         assert_eq!(mid.r, 128);
         assert_eq!(mid.g, 50);
+    }
+}
+
+#[cfg(test)]
+mod additive_tests {
+    use super::*;
+
+    fn canvas_of(w: u32, h: u32, fill: Color) -> Vec<u32> {
+        vec![fill.to_u32(); (w * h) as usize]
+    }
+
+    fn px(buf: &[u32], w: u32, x: u32, y: u32) -> Color {
+        Color::from_u32(buf[(y * w + x) as usize])
+    }
+
+    /// The whole reason `plus` exists rather than a bare `+`.
+    ///
+    /// 200 + 100 in a u8 wraps to 44. In an effect that would put a DARK
+    /// hole exactly where the most light lands — the centre of a glow, the
+    /// point where two sparks overlap.
+    #[test]
+    fn additive_saturates_it_does_not_wrap() {
+        let mut buf = canvas_of(1, 1, Color::rgb(200, 200, 200));
+        {
+            let mut c = Canvas::new(&mut buf, 1, 1);
+            c.fill_rect_add(0, 0, 1, 1, Color::rgb(100, 100, 100));
+        }
+        let got = px(&buf, 1, 0, 0);
+        assert_eq!(got.r, 255, "must clamp at white, not wrap to 44");
+        assert_eq!(got.g, 255);
+        assert_eq!(got.b, 255);
+    }
+
+    /// Saturation must be per channel: a channel that is already full must
+    /// not steal from or spill into its neighbours.
+    #[test]
+    fn saturation_is_per_channel() {
+        let mut buf = canvas_of(1, 1, Color::rgb(255, 10, 0));
+        {
+            let mut c = Canvas::new(&mut buf, 1, 1);
+            c.fill_rect_add(0, 0, 1, 1, Color::rgb(40, 40, 40));
+        }
+        let got = px(&buf, 1, 0, 0);
+        assert_eq!(got.r, 255, "already full, stays full");
+        assert_eq!(got.g, 50, "10 + 40");
+        assert_eq!(got.b, 40, "0 + 40");
+    }
+
+    /// Zero is the identity of addition, so black is a no-op at any alpha.
+    /// This makes an unset or defaulted colour invisible rather than a bug.
+    #[test]
+    fn adding_black_changes_nothing() {
+        let start = Color::rgb(31, 41, 59);
+        let mut buf = canvas_of(2, 2, start);
+        {
+            let mut c = Canvas::new(&mut buf, 2, 2);
+            c.fill_rect_add(0, 0, 2, 2, Color::BLACK);
+            c.fill_rect_add(0, 0, 2, 2, Color::BLACK.with_alpha(128));
+            c.fill_rect_add_f(0.0, 0.0, 2.0, 2.0, Color::BLACK);
+        }
+        for y in 0..2 {
+            for x in 0..2 {
+                assert_eq!(px(&buf, 2, x, y), start);
+            }
+        }
+    }
+
+    /// Alpha is intensity: half alpha adds half the light.
+    #[test]
+    fn alpha_scales_the_light_added() {
+        let mut buf = canvas_of(1, 1, Color::BLACK);
+        {
+            let mut c = Canvas::new(&mut buf, 1, 1);
+            c.fill_rect_add(0, 0, 1, 1, Color::rgb(100, 100, 100).with_alpha(128));
+        }
+        let got = px(&buf, 1, 0, 0);
+        assert!((got.r as i32 - 50).abs() <= 1, "expected ~50, got {}", got.r);
+    }
+
+    /// Two half passes and one full pass land in the same place. This is
+    /// what lets overlapping particles accumulate light predictably.
+    #[test]
+    fn light_accumulates_across_passes() {
+        let mut a = canvas_of(1, 1, Color::BLACK);
+        {
+            let mut c = Canvas::new(&mut a, 1, 1);
+            c.fill_rect_add(0, 0, 1, 1, Color::rgb(60, 60, 60));
+            c.fill_rect_add(0, 0, 1, 1, Color::rgb(60, 60, 60));
+        }
+        let mut b = canvas_of(1, 1, Color::BLACK);
+        {
+            let mut c = Canvas::new(&mut b, 1, 1);
+            c.fill_rect_add(0, 0, 1, 1, Color::rgb(120, 120, 120));
+        }
+        assert_eq!(px(&a, 1, 0, 0), px(&b, 1, 0, 0));
+    }
+
+    /// Additive brightens; alpha blending mixes toward. On a bright
+    /// background over a dark source they move in OPPOSITE directions, and
+    /// that difference is the entire point of the primitive.
+    #[test]
+    fn additive_brightens_where_alpha_blending_dims() {
+        let bg = Color::rgb(200, 200, 200);
+        let src = Color::rgb(40, 40, 40).with_alpha(180);
+
+        let mut blended = canvas_of(1, 1, bg);
+        {
+            let mut c = Canvas::new(&mut blended, 1, 1);
+            c.fill_rect(0, 0, 1, 1, src);
+        }
+        let mut added = canvas_of(1, 1, bg);
+        {
+            let mut c = Canvas::new(&mut added, 1, 1);
+            c.fill_rect_add(0, 0, 1, 1, src);
+        }
+
+        assert!(px(&blended, 1, 0, 0).r < bg.r, "alpha blend must dim toward the source");
+        assert!(px(&added, 1, 0, 0).r > bg.r, "additive must brighten");
+    }
+
+    /// Clipping must match `fill_rect` exactly, or an effect drawn through
+    /// both paths lands a pixel apart at the canvas edges.
+    #[test]
+    fn clipping_matches_the_blended_path() {
+        let cases: &[(i32, i32, u32, u32)] = &[
+            (-5, -5, 20, 20),
+            (6, 6, 10, 10),
+            (-3, 2, 4, 4),
+            (0, 0, 8, 8),
+            (100, 100, 4, 4),
+        ];
+        for &(x, y, w, h) in cases {
+            let mut blended = canvas_of(8, 8, Color::BLACK);
+            {
+                let mut c = Canvas::new(&mut blended, 8, 8);
+                c.fill_rect(x, y, w, h, Color::rgb(10, 10, 10));
+            }
+            let mut added = canvas_of(8, 8, Color::BLACK);
+            {
+                let mut c = Canvas::new(&mut added, 8, 8);
+                c.fill_rect_add(x, y, w, h, Color::rgb(10, 10, 10));
+            }
+            let touched = |b: &[u32]| b.iter().filter(|&&v| v != 0).count();
+            assert_eq!(
+                touched(&blended),
+                touched(&added),
+                "rect ({x},{y},{w},{h}) touched a different pixel count"
+            );
+        }
+    }
+
+    /// A zero-sized or fully off-canvas rect must draw nothing and not panic.
+    #[test]
+    fn degenerate_rects_draw_nothing() {
+        let mut buf = canvas_of(4, 4, Color::BLACK);
+        {
+            let mut c = Canvas::new(&mut buf, 4, 4);
+            c.fill_rect_add(0, 0, 0, 5, Color::WHITE);
+            c.fill_rect_add(0, 0, 5, 0, Color::WHITE);
+            c.fill_rect_add(-100, -100, 4, 4, Color::WHITE);
+            c.fill_rect_add(0, 0, 4, 4, Color::WHITE.with_alpha(0));
+            c.fill_rect_add_f(0.0, 0.0, -1.0, 4.0, Color::WHITE);
+            c.fill_rect_add_f(50.0, 50.0, 4.0, 4.0, Color::WHITE);
+        }
+        assert!(buf.iter().all(|&v| v == 0), "nothing should have been drawn");
+    }
+
+    /// NaN rejection matches `fill_rect_f`. A non-finite coordinate reaching
+    /// the bounds maths produces an empty or enormous range, never an error.
+    #[test]
+    fn non_finite_coordinates_are_rejected() {
+        let mut buf = canvas_of(4, 4, Color::BLACK);
+        {
+            let mut c = Canvas::new(&mut buf, 4, 4);
+            c.fill_rect_add_f(f32::NAN, 0.0, 2.0, 2.0, Color::WHITE);
+            c.fill_rect_add_f(0.0, f32::INFINITY, 2.0, 2.0, Color::WHITE);
+            c.fill_rect_add_f(0.0, 0.0, f32::NAN, 2.0, Color::WHITE);
+            c.fill_rect_add_f(0.0, 0.0, 2.0, f32::NEG_INFINITY, Color::WHITE);
+        }
+        assert!(buf.iter().all(|&v| v == 0));
+    }
+
+    /// The sub-pixel path scales light by coverage: a rect covering half a
+    /// pixel deposits half as much as one covering all of it.
+    #[test]
+    fn partial_coverage_adds_partial_light() {
+        let mut half = canvas_of(1, 1, Color::BLACK);
+        {
+            let mut c = Canvas::new(&mut half, 1, 1);
+            c.fill_rect_add_f(0.0, 0.0, 0.5, 1.0, Color::rgb(200, 200, 200));
+        }
+        let mut full = canvas_of(1, 1, Color::BLACK);
+        {
+            let mut c = Canvas::new(&mut full, 1, 1);
+            c.fill_rect_add_f(0.0, 0.0, 1.0, 1.0, Color::rgb(200, 200, 200));
+        }
+        let (h, f) = (px(&half, 1, 0, 0).r as i32, px(&full, 1, 0, 0).r as i32);
+        assert!(h < f, "half coverage must add less light");
+        assert!((h - f / 2).abs() <= 2, "expected about half of {f}, got {h}");
     }
 }

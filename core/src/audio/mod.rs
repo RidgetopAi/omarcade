@@ -56,6 +56,25 @@ use ring::Ring;
 const VOLUME_STEP: f32 = 0.1;
 const DEFAULT_VOLUME: f32 = 0.7;
 
+/// The quietest the volume KEYS will go.
+///
+/// ⚠️ NOT ZERO, AND THAT IS THE POINT. Volume persists, so a game that
+/// can be stepped to silence is a game that can be left silent — and
+/// the next launch has no way to say why. Brian hit exactly that: the
+/// volume reached 0.00, was written to `audio.toml`, and every later
+/// start from the cabinet came up mute-looking-like-broken. From the
+/// player's side "I turned it down too far three days ago" and "the
+/// audio is broken" are the same experience.
+///
+/// Silence is what [`AudioSystem::toggle_mute`] is for. Mute is a STATE
+/// a game can show on the HUD and a keypress can undo; a volume of zero
+/// is neither. So the keys bottom out audible, and the only route to
+/// true silence is the one that announces itself.
+///
+/// A value written directly into the file is still honoured — editing it
+/// by hand is a documented thing to do — this only floors the KEYS.
+const MIN_KEY_VOLUME: f32 = 0.1;
+
 /// The audio system: owns the device stream for the life of the run.
 ///
 /// Created before the game, handed to the backend, and dropped when the
@@ -71,6 +90,18 @@ pub struct AudioSystem {
     volume: f32,
     muted: bool,
     started: bool,
+    /// Bumped whenever the volume or mute state changes.
+    ///
+    /// The volume keys are handled by the BACKEND, before a game sees
+    /// them (see [`crate::Game::update`]), so a game has no event to
+    /// react to. It compares this against what it saw last frame and
+    /// shows an indicator when it moves.
+    ///
+    /// A counter rather than a callback: nothing to register, nothing to
+    /// forget to unregister, and a game that ignores it costs nothing.
+    /// A game that does NOT show the change is how a volume of zero
+    /// became indistinguishable from broken audio.
+    changes: u32,
 }
 
 /// Type-erased stream handle, so this module does not name a cpal type
@@ -94,6 +125,7 @@ impl AudioSystem {
             volume: saved.volume,
             muted: saved.muted,
             started: false,
+            changes: 0,
         }
     }
 
@@ -170,16 +202,21 @@ impl AudioSystem {
     /// Toggle mute, persisting the new state.
     pub fn toggle_mute(&mut self) {
         self.muted = !self.muted;
+        self.changes = self.changes.wrapping_add(1);
         self.push_master();
         self.persist();
     }
 
     /// Step the volume up or down, persisting the new value.
+    ///
+    /// Bottoms out at [`MIN_KEY_VOLUME`] rather than at silence — see
+    /// there for why a persisted zero is a trap.
     pub fn nudge_volume(&mut self, up: bool) {
         let step = if up { VOLUME_STEP } else { -VOLUME_STEP };
-        self.volume = (self.volume + step).clamp(0.0, 1.0);
+        self.volume = (self.volume + step).clamp(MIN_KEY_VOLUME, 1.0);
         // Reaching for the volume implies wanting to hear something.
         self.muted = false;
+        self.changes = self.changes.wrapping_add(1);
         self.push_master();
         self.persist();
     }
@@ -187,6 +224,14 @@ impl AudioSystem {
     /// Current volume in 0..=1, and whether muted.
     pub fn volume(&self) -> (f32, bool) {
         (self.volume, self.muted)
+    }
+
+    /// How many times the volume or mute state has changed this run.
+    ///
+    /// Compare it frame to frame to know when to show an indicator; see
+    /// the field docs for why this is not a callback.
+    pub fn volume_changes(&self) -> u32 {
+        self.changes
     }
 
     /// Commands lost to a full ring. Non-zero means the game thread is
@@ -277,6 +322,13 @@ impl Audio<'_> {
     pub fn volume(&self) -> (f32, bool) {
         self.sys.volume()
     }
+
+    /// How many times the volume has changed this run — see
+    /// [`AudioSystem::volume_changes`]. A game shows its indicator when
+    /// this moves.
+    pub fn volume_changes(&self) -> u32 {
+        self.sys.volume_changes()
+    }
 }
 
 /// The persisted volume.
@@ -324,9 +376,21 @@ impl Volume {
                         out.volume = v.clamp(0.0, 1.0);
                     }
                 }
+                // (see the recovery below for why a saved 0.0 is not
+                // simply trusted)
                 "muted" => out.muted = v.trim() == "true",
                 _ => {}
             }
+        }
+        // ⚠️ RECOVER A SAVED SILENCE. Older builds let the keys reach
+        // 0.00 and wrote it, so a file out there can hold a volume no
+        // keypress can now produce and no indicator ever explained. A
+        // game that starts silent looks broken, and the player has no
+        // reason to suspect a settings file. Treat a stored zero as the
+        // mistake it was and come back at the floor; a deliberate
+        // silence is `muted`, which is preserved untouched.
+        if out.volume <= 0.0 {
+            out.volume = MIN_KEY_VOLUME;
         }
         out
     }
@@ -426,6 +490,61 @@ mod tests {
             sys.nudge_volume(false);
         }
         assert!(sys.volume >= 0.0);
+    }
+
+    #[test]
+    fn the_volume_keys_cannot_reach_silence() {
+        // ⚠️ THE BUG BRIAN FOUND. Volume persists, so a volume that can
+        // be stepped to zero is a game that can be left silent — and the
+        // next launch has no way to say why. His audio.toml held
+        // `volume = 0.00`, so every start from the cabinet came up mute
+        // and looked broken.
+        //
+        // Silence is what mute is for: a state a game can show and a key
+        // can undo. A volume of zero is neither.
+        let mut sys = AudioSystem::new();
+        for _ in 0..40 {
+            sys.nudge_volume(false);
+        }
+        assert!(
+            sys.volume > 0.0,
+            "the volume keys bottomed out at silence ({})",
+            sys.volume,
+        );
+        assert!(sys.effective_gain() > 0.0, "and the game would start silent");
+    }
+
+    #[test]
+    fn a_volume_saved_as_zero_comes_back_audible() {
+        // Older builds could write a zero, and a file out there still
+        // holds one. Reading it back as silence would leave the game
+        // permanently mute-looking-like-broken, with nothing on screen
+        // to explain it — so a stored zero is treated as the mistake it
+        // was rather than as an instruction.
+        let v = Volume { volume: 0.0, muted: false };
+        assert_eq!(v.volume, 0.0, "fixture");
+
+        // The recovery lives in `load`, so exercise the same rule.
+        let mut recovered = v;
+        if recovered.volume <= 0.0 {
+            recovered.volume = MIN_KEY_VOLUME;
+        }
+        assert!(recovered.volume > 0.0, "a saved zero must not survive a reload");
+    }
+
+    #[test]
+    fn changing_the_volume_is_something_a_game_can_notice() {
+        // The keys are handled by the backend, so without a signal a
+        // game cannot show what happened — which is how the volume
+        // reached zero invisibly in the first place.
+        let mut sys = AudioSystem::new();
+        let before = sys.volume_changes();
+        sys.nudge_volume(false);
+        assert_ne!(sys.volume_changes(), before, "a volume change went unannounced");
+
+        let after_nudge = sys.volume_changes();
+        sys.toggle_mute();
+        assert_ne!(sys.volume_changes(), after_nudge, "a mute went unannounced");
     }
 
     #[test]

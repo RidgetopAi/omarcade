@@ -120,6 +120,9 @@ struct Racer {
     whoosh: SoundId,
     /// The lights, and the sounds of banking time.
     chime: SoundId,
+    /// The volume-change count seen last frame, so a change can be
+    /// shown. See `AudioSystem::volume_changes`.
+    last_volume_change: u32,
     /// The countdown digit shown on the last frame.
     ///
     /// The HUD counts `remaining.ceil()`, so a tick belongs on each
@@ -233,6 +236,7 @@ impl Racer {
             bang,
             whoosh,
             chime,
+            last_volume_change: 0,
             last_light: None,
             near: None,
             impact: None,
@@ -553,6 +557,22 @@ impl Racer {
         // A car going by, close enough to be worth hearing.
         if let Some(intensity) = self.near.take() {
             audio.play_with(self.whoosh, intensity, 1.0);
+        }
+
+        // ⚠️ SHOW THE VOLUME WHEN IT MOVES. The keys are handled by the
+        // backend, so without this a game changes volume with no
+        // feedback at all — and Brian found where that leads: the
+        // volume reached zero, persisted, and every later launch came up
+        // silent looking exactly like broken audio.
+        let changes = audio.volume_changes();
+        if changes != self.last_volume_change {
+            self.last_volume_change = changes;
+            let (vol, muted) = audio.volume();
+            self.flash = Some(hud::Flash::new(if muted {
+                "SOUND OFF".to_string()
+            } else {
+                format!("VOLUME {}%", (vol * 100.0).round() as u32)
+            }));
         }
 
         // The lights. A tick on each change of the digit the HUD is

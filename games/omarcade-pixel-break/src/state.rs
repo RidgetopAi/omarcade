@@ -86,6 +86,110 @@ pub const ARMOUR_FROM_LEVEL: u32 = 8;
 /// motion, short enough that a slow ball does not smear.
 pub const TRAIL_LEN: usize = 10;
 
+/// Steepest the ball may travel relative to horizontal, as |vy| / speed.
+/// Below this the ball is skimming and the game stalls.
+pub const MIN_VERTICAL_FRACTION: f32 = 0.25;
+
+/// How much the paddle steers the ball: at the very edge, this fraction
+/// of the outgoing velocity is horizontal.
+pub const PADDLE_STEER: f32 = 0.75;
+
+/// Where the ball leaves the paddle, given where it struck.
+///
+/// This is the mechanic that makes Breakout a game of skill rather than a
+/// screensaver: hitting with the paddle's edge steers the ball.
+///
+/// ⚠️ **Lives in `state`, not `physics`, and has exactly one copy.** The
+/// magnet's release must give a ball the same aim an ordinary return would
+/// — it buys the player TIME to choose the angle, not a different set of
+/// angles. Two copies of this formula would drift apart at the next tuning
+/// change and the magnet would quietly start aiming differently from the
+/// paddle it is stuck to.
+///
+/// It is here rather than in `physics` because `state` cannot depend on
+/// `physics`: two probes (`probe_select`, `probe_brick`) pull `state.rs`
+/// via `#[path]` WITHOUT `physics.rs`, so a `crate::physics::` reference
+/// from this file fails to compile in those examples and nowhere else.
+pub fn aim_off_paddle(ball: &mut Ball, paddle: &Paddle, speed: f32) {
+    // -1 at the left edge, 0 at the centre, +1 at the right edge.
+    let offset = ((ball.pos.x - paddle.center_x()) / (paddle.w / 2.0)).clamp(-1.0, 1.0);
+
+    let vx = offset * PADDLE_STEER;
+    // Always upward, and always steep enough to keep the game moving.
+    let vy = -(1.0 - vx.abs() * vx.abs()).max(MIN_VERTICAL_FRACTION).sqrt();
+
+    ball.vel = Vec2::new(vx, vy).with_length(speed);
+    clamp_angle(&mut ball.vel);
+}
+
+/// Keep a velocity from running too near horizontal.
+///
+/// ⚠️ Solves for BOTH components rather than setting vy and renormalizing:
+/// raising vy alone makes the vector longer, so the renormalize scales vy
+/// straight back down below target. vy is fixed at the minimum; vx takes
+/// whatever speed is left.
+pub fn clamp_angle(vel: &mut Vec2) {
+    let speed = vel.length();
+    if speed == 0.0 {
+        return;
+    }
+    let min_vy = speed * MIN_VERTICAL_FRACTION;
+    if vel.y.abs() < min_vy {
+        let sign_y = if vel.y < 0.0 { -1.0 } else { 1.0 };
+        let sign_x = if vel.x < 0.0 { -1.0 } else { 1.0 };
+        let vy = min_vy;
+        let vx = (speed * speed - vy * vy).max(0.0).sqrt();
+        *vel = Vec2::new(sign_x * vx, sign_y * vy);
+    }
+}
+
+/// Smallest horizontal lean a released ball may have, as a fraction of a
+/// paddle half-width.
+///
+/// ⚠️ **A dead-vertical release STALLS THE GAME**, and the magnet is the
+/// only thing that can produce one reliably. `launch` has always avoided
+/// straight up for this reason — "a perfectly vertical ball in a brick
+/// corridor bounces forever" — but an ordinary bounce could never hit
+/// offset exactly 0.0, because a moving ball never lands on the paddle's
+/// exact centre. A HELD ball is pinned to `paddle.center_x()` by design, so
+/// it lands there EVERY time, and a player who simply keeps the paddle
+/// under the ball gets a vertical ball on release.
+///
+/// Measured: `probe_balance` timed out on eight of ten levels, one ball
+/// bouncing at x=880 with `vel=(0, ±340)` for 216,000 ticks having cleared
+/// ten bricks. That is what this constant prevents.
+const MIN_RELEASE_LEAN: f32 = 0.12;
+
+/// Fire a held ball off the paddle at the aim the player lined up.
+///
+/// The aim is `aim_off_paddle`'s, exactly as an ordinary return would be —
+/// except that a dead-centre release is nudged off vertical.
+pub fn release_held(ball: &mut Ball, paddle: &Paddle, speed: f32) {
+    let held = ball.held_for;
+    ball.held_for = None;
+
+    let half = paddle.w / 2.0;
+    let offset = (ball.pos.x - paddle.center_x()) / half.max(1.0);
+    if offset.abs() < MIN_RELEASE_LEAN {
+        // Break the tie deterministically but not always the same way:
+        // the fractional part of the hold is effectively arbitrary by the
+        // time a player lets go, and an auto-release uses whichever side
+        // the paddle is currently travelling.
+        let sign = if paddle.dir < 0.0 {
+            -1.0
+        } else if paddle.dir > 0.0 {
+            1.0
+        } else if held.is_some_and(|t| t.to_bits() % 2 == 0) {
+            -1.0
+        } else {
+            1.0
+        };
+        ball.pos.x = paddle.center_x() + sign * MIN_RELEASE_LEAN * half;
+    }
+
+    aim_off_paddle(ball, paddle, speed);
+}
+
 /// Where the game is in its lifecycle.
 ///
 /// Explicit states rather than a scatter of booleans: "is the ball
@@ -146,10 +250,24 @@ pub struct Ball {
     /// one ball drains is correct with a single ball and wrong with several
     /// — see `GameState::retire_drained_balls`.
     pub drained: bool,
+    /// Seconds this ball has left stuck to the paddle by the magnet, or
+    /// `None` when it is flying normally.
+    ///
+    /// ⚠️ **A flag on the ball, not an index into `balls`.** The vec is
+    /// mutated every tick — `retire_drained_balls` removes drained balls,
+    /// `spawn_ball` appends — so a stored index is stale the moment the
+    /// field changes, and a stale index does not panic here, it silently
+    /// welds a DIFFERENT ball to the paddle. Same reasoning as `drained`
+    /// above, and the same reasoning that made the trail per-ball.
+    ///
+    /// Holding the countdown here rather than on `GameState` also makes
+    /// "two balls held at once" unrepresentable in the shape of the data:
+    /// each ball owns its own hold or has none.
+    pub held_for: Option<f32>,
 }
 
 impl Ball {
-    /// A ball at rest. Trail empty, not drained.
+    /// A ball at rest. Trail empty, not drained, not held.
     pub fn new(pos: Vec2, vel: Vec2, radius: f32) -> Self {
         Ball {
             pos,
@@ -157,7 +275,13 @@ impl Ball {
             radius,
             trail: Vec::with_capacity(TRAIL_LEN),
             drained: false,
+            held_for: None,
         }
+    }
+
+    /// Whether the magnet is currently holding this ball.
+    pub fn is_held(&self) -> bool {
+        self.held_for.is_some()
     }
 
     /// The ball as a rect, which is how collision sees it.
@@ -270,6 +394,17 @@ pub struct GameState {
     pub paddle_scale: f32,
     /// Seconds left on `paddle_scale` before it returns to 1.0.
     pub paddle_effect_left: f32,
+    /// Seconds the magnet stays armed. Zero means off.
+    ///
+    /// ⚠️ **Deliberately NOT part of the `paddle_scale` axis.** Grow and
+    /// bomb share one scale and one timer because they contradict each
+    /// other — there is no reading of "grown and also shrunk". The magnet
+    /// contradicts neither: it does not touch the paddle's width at all.
+    /// Folding it into that timer would make a caught bomb cancel a magnet
+    /// the player is still using, which no player would predict.
+    ///
+    /// The ball's own hold lives on `Ball::held_for`, not here.
+    pub magnet_left: f32,
     /// True from clearing a field until the next launch.
     ///
     /// ⚠️ Exists because `Phase::Ready` means two different things to a
@@ -305,6 +440,7 @@ impl GameState {
             dropper: Dropper::default(),
             paddle_scale: 1.0,
             paddle_effect_left: 0.0,
+            magnet_left: 0.0,
             just_advanced: false,
         };
         state.rest_ball_on_paddle();
@@ -452,8 +588,115 @@ impl GameState {
                 self.paddle_scale = BOMB_SCALE;
                 self.paddle_effect_left = kind.seconds();
             }
+            // ⚠️ The magnet REFRESHES rather than extends. Grow stacks its
+            // duration because two grows are two of the same good thing;
+            // a second magnet caught while one is running is the player
+            // topping it back up, and adding 20 s to 18 s left would bank
+            // a 38-second magnet from one lucky catch.
+            ItemKind::Magnet => {
+                self.magnet_left = self.magnet_left.max(kind.seconds());
+            }
+            // ⚠️ **`spawn_ball`'s first caller.** The engine has existed
+            // since S3 with nothing calling it, which is exactly why
+            // multi-ball was structurally unreachable in play until now.
+            ItemKind::Omarchy => {
+                self.spawn_extra_ball();
+            }
         }
-        self.resize_paddle();
+        if kind.resizes_paddle() {
+            self.resize_paddle();
+        }
+    }
+
+    /// Put one more ball on the field, next to an existing one.
+    ///
+    /// Returns whether a ball actually appeared, so the caller can decline
+    /// to play a pickup sound for a ball the cap refused.
+    ///
+    /// ⚠️ The new ball is aimed as a MIRROR of its parent's horizontal
+    /// travel, not spawned on a fixed heading. Two balls leaving on the
+    /// same vector are one ball as far as the player's eye is concerned,
+    /// and the whole point of the item is more of the field being searched
+    /// at once.
+    ///
+    /// ⚠️ It must not inherit a HELD parent's zero velocity, or the item
+    /// would hand the player a second ball welded in place. The speed comes
+    /// from the level, the same as `launch`.
+    pub fn spawn_extra_ball(&mut self) -> bool {
+        let speed = self.ball_speed();
+        // Prefer a ball that is actually flying: its heading is meaningful.
+        let parent = self
+            .balls
+            .iter()
+            .find(|b| !b.is_held() && !b.drained)
+            .or_else(|| self.balls.first());
+        let Some(parent) = parent else {
+            return false;
+        };
+        let pos = parent.pos;
+        // Mirror horizontally; always send it upward, so a ball spawned
+        // from one on its way down does not immediately drain.
+        let dir = if parent.vel.x.abs() > 0.01 {
+            Vec2::new(-parent.vel.x, -parent.vel.y.abs())
+        } else {
+            Vec2::new(0.35, -1.0)
+        };
+        self.spawn_ball(pos, dir.with_length(speed))
+    }
+
+    /// Count the magnet down, and fire any ball whose hold has expired.
+    ///
+    /// ⚠️ **The 3 s auto-release is the feature, not a limitation.** Brian
+    /// settled this: without it, the optimal play on the late levels is
+    /// catch-aim-release on every single bounce — strictly better, much
+    /// slower, and it swaps the skill in the game for patience. Do not make
+    /// the hold unlimited.
+    ///
+    /// ⚠️ The magnet expiring does NOT drop a ball it is already holding.
+    /// A ball released by a timer the player cannot see reads as the game
+    /// misfiring; the hold it already granted plays out.
+    pub fn tick_magnet(&mut self, dt: f32) {
+        if self.magnet_left > 0.0 {
+            self.magnet_left = (self.magnet_left - dt).max(0.0);
+        }
+
+        let speed = self.ball_speed();
+        let paddle = self.paddle;
+        for ball in &mut self.balls {
+            let Some(left) = ball.held_for else { continue };
+            let left = left - dt;
+            if left > 0.0 {
+                ball.held_for = Some(left);
+                // A held ball rides the paddle: that is the aiming.
+                ball.pos.x = paddle.center_x();
+                ball.pos.y = paddle.y - ball.radius - 1.0;
+                ball.vel = Vec2::ZERO;
+            } else {
+                release_held(ball, &paddle, speed);
+            }
+        }
+    }
+
+    /// Whether the magnet is armed right now.
+    pub fn magnet_active(&self) -> bool {
+        self.magnet_left > 0.0
+    }
+
+    /// Fire every held ball — what releasing Space does.
+    ///
+    /// Returns whether anything was actually let go, so the caller can
+    /// distinguish "the player aimed and fired" from an idle keypress.
+    pub fn release_held_balls(&mut self) -> bool {
+        let speed = self.ball_speed();
+        let paddle = self.paddle;
+        let mut fired = false;
+        for ball in &mut self.balls {
+            if ball.is_held() {
+                release_held(ball, &paddle, speed);
+                fired = true;
+            }
+        }
+        fired
     }
 
     /// Set the paddle's width from `paddle_scale`, clamped at both ends.
@@ -493,6 +736,12 @@ impl GameState {
         self.items.clear();
         self.paddle_scale = 1.0;
         self.paddle_effect_left = 0.0;
+        // ⚠️ The magnet clears here too. Every path that calls this also
+        // rebuilds the balls through `rest_ball_on_paddle`, so no HELD ball
+        // can survive — but the armed magnet would, and a 20 s ability
+        // leaking into the next level is the same class of bug as S5's
+        // bomb following the player across a level boundary.
+        self.magnet_left = 0.0;
         self.resize_paddle();
     }
 

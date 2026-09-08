@@ -12,7 +12,7 @@ use omarcade_core::ease;
 use omarcade_core::text::{text, text_width, GLYPH_H};
 use omarcade_core::{Canvas, Color, Theme};
 
-use crate::items::Item;
+use crate::items::{Item, ItemKind};
 use crate::state::{Ball, Brick, GameState, Phase, Tier, FIELD_H, FIELD_W, LEVELS};
 
 /// Maps play-field coordinates onto the window.
@@ -179,26 +179,106 @@ fn draw_item(item: &Item, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport)
     let bar_y = r.y + r.h * 0.5 - bar_h * 0.5;
     let inset = r.w * 0.18;
 
-    if bad {
+    match item.kind {
         // Two stubs with a gap — the paddle, cut.
-        let seg = (r.w - inset * 2.0) * 0.32;
-        canvas.fill_rect_f(vp.fx(r.x + inset), vp.fy(bar_y), vp.flen(seg), vp.flen(bar_h), mark);
-        canvas.fill_rect_f(
-            vp.fx(r.x + r.w - inset - seg),
-            vp.fy(bar_y),
-            vp.flen(seg),
-            vp.flen(bar_h),
-            mark,
-        );
-    } else {
+        ItemKind::Bomb => {
+            let seg = (r.w - inset * 2.0) * 0.32;
+            canvas.fill_rect_f(vp.fx(r.x + inset), vp.fy(bar_y), vp.flen(seg), vp.flen(bar_h), mark);
+            canvas.fill_rect_f(
+                vp.fx(r.x + r.w - inset - seg),
+                vp.fy(bar_y),
+                vp.flen(seg),
+                vp.flen(bar_h),
+                mark,
+            );
+        }
         // One unbroken bar — the paddle, whole and wide.
-        canvas.fill_rect_f(
-            vp.fx(r.x + inset),
-            vp.fy(bar_y),
-            vp.flen(r.w - inset * 2.0),
-            vp.flen(bar_h),
-            mark,
-        );
+        ItemKind::Grow(_) => {
+            canvas.fill_rect_f(
+                vp.fx(r.x + inset),
+                vp.fy(bar_y),
+                vp.flen(r.w - inset * 2.0),
+                vp.flen(bar_h),
+                mark,
+            );
+        }
+        // ⚠️ A HORSESHOE, deliberately nothing like a bar. Grow and bomb
+        // are both horizontal strokes, so a third horizontal glyph would
+        // be a fourth thing to squint at. The legs point DOWN, toward the
+        // paddle that does the catching.
+        ItemKind::Magnet => {
+            let leg_w = (r.w * 0.13).max(1.0);
+            let top_y = r.y + r.h * 0.24;
+            // Narrower than the other glyphs: a horseshoe is a TALL shape,
+            // and letting it span the full width made it read as a table.
+            let span = (r.w - inset * 2.0) * 0.72;
+            let arch_x = r.x + (r.w - span) / 2.0;
+            // The arch across the top.
+            canvas.fill_rect_f(
+                vp.fx(arch_x),
+                vp.fy(top_y),
+                vp.flen(span),
+                vp.flen(bar_h),
+                mark,
+            );
+            // Two legs hanging from its ends.
+            let leg_h = r.h * 0.44;
+            let leg_y = top_y + bar_h;
+            canvas.fill_rect_f(
+                vp.fx(arch_x),
+                vp.fy(leg_y),
+                vp.flen(leg_w),
+                vp.flen(leg_h),
+                mark,
+            );
+            canvas.fill_rect_f(
+                vp.fx(arch_x + span - leg_w),
+                vp.fy(leg_y),
+                vp.flen(leg_w),
+                vp.flen(leg_h),
+                mark,
+            );
+        }
+        // ⚠️ **A PLACEHOLDER, and knowingly so.** The plan wants the
+        // Omarchy wordmark in script here, but the 5x7 font cannot draw it
+        // — that is authored pixel art and it is S8's job
+        // (tools/sprite-playground.html). What ships now is a ROUND glyph:
+        // the only round thing among three rectangular ones, and round
+        // reads as "ball", which is exactly what the item grants. It must
+        // not be mistaken for a bar at a glance, and it is not.
+        ItemKind::Omarchy => {
+            let cx = r.x + r.w / 2.0;
+            let cy = r.y + r.h / 2.0;
+            let rad = r.h * 0.32;
+            // A disc, drawn as rows so it stays round at any scale.
+            //
+            // ⚠️ Each row is placed at the TOP of its slice and drawn a
+            // touch taller than the slice, so consecutive rows overlap.
+            // Centring each row on its midpoint instead leaves sub-pixel
+            // gaps between them, and the disc comes out visibly STRIPED —
+            // which looked like a rendering bug in the `items` scene and
+            // was only caught by looking at it.
+            let rows = 9;
+            let slice = rad * 2.0 / rows as f32;
+            for i in 0..rows {
+                // Sample the circle's width at the middle of the slice...
+                let t = (i as f32 + 0.5) / rows as f32 * 2.0 - 1.0;
+                let half = (1.0 - t * t).max(0.0).sqrt() * rad;
+                if half <= 0.25 {
+                    continue;
+                }
+                // ...but draw from the slice's top edge, overlapping into
+                // the next one.
+                let y = cy - rad + i as f32 * slice;
+                canvas.fill_rect_f(
+                    vp.fx(cx - half),
+                    vp.fy(y),
+                    vp.flen(half * 2.0),
+                    vp.flen(slice + 0.75),
+                    mark,
+                );
+            }
+        }
     }
 }
 

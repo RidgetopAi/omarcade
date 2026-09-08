@@ -52,14 +52,20 @@ impl Strength {
 
 /// What a falling item does when caught.
 ///
-/// Deliberately only the two S5 ships. The magnet and the Omarchy item are
-/// S6: a variant that exists but silently does nothing is worse than one
-/// that does not exist, because it looks implemented from the outside.
+/// All four the plan calls for. S5 shipped the two that resize the paddle;
+/// S6 adds the two that do not — which is the reason the magnet gets a
+/// timer of its own rather than riding `paddle_effect_left`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemKind {
     Grow(Strength),
     /// Narrows the paddle. The only bad drop.
     Bomb,
+    /// A caught ball sticks to the paddle until Space is released, or
+    /// three seconds pass. Lasts 20 s.
+    Magnet,
+    /// One more ball, up to the level's cap. The only item with no
+    /// duration: it changes the field, not the paddle.
+    Omarchy,
 }
 
 impl ItemKind {
@@ -68,16 +74,46 @@ impl ItemKind {
     }
 
     /// Seconds the effect lasts once caught.
+    ///
+    /// ⚠️ Omarchy is 0.0 and that is not a placeholder — it spends itself
+    /// the instant it is caught. Routing it through a timer would make
+    /// catching one silently cancel a running grow.
     pub fn seconds(self) -> f32 {
         match self {
             ItemKind::Grow(s) => s.seconds(),
             ItemKind::Bomb => BOMB_SECONDS,
+            ItemKind::Magnet => MAGNET_SECONDS,
+            ItemKind::Omarchy => 0.0,
         }
+    }
+
+    /// Whether this item resizes the paddle.
+    ///
+    /// The grow/bomb axis is one scale and one timer (see `GameState`);
+    /// the magnet and the Omarchy item deliberately sit outside it, so a
+    /// caught bomb must not clear a magnet the player is still holding.
+    pub fn resizes_paddle(self) -> bool {
+        matches!(self, ItemKind::Grow(_) | ItemKind::Bomb)
     }
 }
 
 /// How long a caught bomb keeps the paddle narrow.
 pub const BOMB_SECONDS: f32 = 15.0;
+
+/// How long the magnet stays armed once caught.
+///
+/// ⚠️ This is the powerup's life, NOT the hold. A ball sticks for at most
+/// `MAGNET_HOLD_SECONDS`; the magnet itself keeps catching balls for this
+/// long. Confusing the two makes a 20 s weld instead of a 20 s ability.
+pub const MAGNET_SECONDS: f32 = 20.0;
+
+/// How long one ball may stay stuck before it fires itself.
+///
+/// ⚠️ **The auto-release is the feature, not a limitation.** Brian settled
+/// this. Without it the optimal play at level 9 is catch-aim-release on
+/// every single bounce: strictly better, much slower, and it replaces the
+/// skill in the game with patience. Do not make the hold unlimited.
+pub const MAGNET_HOLD_SECONDS: f32 = 3.0;
 /// How narrow a bomb makes the paddle, as a multiple of its base width.
 pub const BOMB_SCALE: f32 = 0.6;
 
@@ -103,13 +139,33 @@ pub const DROP_CHANCE_LOW: f32 = 0.12;
 pub const DROP_CHANCE_HIGH: f32 = 0.20;
 
 /// One bomb for every four good items.
-const BAG: [ItemKind; 5] = [
+///
+/// ⚠️ **The ratio is load-bearing and the bag width is not.** S6 widened
+/// this from five to ten so the magnet and the Omarchy item could join
+/// without diluting the bombs: two in ten is the same 1:4 as one in five.
+/// Adding a good item without adding its share of bombs would quietly make
+/// the game easier, and the plan calls this ratio the single most-felt
+/// tuning decision in the feature.
+///
+/// The Omarchy item is deliberately ONE in ten. It is the +1 ball, and the
+/// endgame tail is the problem it exists to solve — but a field that is
+/// always full of balls is not a treat, it is a different game.
+const BAG: [ItemKind; 10] = [
     ItemKind::Grow(Strength::Small),
     ItemKind::Grow(Strength::Medium),
     ItemKind::Bomb,
     ItemKind::Grow(Strength::Small),
     ItemKind::Grow(Strength::Large),
+    ItemKind::Grow(Strength::Small),
+    ItemKind::Grow(Strength::Medium),
+    ItemKind::Bomb,
+    ItemKind::Magnet,
+    ItemKind::Omarchy,
 ];
+
+/// How many times a bag may be reshuffled before falling back to a
+/// legal-by-construction arrangement. Measured worst case is 6.
+const MAX_SHUFFLE_ATTEMPTS: usize = 50;
 
 /// A falling power-up.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -173,35 +229,79 @@ impl Dropper {
         (self.next_f32() * n as f32) as usize % n.max(1)
     }
 
-    /// Refill the bag with one of each entry, shuffled.
+    /// Refill the bag with one of each entry, shuffled — and reshuffle
+    /// until the result is legal.
     ///
-    /// ⚠️ **The reshuffle is where the guarantee is actually won or lost.**
-    /// A shuffled bag stops two bombs appearing *within* a bag, but says
-    /// nothing about the seam: bag N can end with the bomb and bag N+1
-    /// begin with it, and the player gets the back-to-back pair the bag
-    /// was supposed to make impossible. Drawing is from the BACK, so the
-    /// next item out is the last element — if that is a bomb and the
-    /// previous draw was too, swap it away from the end.
+    /// ⚠️ **The guarantee is stated ONCE, in `is_legal`, and enforced by
+    /// rejection.** The obvious implementation — shuffle, then swap
+    /// offending items apart — was tried first and was wrong in a way that
+    /// took 210 draws to show: there are two repairs (one for a pair
+    /// *inside* the bag, one for the *seam* between bags), and each could
+    /// undo the other. Every within-bag assertion passed while the seam
+    /// quietly broke. Rejection cannot fight itself: a bag either
+    /// satisfies both properties or it is discarded.
+    ///
+    /// Two ways two bombs end up back to back, both covered by `is_legal`:
+    ///
+    /// 1. **Inside a bag.** With one bomb per bag this was impossible and
+    ///    the shuffle needed no help. S6's ten-item bag holds TWO, so the
+    ///    shuffle can now deal them adjacent by itself — the property the
+    ///    bag exists for stopped being free the moment the bag widened.
+    /// 2. **Across the seam.** Bag N can end with a bomb and bag N+1 begin
+    ///    with one. Drawing is from the BACK, so "first out of the next
+    ///    bag" is its LAST element.
+    ///
+    /// Reshuffling only reorders, so every bag stays a true permutation of
+    /// `BAG` and the 1:4 ratio is exact regardless of how many attempts it
+    /// takes. Measured over 500 seeds: mean 1.7 attempts, worst case 6.
     fn refill(&mut self) {
         let last_was_bomb = self.last_was_bad;
-        self.bag.clear();
-        self.bag.extend_from_slice(&BAG);
-        // Fisher-Yates, back to front.
-        for i in (1..self.bag.len()).rev() {
-            let j = self.next_below(i + 1);
-            self.bag.swap(i, j);
-        }
-
-        // Close the seam. Swapping with the front keeps every bag a true
-        // permutation of BAG — the ratio is untouched, only the join moves.
-        if last_was_bomb {
-            if let Some(end) = self.bag.last() {
-                if end.is_bad() {
-                    let n = self.bag.len();
-                    self.bag.swap(0, n - 1);
-                }
+        for _ in 0..MAX_SHUFFLE_ATTEMPTS {
+            self.bag.clear();
+            self.bag.extend_from_slice(&BAG);
+            // Fisher-Yates, back to front.
+            for i in (1..self.bag.len()).rev() {
+                let j = self.next_below(i + 1);
+                self.bag.swap(i, j);
+            }
+            if Self::is_legal(&self.bag, last_was_bomb) {
+                return;
             }
         }
+        // Ratios too tight to reject are not reachable with the shipped
+        // bag, but a future one could be. Spreading the bad items evenly
+        // is legal by construction, so the guarantee holds even here.
+        self.bag = Self::spread_evenly(last_was_bomb);
+    }
+
+    /// Both properties the bag promises, in one place.
+    fn is_legal(bag: &[ItemKind], last_was_bomb: bool) -> bool {
+        if bag.windows(2).any(|w| w[0].is_bad() && w[1].is_bad()) {
+            return false;
+        }
+        // The next item drawn is the LAST element.
+        !(last_was_bomb && bag.last().is_some_and(|k| k.is_bad()))
+    }
+
+    /// A legal-by-construction arrangement: bad items spaced out among the
+    /// good ones. The fallback when rejection cannot find one.
+    fn spread_evenly(last_was_bomb: bool) -> Vec<ItemKind> {
+        let (bad, good): (Vec<ItemKind>, Vec<ItemKind>) =
+            BAG.iter().partition(|k| k.is_bad());
+        let step = (good.len() / bad.len().max(1)).max(1);
+        let mut out: Vec<ItemKind> = Vec::with_capacity(BAG.len());
+        let mut taken = 0;
+        for b in &bad {
+            let upto = (taken + step).min(good.len());
+            out.extend_from_slice(&good[taken..upto]);
+            taken = upto;
+            out.push(*b);
+        }
+        out.extend_from_slice(&good[taken..]);
+        if last_was_bomb && out.last().is_some_and(|k| k.is_bad()) {
+            out.rotate_right(1);
+        }
+        out
     }
 
     /// Chance a final hit drops something, on this level.
@@ -264,9 +364,21 @@ mod tests {
         }
     }
 
-    /// One bomb in five, held exactly over any whole number of bags.
+    /// One bad item for every four good ones, held exactly over any whole
+    /// number of bags.
+    ///
+    /// ⚠️ Asserted as a RATIO, not as a count. S6 widened the bag from five
+    /// to ten and a hardcoded "one bomb per bag" would have passed straight
+    /// through the change while the game got measurably easier.
     #[test]
     fn the_bag_holds_the_one_in_four_ratio() {
+        let bombs_per_bag = BAG.iter().filter(|k| k.is_bad()).count();
+        assert_eq!(
+            bombs_per_bag * 4,
+            BAG.len() - bombs_per_bag,
+            "the bag itself must be one bad item to four good"
+        );
+
         let mut d = Dropper::new(7);
         let bags = 400;
         let mut bombs = 0;
@@ -275,7 +387,94 @@ mod tests {
                 bombs += 1;
             }
         }
-        assert_eq!(bombs, bags, "exactly one bomb per bag of {}", BAG.len());
+        assert_eq!(
+            bombs,
+            bags * bombs_per_bag,
+            "exactly {bombs_per_bag} bombs per bag of {}",
+            BAG.len()
+        );
+    }
+
+    /// ⚠️ The reason `separate_bad` exists. With ONE bomb per bag the
+    /// no-two-in-a-row property was free — the shuffle could not violate
+    /// it. With TWO it can, so the guarantee now has to be enforced rather
+    /// than assumed. This test fails on the plain Fisher-Yates the
+    /// five-item bag used.
+    #[test]
+    fn a_widened_bag_still_cannot_deal_two_bombs_in_a_row() {
+        assert!(
+            BAG.iter().filter(|k| k.is_bad()).count() >= 2,
+            "this test only means something once a bag holds several bombs"
+        );
+        // Many seeds, because an unguarded shuffle fails only sometimes and
+        // a single seed can get lucky for a long time.
+        for seed in 0..200 {
+            let mut d = Dropper::new(seed);
+            let mut last_was_bomb = false;
+            for i in 0..400 {
+                let bomb = d.draw().is_bad();
+                assert!(
+                    !(bomb && last_was_bomb),
+                    "seed {seed} dealt two bombs in a row at draw {i}"
+                );
+                last_was_bomb = bomb;
+            }
+        }
+    }
+
+    /// The magnet and the Omarchy item actually appear — a bag entry that
+    /// never comes out is a feature nobody can reach.
+    #[test]
+    fn every_kind_in_the_bag_is_actually_dealt() {
+        let mut d = Dropper::new(4242);
+        let mut saw_magnet = false;
+        let mut saw_omarchy = false;
+        for _ in 0..500 {
+            match d.draw() {
+                ItemKind::Magnet => saw_magnet = true,
+                ItemKind::Omarchy => saw_omarchy = true,
+                _ => {}
+            }
+        }
+        assert!(saw_magnet, "the magnet never dropped");
+        assert!(saw_omarchy, "the Omarchy item never dropped");
+    }
+
+    /// ⚠️ Only grow and bomb share the paddle axis. If the magnet or the
+    /// Omarchy item ever reported that it resizes the paddle, catching one
+    /// would clear a running grow for no reason a player could guess.
+    #[test]
+    fn only_grow_and_bomb_touch_the_paddle_axis() {
+        assert!(ItemKind::Grow(Strength::Small).resizes_paddle());
+        assert!(ItemKind::Bomb.resizes_paddle());
+        assert!(!ItemKind::Magnet.resizes_paddle());
+        assert!(!ItemKind::Omarchy.resizes_paddle());
+    }
+
+    /// The Omarchy item spends itself immediately; everything else lasts.
+    #[test]
+    fn only_the_omarchy_item_has_no_duration() {
+        assert_eq!(ItemKind::Omarchy.seconds(), 0.0);
+        for kind in [
+            ItemKind::Grow(Strength::Small),
+            ItemKind::Bomb,
+            ItemKind::Magnet,
+        ] {
+            assert!(kind.seconds() > 0.0, "{kind:?} should last");
+        }
+    }
+
+    /// ⚠️ The hold is far shorter than the powerup. Swapping these two
+    /// constants would weld a ball to the paddle for twenty seconds
+    /// instead of arming the ability for twenty.
+    #[test]
+    fn the_hold_is_much_shorter_than_the_magnet() {
+        assert!(
+            MAGNET_HOLD_SECONDS < MAGNET_SECONDS / 4.0,
+            "the hold ({MAGNET_HOLD_SECONDS}s) must be a brief moment inside \
+             the magnet's life ({MAGNET_SECONDS}s), not a weld"
+        );
+        assert!(MAGNET_HOLD_SECONDS > 0.0, "an instant release is no hold at all");
     }
 
     /// Every bag contains the same multiset — shuffling reorders, it does

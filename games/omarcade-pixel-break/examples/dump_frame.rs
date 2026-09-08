@@ -160,12 +160,17 @@ fn main() {
                 physics::step_fixed(&mut s);
             }
             fill_trail(&mut s);
-            // A spread of items at different heights, both kinds.
+            // A spread of items at different heights, ALL FOUR kinds.
+            //
+            // ⚠️ The magnet and the Omarchy item are here so they can be
+            // LOOKED AT beside the two that already shipped. S5 killed two
+            // colour choices that read fine in code and failed on screen,
+            // and this scene is where that was caught.
             let kinds = [
                 items::ItemKind::Grow(items::Strength::Small),
                 items::ItemKind::Bomb,
-                items::ItemKind::Grow(items::Strength::Large),
-                items::ItemKind::Bomb,
+                items::ItemKind::Magnet,
+                items::ItemKind::Omarchy,
                 items::ItemKind::Grow(items::Strength::Medium),
             ];
             for (i, kind) in kinds.into_iter().enumerate() {

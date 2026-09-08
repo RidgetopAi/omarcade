@@ -14,7 +14,13 @@
 //!    the way it came. Only the deepest collision is resolved per tick.
 
 use crate::geom::{Axis, Rect, Vec2};
-use crate::state::{Ball, GameState, Paddle, Phase, TRAIL_LEN};
+use crate::items::MAGNET_HOLD_SECONDS;
+// ⚠️ The steering formula, its floor and its clamp all live in `state`,
+// not here. The magnet releases a ball with the same aim an ordinary
+// return gives it, and `state::release_held` owns that release — while
+// `state` cannot depend on `physics`, because two probes pull `state.rs`
+// via `#[path]` without it. One copy, in the module both sides can reach.
+use crate::state::{clamp_angle, Ball, GameState, Paddle, Phase, TRAIL_LEN};
 
 /// Simulation rate. High enough that per-tick movement (~1.75 units at
 /// ball speed) is far smaller than the thinnest brick, which is what
@@ -30,9 +36,6 @@ pub const FIXED_DT: f32 = 1.0 / 240.0;
 /// instead of freezing.
 const MAX_STEPS_PER_FRAME: u32 = 8;
 
-/// Steepest the ball may travel relative to horizontal, as |vy| / speed.
-/// Below this the ball is skimming and the game stalls.
-const MIN_VERTICAL_FRACTION: f32 = 0.25;
 
 /// Tolerance for treating two penetration depths as equal.
 const EPS: f32 = 1e-4;
@@ -50,9 +53,6 @@ const EPS: f32 = 1e-4;
 /// against a level-10 ball speed of 460 — a factor of fourteen of headroom.
 pub const TUNNELLING_LIMIT: f32 = crate::state::BRICK_H / FIXED_DT;
 
-/// How much the paddle steers the ball: at the very edge, this fraction
-/// of the outgoing velocity is horizontal.
-const PADDLE_STEER: f32 = 0.75;
 
 /// Converts real elapsed time into a whole number of fixed steps.
 #[derive(Debug, Default)]
@@ -142,10 +142,21 @@ pub fn step_fixed(state: &mut GameState) {
             let paddle = state.paddle;
             let ball_speed = state.ball_speed();
 
+            let magnet = state.magnet_active();
+
             for i in 0..state.balls.len() {
+                // ⚠️ A held ball is OUT of the simulation entirely: it does
+                // not move, does not bounce off walls, and cannot be
+                // drained. Its position is owned by `tick_magnet`, which
+                // rides it on the paddle. Letting it through this loop
+                // would have it colliding with whatever it is resting on
+                // every single tick.
+                if state.balls[i].is_held() {
+                    continue;
+                }
                 move_ball(&mut state.balls[i]);
                 collide_walls(&mut state.balls[i], &field);
-                collide_paddle(&mut state.balls[i], &paddle, ball_speed);
+                collide_paddle(&mut state.balls[i], &paddle, ball_speed, magnet);
                 // Bricks need the whole state: a kill scores, and it must
                 // be visible to every later ball in this same tick.
                 collide_bricks(state, i);
@@ -156,6 +167,11 @@ pub fn step_fixed(state: &mut GameState) {
             state.retire_drained_balls();
             move_items(state);
             state.tick_paddle_effect(FIXED_DT);
+            // ⚠️ AFTER `move_paddle`, so a ball held this tick sits where
+            // the paddle actually ended up. Ticking it first would leave
+            // the ball one frame behind the paddle it is stuck to, which
+            // reads as the ball wobbling loose.
+            state.tick_magnet(FIXED_DT);
             check_win(state);
         }
         Phase::Lost | Phase::Won => {}
@@ -205,7 +221,9 @@ fn collide_walls(b: &mut Ball, field: &Rect) {
     }
 }
 
-fn collide_paddle(ball: &mut Ball, paddle: &Paddle, speed: f32) {
+/// Bounce the ball off the paddle — or stick it there, if the magnet is
+/// armed.
+fn collide_paddle(ball: &mut Ball, paddle: &Paddle, speed: f32, magnet: bool) {
     // Only when moving downward. A ball on its way up that clips the
     // paddle from below should pass, not get batted back down.
     if ball.vel.y <= 0.0 {
@@ -219,6 +237,15 @@ fn collide_paddle(ball: &mut Ball, paddle: &Paddle, speed: f32) {
 
     // Sit the ball on top of the paddle so it cannot re-collide.
     ball.pos.y = rect.top() - ball.radius - 0.01;
+
+    if magnet {
+        // Caught. It rides the paddle until Space is released or the hold
+        // runs out, whichever comes first.
+        ball.held_for = Some(MAGNET_HOLD_SECONDS);
+        ball.vel = Vec2::ZERO;
+        return;
+    }
+
     bounce_off_paddle(ball, paddle, speed);
 }
 
@@ -227,15 +254,7 @@ fn collide_paddle(ball: &mut Ball, paddle: &Paddle, speed: f32) {
 /// This is the mechanic that makes Breakout a game of skill rather than
 /// a screensaver: hitting with the paddle's edge steers the ball.
 fn bounce_off_paddle(ball: &mut Ball, paddle: &Paddle, speed: f32) {
-    // -1 at the left edge, 0 at the centre, +1 at the right edge.
-    let offset = ((ball.pos.x - paddle.center_x()) / (paddle.w / 2.0)).clamp(-1.0, 1.0);
-
-    let vx = offset * PADDLE_STEER;
-    // Always upward, and always steep enough to keep the game moving.
-    let vy = -(1.0 - vx.abs() * vx.abs()).max(MIN_VERTICAL_FRACTION).sqrt();
-
-    ball.vel = Vec2::new(vx, vy).with_length(speed);
-    clamp_angle(&mut ball.vel);
+    crate::state::aim_off_paddle(ball, paddle, speed);
 }
 
 /// Resolve the single shallowest brick collision this tick, for ONE ball.
@@ -365,24 +384,6 @@ fn collide_bricks(state: &mut GameState, index: usize) {
 /// Without this a ball can end up travelling almost sideways, drifting
 /// between the walls for a very long time and making the game look
 /// broken even though nothing is technically wrong.
-fn clamp_angle(vel: &mut Vec2) {
-    let speed = vel.length();
-    if speed == 0.0 {
-        return;
-    }
-    let min_vy = speed * MIN_VERTICAL_FRACTION;
-    if vel.y.abs() < min_vy {
-        // Solve for BOTH components rather than setting vy and
-        // renormalizing: raising vy alone makes the vector longer, so
-        // the renormalize scales vy straight back down below target.
-        // vy is fixed at the minimum; vx takes whatever speed is left.
-        let sign_y = if vel.y < 0.0 { -1.0 } else { 1.0 };
-        let sign_x = if vel.x < 0.0 { -1.0 } else { 1.0 };
-        let vy = min_vy;
-        let vx = (speed * speed - vy * vy).max(0.0).sqrt();
-        *vel = Vec2::new(sign_x * vx, sign_y * vy);
-    }
-}
 
 /// Fall, catch, and forget.
 ///
@@ -429,6 +430,7 @@ fn check_win(state: &mut GameState) {
 
 #[cfg(test)]
 mod tests {
+    use crate::state::MIN_VERTICAL_FRACTION;
     use super::*;
     use crate::state::{BALL_RADIUS, BALL_SPEED, FIELD_H, FIELD_W};
 
@@ -543,7 +545,7 @@ mod tests {
         s.balls[0].vel = Vec2::new(0.0, 300.0);
         let paddle = s.paddle;
         let speed = s.ball_speed();
-        collide_paddle(&mut s.balls[0], &paddle, speed);
+        collide_paddle(&mut s.balls[0], &paddle, speed, false);
         assert!(s.balls[0].vel.x < 0.0, "vx = {}", s.balls[0].vel.x);
         assert!(s.balls[0].vel.y < 0.0, "must go up");
     }
@@ -556,7 +558,7 @@ mod tests {
         s.balls[0].vel = Vec2::new(0.0, 300.0);
         let paddle = s.paddle;
         let speed = s.ball_speed();
-        collide_paddle(&mut s.balls[0], &paddle, speed);
+        collide_paddle(&mut s.balls[0], &paddle, speed, false);
         assert!(s.balls[0].vel.x > 0.0);
         assert!(s.balls[0].vel.y < 0.0);
     }
@@ -568,7 +570,7 @@ mod tests {
         s.balls[0].vel = Vec2::new(10.0, 300.0);
         let paddle = s.paddle;
         let speed = s.ball_speed();
-        collide_paddle(&mut s.balls[0], &paddle, speed);
+        collide_paddle(&mut s.balls[0], &paddle, speed, false);
         assert!((s.balls[0].vel.length() - BALL_SPEED).abs() < 0.5,
             "speed drifted to {}", s.balls[0].vel.length());
     }
@@ -583,7 +585,7 @@ mod tests {
         let before = s.balls[0].vel;
         let paddle = s.paddle;
         let speed = s.ball_speed();
-        collide_paddle(&mut s.balls[0], &paddle, speed);
+        collide_paddle(&mut s.balls[0], &paddle, speed, false);
         assert_eq!(s.balls[0].vel, before);
     }
 
@@ -1553,7 +1555,7 @@ mod item_tests {
                 s.balls[0].vel = Vec2::new(0.0, 200.0);
 
                 let paddle = s.paddle;
-                collide_paddle(&mut s.balls[0], &paddle, speed);
+                collide_paddle(&mut s.balls[0], &paddle, speed, false);
 
                 let v = s.balls[0].vel;
                 assert!(v.x.is_finite() && v.y.is_finite(), "scale {scale} t {t}: NaN");
@@ -1588,7 +1590,7 @@ mod item_tests {
             s.balls[0].pos = Vec2::new(x, s.paddle.rect().top() - BALL_RADIUS + 0.5);
             s.balls[0].vel = Vec2::new(0.0, 200.0);
             let paddle = s.paddle;
-            collide_paddle(&mut s.balls[0], &paddle, speed);
+            collide_paddle(&mut s.balls[0], &paddle, speed, false);
             s.balls[0].vel.x.abs()
         };
 
@@ -1664,3 +1666,462 @@ mod item_tests {
     }
 }
 
+
+/// The magnet, the Omarchy item, and the one key that means two things.
+#[cfg(test)]
+mod magnet_tests {
+    use super::*;
+    use crate::items::{ItemKind, Strength, MAGNET_HOLD_SECONDS, MAGNET_SECONDS};
+    use crate::state::{BALL_RADIUS, FIELD_W, LEVEL_CAP_STEP, PADDLE_W};
+
+    /// A game in play with the magnet armed and one ball falling onto the
+    /// paddle from just above it.
+    fn about_to_be_caught() -> GameState {
+        let mut s = GameState::new();
+        s.launch();
+        s.apply_item(ItemKind::Magnet);
+        s.paddle.x = (FIELD_W - PADDLE_W) / 2.0;
+        s.balls[0].pos = Vec2::new(s.paddle.center_x(), s.paddle.y - BALL_RADIUS);
+        s.balls[0].vel = Vec2::new(0.0, s.ball_speed());
+        s
+    }
+
+    fn steps(s: &mut GameState, n: u32) {
+        for _ in 0..n {
+            step_fixed(s);
+        }
+    }
+
+    // ---- catching and holding ----
+
+    #[test]
+    fn an_armed_magnet_catches_the_ball_instead_of_bouncing_it() {
+        let mut s = about_to_be_caught();
+        step_fixed(&mut s);
+        assert!(s.balls[0].is_held(), "the magnet did not catch the ball");
+        assert_eq!(s.balls[0].vel, Vec2::ZERO, "a held ball must not move");
+    }
+
+    #[test]
+    fn without_the_magnet_the_ball_bounces_as_before() {
+        let mut s = about_to_be_caught();
+        s.magnet_left = 0.0;
+        step_fixed(&mut s);
+        assert!(!s.balls[0].is_held());
+        assert!(s.balls[0].vel.y < 0.0, "it should have bounced upward");
+    }
+
+    /// ⚠️ The held ball rides the paddle — that IS the aiming. A ball that
+    /// stayed put while the paddle moved would make the magnet useless for
+    /// choosing an angle, which is the entire point of it.
+    #[test]
+    fn a_held_ball_tracks_the_paddle() {
+        let mut s = about_to_be_caught();
+        step_fixed(&mut s);
+        assert!(s.balls[0].is_held());
+
+        s.paddle.dir = 1.0;
+        steps(&mut s, 30);
+        let dx = (s.balls[0].pos.x - s.paddle.center_x()).abs();
+        assert!(dx < 1.0, "held ball drifted {dx} from the paddle centre");
+        assert!(s.balls[0].is_held(), "it should still be held after 30 ticks");
+    }
+
+    /// ⚠️ A held ball is out of the simulation: it must not drain, and it
+    /// must not cost a life while it sits on the paddle.
+    #[test]
+    fn a_held_ball_never_drains() {
+        let mut s = about_to_be_caught();
+        step_fixed(&mut s);
+        let lives = s.lives;
+        steps(&mut s, 100);
+        assert!(!s.balls[0].drained, "a held ball must never be marked drained");
+        assert_eq!(s.lives, lives, "holding a ball must not cost a life");
+    }
+
+    // ---- the auto-release, which is the feature ----
+
+    /// ⚠️ **Brian settled this and it must not be softened.** Without the
+    /// auto-release, the optimal play at level 9 is catch-aim-release on
+    /// every single bounce: strictly better, much slower, and it swaps the
+    /// skill in the game for patience.
+    #[test]
+    fn the_hold_fires_itself_after_three_seconds() {
+        let mut s = about_to_be_caught();
+        step_fixed(&mut s);
+        assert!(s.balls[0].is_held());
+
+        let ticks = (MAGNET_HOLD_SECONDS / FIXED_DT).ceil() as u32;
+        // Just before the deadline it is still held.
+        steps(&mut s, ticks - 2);
+        assert!(
+            s.balls[0].is_held(),
+            "released early — the hold must last the full {MAGNET_HOLD_SECONDS}s"
+        );
+
+        steps(&mut s, 4);
+        assert!(!s.balls[0].is_held(), "the auto-release did not fire");
+        assert!(s.balls[0].vel.y < 0.0, "an auto-released ball must go upward");
+        let speed = s.balls[0].vel.length();
+        assert!(
+            (speed - s.ball_speed()).abs() < 1.0,
+            "released at {speed}, expected the level's {}",
+            s.ball_speed()
+        );
+    }
+
+    /// The magnet running out does not drop a ball it is already holding —
+    /// a ball released by a timer the player cannot see reads as a misfire.
+    #[test]
+    fn the_magnet_expiring_does_not_drop_a_held_ball() {
+        let mut s = about_to_be_caught();
+        step_fixed(&mut s);
+        s.magnet_left = FIXED_DT;
+        step_fixed(&mut s);
+        assert!(!s.magnet_active(), "the magnet should have expired");
+        assert!(s.balls[0].is_held(), "expiry must not drop a ball in hand");
+    }
+
+    #[test]
+    fn the_magnet_stops_catching_once_it_expires() {
+        let mut s = about_to_be_caught();
+        s.magnet_left = 0.0;
+        step_fixed(&mut s);
+        assert!(!s.balls[0].is_held(), "an expired magnet must not catch");
+    }
+
+    /// A second magnet refreshes rather than stacking — 20 s topped up, not
+    /// 38 s banked from one lucky catch.
+    #[test]
+    fn a_second_magnet_refreshes_rather_than_extending() {
+        let mut s = GameState::new();
+        s.launch();
+        s.apply_item(ItemKind::Magnet);
+        s.magnet_left = 5.0;
+        s.apply_item(ItemKind::Magnet);
+        assert!(
+            (s.magnet_left - MAGNET_SECONDS).abs() < 1e-3,
+            "expected a refresh to {MAGNET_SECONDS}, got {}",
+            s.magnet_left
+        );
+    }
+
+    // ---- ⚠️ THE KEY: one Space, two meanings ----
+
+    /// ⚠️ **The risk the plan named as S6's real danger.** Space launches in
+    /// `Ready` and fires a held ball on RELEASE during `Playing`. A press
+    /// arriving while a ball is held must not re-launch anything.
+    #[test]
+    fn pressing_space_while_a_ball_is_held_launches_nothing() {
+        let mut s = about_to_be_caught();
+        step_fixed(&mut s);
+        assert!(s.balls[0].is_held());
+
+        let balls_before = s.balls.len();
+        let pos_before = s.balls[0].pos;
+        // What main.rs does on KeyDown(Space).
+        s.launch();
+
+        assert_eq!(s.balls.len(), balls_before, "a press spawned a ball");
+        assert!(s.balls[0].is_held(), "a press knocked the ball loose");
+        assert_eq!(s.balls[0].vel, Vec2::ZERO, "a press fired the held ball");
+        assert_eq!(s.balls[0].pos, pos_before);
+    }
+
+    /// Releasing Space is what fires it, and it aims where the paddle is.
+    #[test]
+    fn releasing_space_fires_the_held_ball_at_the_aim() {
+        let mut s = about_to_be_caught();
+        step_fixed(&mut s);
+
+        // Slide left so the ball sits right of centre: it must go right.
+        s.paddle.x -= 40.0;
+        s.balls[0].pos.x = s.paddle.center_x() + s.paddle.w * 0.4;
+
+        assert!(s.release_held_balls(), "release reported nothing fired");
+        assert!(!s.balls[0].is_held());
+        assert!(s.balls[0].vel.y < 0.0, "a fired ball must travel upward");
+        assert!(
+            s.balls[0].vel.x > 0.0,
+            "struck right of centre, so it should go right — got {:?}",
+            s.balls[0].vel
+        );
+    }
+
+    /// ⚠️ The magnet must aim EXACTLY as an ordinary return does. It buys
+    /// the player time to choose the angle, not a different set of angles.
+    /// Two copies of the steering formula would drift apart; this test
+    /// fails if they ever do.
+    ///
+    /// ⚠️ Dead centre is EXCLUDED and has its own test below: an ordinary
+    /// bounce there returns a vertical ball, which is a stall, and a held
+    /// ball lands dead centre every single time.
+    #[test]
+    fn a_released_ball_aims_exactly_like_an_ordinary_bounce() {
+        for offset in [-0.9_f32, -0.4, 0.4, 0.9] {
+            let mut held = about_to_be_caught();
+            step_fixed(&mut held);
+            held.balls[0].pos.x = held.paddle.center_x() + held.paddle.w / 2.0 * offset;
+            held.release_held_balls();
+
+            // The same strike, bounced rather than caught.
+            let mut hit = about_to_be_caught();
+            hit.magnet_left = 0.0;
+            hit.balls[0].pos.x = hit.paddle.center_x() + hit.paddle.w / 2.0 * offset;
+            step_fixed(&mut hit);
+
+            let d = (held.balls[0].vel - hit.balls[0].vel).length();
+            assert!(
+                d < 1.0,
+                "offset {offset}: released {:?} but bounced {:?}",
+                held.balls[0].vel,
+                hit.balls[0].vel
+            );
+        }
+    }
+
+    /// ⚠️ **The stall the probe found.** A held ball is pinned to the
+    /// paddle's centre, so a player who simply keeps the paddle under the
+    /// ball releases at offset exactly 0.0 — and the steering formula
+    /// returns a DEAD VERTICAL ball there. `launch` has always avoided
+    /// straight up because a vertical ball in a brick corridor bounces
+    /// forever; the magnet reintroduced it by a different door.
+    ///
+    /// Measured before the fix: `probe_balance` timed out on eight of ten
+    /// levels with one ball at `vel=(0, ±340)` for 216,000 ticks.
+    #[test]
+    fn a_dead_centre_release_is_never_vertical() {
+        for dir in [-1.0_f32, 0.0, 1.0] {
+            let mut s = about_to_be_caught();
+            step_fixed(&mut s);
+            assert!(s.balls[0].is_held());
+
+            // Exactly centred, which is where the magnet always leaves it.
+            s.balls[0].pos.x = s.paddle.center_x();
+            s.paddle.dir = dir;
+            s.release_held_balls();
+
+            let v = s.balls[0].vel;
+            assert!(
+                v.x.abs() > 1.0,
+                "dir {dir}: released dead vertical ({v:?}) — this stalls the game"
+            );
+            assert!(v.y < 0.0, "dir {dir}: must still travel upward");
+            assert!(
+                (v.length() - s.ball_speed()).abs() < 1.0,
+                "dir {dir}: speed changed to {}",
+                v.length()
+            );
+        }
+    }
+
+    /// A paddle moving one way leans the release that way — the player's
+    /// last input is the best guess at the aim they wanted.
+    #[test]
+    fn a_moving_paddle_leans_the_release_its_own_way() {
+        for (dir, want) in [(-1.0_f32, -1.0_f32), (1.0, 1.0)] {
+            let mut s = about_to_be_caught();
+            step_fixed(&mut s);
+            s.balls[0].pos.x = s.paddle.center_x();
+            s.paddle.dir = dir;
+            s.release_held_balls();
+            assert!(
+                s.balls[0].vel.x * want > 0.0,
+                "paddle moving {dir} should lean the ball {want}, got {:?}",
+                s.balls[0].vel
+            );
+        }
+    }
+
+    /// ⚠️ The nudge must be small enough that it does not become the aim.
+    /// A player who lines up an edge shot still gets their edge shot.
+    #[test]
+    fn the_anti_vertical_nudge_does_not_override_a_real_aim() {
+        let mut s = about_to_be_caught();
+        step_fixed(&mut s);
+        // A deliberate hard-right aim, with the paddle moving LEFT.
+        s.balls[0].pos.x = s.paddle.center_x() + s.paddle.w * 0.45;
+        s.paddle.dir = -1.0;
+        s.release_held_balls();
+        assert!(
+            s.balls[0].vel.x > 0.0,
+            "the nudge overrode a deliberate aim: {:?}",
+            s.balls[0].vel
+        );
+    }
+
+    /// Releasing with nothing held is harmless — which is every Space
+    /// release in a game without a magnet.
+    #[test]
+    fn releasing_with_nothing_held_does_nothing() {
+        let mut s = GameState::new();
+        s.launch();
+        let before = s.balls[0].vel;
+        assert!(!s.release_held_balls(), "reported firing an unheld ball");
+        assert_eq!(s.balls[0].vel, before);
+    }
+
+    /// Space in `Ready` still launches — the ordinary case must survive the
+    /// new meaning.
+    #[test]
+    fn space_still_launches_a_resting_ball() {
+        let mut s = GameState::new();
+        assert_eq!(s.phase, Phase::Ready);
+        s.launch();
+        assert_eq!(s.phase, Phase::Playing);
+        assert!(s.balls[0].vel.y < 0.0);
+    }
+
+    // ---- the Omarchy item: spawn_ball's first caller ----
+
+    /// ⚠️ **The whole point of S6.** `spawn_ball` has existed since S3 with
+    /// no caller, which is exactly why multi-ball was unreachable in play.
+    #[test]
+    fn the_omarchy_item_puts_another_ball_on_the_field() {
+        let mut s = GameState::new();
+        s.launch();
+        assert_eq!(s.balls.len(), 1);
+        s.apply_item(ItemKind::Omarchy);
+        assert_eq!(s.balls.len(), 2, "the Omarchy item added no ball");
+    }
+
+    /// A spawned ball must be moving, upward, at the level's speed — never
+    /// inheriting a held parent's zero velocity.
+    #[test]
+    fn a_spawned_ball_is_live_and_heading_upward() {
+        let mut s = about_to_be_caught();
+        step_fixed(&mut s);
+        assert!(s.balls[0].is_held(), "parent should be held for this test");
+
+        s.apply_item(ItemKind::Omarchy);
+        assert_eq!(s.balls.len(), 2);
+        let spawned = &s.balls[1];
+        assert!(!spawned.is_held(), "a spawned ball must not be born held");
+        assert!(spawned.vel.y < 0.0, "it must travel upward");
+        assert!(
+            (spawned.vel.length() - s.ball_speed()).abs() < 1.0,
+            "spawned at {}, expected {}",
+            spawned.vel.length(),
+            s.ball_speed()
+        );
+    }
+
+    /// It mirrors its parent rather than copying it: two balls on the same
+    /// vector are one ball as far as the player's eye is concerned, and
+    /// searching more of the field at once is the item's whole purpose.
+    #[test]
+    fn a_spawned_ball_does_not_share_its_parents_heading() {
+        let mut s = GameState::new();
+        s.launch();
+        s.balls[0].vel = Vec2::new(1.0, -1.0).with_length(s.ball_speed());
+        s.apply_item(ItemKind::Omarchy);
+        assert_eq!(s.balls.len(), 2);
+        assert!(
+            s.balls[1].vel.x * s.balls[0].vel.x < 0.0,
+            "expected mirrored horizontals, got {:?} and {:?}",
+            s.balls[0].vel,
+            s.balls[1].vel
+        );
+    }
+
+    /// The cap already built at S3 finally has something pushing against
+    /// it. Five on the early levels, ten from level six.
+    #[test]
+    fn the_omarchy_item_respects_the_ball_cap() {
+        for (level, cap) in [(1_u32, 5_usize), (LEVEL_CAP_STEP, 10)] {
+            let mut s = GameState::new();
+            s.level = level;
+            s.launch();
+            for _ in 0..40 {
+                s.apply_item(ItemKind::Omarchy);
+            }
+            assert_eq!(
+                s.balls.len(),
+                cap,
+                "level {level} should cap at {cap} balls"
+            );
+        }
+    }
+
+    /// A refused spawn reports itself, so no pickup sound plays for a ball
+    /// that never appeared.
+    #[test]
+    fn a_refused_spawn_says_so() {
+        let mut s = GameState::new();
+        s.launch();
+        let mut refusals = 0;
+        for _ in 0..40 {
+            if !s.spawn_extra_ball() {
+                refusals += 1;
+            }
+        }
+        assert!(refusals > 0, "the cap never refused a spawn");
+    }
+
+    // ---- the axes stay separate ----
+
+    /// ⚠️ A caught bomb must not cancel a magnet the player is still using.
+    /// Grow and bomb share one axis because they contradict each other; the
+    /// magnet contradicts neither.
+    #[test]
+    fn a_bomb_does_not_clear_the_magnet() {
+        let mut s = GameState::new();
+        s.launch();
+        s.apply_item(ItemKind::Magnet);
+        let magnet = s.magnet_left;
+        s.apply_item(ItemKind::Bomb);
+        assert!((s.magnet_left - magnet).abs() < 1e-6, "the bomb cleared the magnet");
+        assert!(s.paddle.w < PADDLE_W, "the bomb should still have shrunk the paddle");
+    }
+
+    /// And the reverse: catching a magnet must not disturb a running grow.
+    #[test]
+    fn the_magnet_does_not_disturb_a_grow() {
+        let mut s = GameState::new();
+        s.launch();
+        s.apply_item(ItemKind::Grow(Strength::Large));
+        let (w, left) = (s.paddle.w, s.paddle_effect_left);
+        s.apply_item(ItemKind::Magnet);
+        assert_eq!(s.paddle.w, w, "the magnet resized the paddle");
+        assert!((s.paddle_effect_left - left).abs() < 1e-6, "the magnet ate the grow timer");
+    }
+
+    /// ⚠️ S5's rule extended: a 20 s ability must not leak into the next
+    /// level, the same way last level's bomb must not.
+    #[test]
+    fn advancing_a_level_clears_the_magnet() {
+        let mut s = GameState::new();
+        s.launch();
+        s.apply_item(ItemKind::Magnet);
+        s.advance_level();
+        assert!(!s.magnet_active(), "the magnet followed the player to the next level");
+        assert_eq!(s.balls.len(), 1, "the next level starts with one ball");
+        assert!(!s.balls[0].is_held(), "a held ball survived the level change");
+    }
+
+    /// A long run with the magnet armed throughout stays sane — no NaN, no
+    /// ball off-field, no negative lives.
+    #[test]
+    fn a_long_run_with_the_magnet_stays_sane() {
+        let mut s = GameState::new();
+        s.launch();
+        s.apply_item(ItemKind::Magnet);
+        for i in 0..40_000 {
+            if i % 500 == 0 {
+                s.apply_item(ItemKind::Magnet);
+            }
+            if i % 900 == 0 {
+                s.apply_item(ItemKind::Omarchy);
+            }
+            if i % 137 == 0 {
+                s.paddle.dir = if (i / 137) % 2 == 0 { 1.0 } else { -1.0 };
+            }
+            step_fixed(&mut s);
+            for b in &s.balls {
+                assert!(b.pos.x.is_finite() && b.pos.y.is_finite(), "NaN at tick {i}");
+                assert!(b.vel.x.is_finite() && b.vel.y.is_finite(), "NaN velocity at {i}");
+            }
+            assert!(s.balls.len() <= s.ball_cap(), "over the cap at tick {i}");
+        }
+    }
+}

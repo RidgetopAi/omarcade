@@ -109,7 +109,20 @@ impl Game for PixelBreak {
             InputEvent::KeyDown(Key::Right) => self.right_held = true,
             InputEvent::KeyUp(Key::Right) => self.right_held = false,
 
+            // ⚠️ **Space carries two meanings and the PHASE separates
+            // them.** In `Ready` a press launches; while the magnet holds a
+            // ball, the RELEASE fires it. The plan flagged this as S6's
+            // real risk — that a press arriving mid-hold might re-launch
+            // something — and the guard is in `launch` itself, which
+            // returns immediately unless the phase is `Ready`. A held ball
+            // only ever exists during `Playing`, so the two cannot overlap.
+            // Tested in `magnet_tests`, not merely reasoned about.
             InputEvent::KeyDown(Key::Space) => self.state.launch(),
+            // Releasing fires whatever the magnet is holding. A no-op with
+            // nothing held, which is every press outside a magnet.
+            InputEvent::KeyUp(Key::Space) => {
+                self.state.release_held_balls();
+            }
 
             // Enter restarts, but only once the game has actually
             // ended — otherwise a stray press wipes a game in progress.

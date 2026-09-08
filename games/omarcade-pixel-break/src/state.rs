@@ -270,6 +270,15 @@ pub struct GameState {
     pub paddle_scale: f32,
     /// Seconds left on `paddle_scale` before it returns to 1.0.
     pub paddle_effect_left: f32,
+    /// True from clearing a field until the next launch.
+    ///
+    /// ⚠️ Exists because `Phase::Ready` means two different things to a
+    /// player — "you lost a ball, try again" and "you cleared the level,
+    /// here is the next one" — and showing the same words for both makes a
+    /// ten-level game look like one level that keeps resetting. That was
+    /// reported from real play, not caught by a test: every test asserted
+    /// `level` had incremented, which it always had.
+    pub just_advanced: bool,
 }
 
 impl GameState {
@@ -296,6 +305,7 @@ impl GameState {
             dropper: Dropper::default(),
             paddle_scale: 1.0,
             paddle_effect_left: 0.0,
+            just_advanced: false,
         };
         state.rest_ball_on_paddle();
         state
@@ -339,6 +349,7 @@ impl GameState {
             ball.vel = vel;
         }
         self.phase = Phase::Playing;
+        self.just_advanced = false;
     }
 
     /// How many balls may be in play at once on the current level.
@@ -499,6 +510,7 @@ impl GameState {
         self.bricks = build_bricks(self.level);
         self.clear_level_effects();
         self.phase = Phase::Ready;
+        self.just_advanced = true;
         self.rest_ball_on_paddle();
     }
 
@@ -514,6 +526,9 @@ impl GameState {
             self.phase = Phase::Lost;
         } else {
             self.phase = Phase::Ready;
+            // A lost ball is not a level change, even if the last thing
+            // that happened was one.
+            self.just_advanced = false;
             self.rest_ball_on_paddle();
         }
     }
@@ -813,3 +828,85 @@ mod multiball_state_tests {
         assert_eq!(s.lives, STARTING_LIVES);
     }
 }
+
+#[cfg(test)]
+mod level_signal_tests {
+    use super::*;
+
+    /// ⚠️ The bug this exists to prevent was found by PLAYING, not testing:
+    /// with ten levels working, clearing a field silently became the next
+    /// one and the game read as a single level resetting. Every test
+    /// asserted `level` had incremented, and every one passed.
+    #[test]
+    fn clearing_a_level_is_distinguishable_from_losing_a_ball() {
+        let mut s = GameState::new();
+        s.launch();
+
+        // Losing a ball returns to Ready WITHOUT the advance signal.
+        s.lose_life();
+        assert_eq!(s.phase, Phase::Ready);
+        assert!(!s.just_advanced, "a lost ball is not a level change");
+
+        // Clearing a field returns to Ready WITH it.
+        s.launch();
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+        s.advance_level();
+        assert_eq!(s.phase, Phase::Ready);
+        assert!(s.just_advanced, "a cleared field must say so");
+    }
+
+    #[test]
+    fn the_advance_signal_clears_on_launch() {
+        let mut s = GameState::new();
+        s.launch();
+        s.advance_level();
+        assert!(s.just_advanced);
+
+        s.launch();
+        assert!(!s.just_advanced, "the signal must not outlive the message");
+    }
+
+    /// Draining a ball on the first go of a new level must show the ordinary
+    /// message, not repeat the level banner.
+    #[test]
+    fn losing_a_ball_right_after_advancing_clears_the_signal() {
+        let mut s = GameState::new();
+        s.launch();
+        s.advance_level();
+        assert!(s.just_advanced);
+
+        s.launch();
+        s.lose_life();
+        assert!(!s.just_advanced);
+    }
+
+    #[test]
+    fn a_new_game_and_a_restart_carry_no_advance_signal() {
+        assert!(!GameState::new().just_advanced);
+        let mut s = GameState::new();
+        s.launch();
+        s.advance_level();
+        s.restart();
+        assert!(!s.just_advanced);
+        assert_eq!(s.level, 1);
+    }
+
+    /// Winning is not advancing: the last level ends the game, and the
+    /// banner must not claim there is a level 11.
+    #[test]
+    fn winning_the_last_level_does_not_raise_the_advance_signal() {
+        let mut s = GameState::new();
+        s.level = LEVELS;
+        s.launch();
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+        s.advance_level();
+        assert_eq!(s.phase, Phase::Won);
+        assert!(!s.just_advanced);
+        assert_eq!(s.level, LEVELS);
+    }
+}
+

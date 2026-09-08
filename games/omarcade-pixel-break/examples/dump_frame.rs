@@ -177,6 +177,15 @@ fn main() {
             // And show a grown paddle, since that is what catching one does.
             s.apply_item(items::ItemKind::Grow(items::Strength::Large));
         }
+        // What the player sees the moment a level is cleared. The bug this
+        // scene exists for: before it, this frame said "PRESS SPACE" and was
+        // indistinguishable from losing a ball.
+        "advanced" => {
+            s.launch();
+            s.score = 1240;
+            for b in &mut s.bricks { b.hits = 0; }
+            s.advance_level();
+        }
         "won" => { for b in &mut s.bricks { b.hits = 0; } s.phase = state::Phase::Won; s.score = 600; s.best = 600; }
         "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.score = 250; s.best = 980; }
         other => { eprintln!("unknown scene {other}"); std::process::exit(2); }

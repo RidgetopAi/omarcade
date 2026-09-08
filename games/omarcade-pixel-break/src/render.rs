@@ -13,7 +13,7 @@ use omarcade_core::text::{text, text_width, GLYPH_H};
 use omarcade_core::{Canvas, Color, Theme};
 
 use crate::items::Item;
-use crate::state::{Ball, Brick, GameState, Phase, Tier, FIELD_H, FIELD_W};
+use crate::state::{Ball, Brick, GameState, Phase, Tier, FIELD_H, FIELD_W, LEVELS};
 
 /// Maps play-field coordinates onto the window.
 #[derive(Debug, Clone, Copy)]
@@ -319,6 +319,28 @@ fn draw_hud(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &View
     let scale = (vp.scale * 3.0).max(1.0) as u32;
     text(canvas, &format!("SCORE {}", state.score), vp.x(24.0), vp.y(30.0), scale, theme.foreground);
 
+    // ⚠️ The level, centred between score and lives.
+    //
+    // Its absence was reported from real play: with ten levels built and
+    // working, a cleared field silently became the next one and the game
+    // looked like a single level that kept resetting. Every test asserted
+    // `level` had incremented — and every one of them passed. Nothing on
+    // screen said so, which is a different question from whether the code
+    // was right.
+    //
+    // The slash is in the 5x7 font (A-Z 0-9 space - + . : /), so this
+    // renders without the glyph work the plan expected to need.
+    let level = format!("LEVEL {}/{}", state.level, LEVELS);
+    let level_w = text_width(&level, scale) as f32;
+    text(
+        canvas,
+        &level,
+        vp.x(FIELD_W / 2.0) - (level_w / 2.0) as i32,
+        vp.y(30.0),
+        scale,
+        theme.light_foreground,
+    );
+
     let lives = format!("LIVES {}", state.lives);
     let width = text_width(&lives, scale) as f32;
     text(
@@ -332,7 +354,12 @@ fn draw_hud(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &View
 }
 
 fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
-    let (msg, color) = match state.phase {
+    // ⚠️ `Ready` means two different things to a player: "you lost a ball"
+    // and "you cleared the level". Showing one message for both is what
+    // made a ten-level game read as one level resetting.
+    let advanced = format!("LEVEL {} - SPACE", state.level);
+    let (msg, color): (&str, _) = match state.phase {
+        Phase::Ready if state.just_advanced => (&advanced, theme.accent),
         Phase::Ready => ("PRESS SPACE", theme.light_foreground),
         Phase::Playing => return,
         Phase::Won => ("YOU WIN - ENTER", theme.green),
@@ -373,6 +400,61 @@ fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme,
 
 #[cfg(test)]
 mod tests {
+
+    /// ⚠️ Three labels share the HUD row now. At the largest scale the
+    /// viewport can produce they must not overlap, or the level readout
+    /// eats the score.
+    #[test]
+    fn the_hud_row_never_collides() {
+        use crate::state::LEVELS;
+        for scale in 1..=8u32 {
+            // The widest each label can get: max score, max lives, last level.
+            let score = text_width("SCORE 9999999", scale) as f32;
+            let level = text_width(&format!("LEVEL {LEVELS}/{LEVELS}"), scale) as f32;
+            let lives = text_width("LIVES 9", scale) as f32;
+
+            // In field units at scale 1 the row spans 24..FIELD_W-24.
+            let usable = FIELD_W - 48.0;
+            let total = score + level + lives;
+            if scale <= 3 {
+                assert!(
+                    total < usable,
+                    "scale {scale}: {total} of labels does not fit in {usable}"
+                );
+            }
+            // The centred label must never start before the score ends.
+            let level_start = FIELD_W / 2.0 - level / 2.0;
+            if scale <= 3 {
+                assert!(
+                    level_start > 24.0 + score,
+                    "scale {scale}: LEVEL starts at {level_start}, SCORE ends at {}",
+                    24.0 + score
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_hud_and_message_character_has_a_glyph() {
+        use crate::state::LEVELS;
+        let samples = [
+            format!("LEVEL {LEVELS}/{LEVELS}"),
+            "LEVEL 1 - SPACE".to_string(),
+            "SCORE 1234567".to_string(),
+            "LIVES 3".to_string(),
+            "PRESS SPACE".to_string(),
+            "YOU WIN - ENTER".to_string(),
+            "GAME OVER - ENTER".to_string(),
+        ];
+        for sample in samples {
+            assert_eq!(
+                omarcade_core::text::unrenderable(&sample),
+                None,
+                "{sample:?} has a character the 5x7 font cannot draw"
+            );
+        }
+    }
+
     use super::*;
     use omarcade_core::text::glyph;
 

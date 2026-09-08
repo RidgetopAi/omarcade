@@ -62,6 +62,9 @@ impl PixelBreak {
     fn new(theme: Theme) -> Self {
         let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
         let mut state = GameState::new();
+        // Effects can fire before the first frame renders; without this
+        // they would throw grey chips until one does.
+        state.set_palette(render::palette(&theme));
         state.best = scores.best().unwrap_or(0);
 
         PixelBreak {

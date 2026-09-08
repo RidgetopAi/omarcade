@@ -87,16 +87,23 @@ impl Viewport {
 }
 
 /// Brick colours by row, taken live from the theme.
-fn palette(theme: &Theme) -> [Color; 6] {
+pub fn palette(theme: &Theme) -> [Color; 6] {
     [theme.red, theme.orange, theme.yellow, theme.green, theme.cyan, theme.blue]
 }
 
 /// Draw the whole frame.
 pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
-    // Refresh the palette cache the effects read. `Brick` stores an index
-    // rather than a colour so a live theme change repaints the field; this
-    // is what lets `physics` throw chips in a brick's own colour without
-    // ever learning what a `Theme` is.
+    // Refresh the palette cache the effects read, so a LIVE theme change
+    // reaches the chips. `Brick` stores an index rather than a colour for
+    // the same reason; this is what lets `physics` throw chips in a
+    // brick's own colour without ever learning what a `Theme` is.
+    //
+    // ⚠️ This refresh is not the only place the palette is set — see
+    // `GameState::set_palette`, called at construction. Relying on render
+    // alone left every effect before the first frame drawing in the grey
+    // placeholder, which is exactly how the level-clear cascade came out
+    // monochrome in `dump_frame`: that harness runs all its physics first
+    // and renders once at the end.
     state.palette = palette(theme);
 
     // ⚠️ Shake is applied to the VIEWPORT and nowhere else. The letterbox
@@ -119,10 +126,35 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
     );
 
     let pal = palette(theme);
+    // ⚠️ During the cascade's BUILD stage the next field arrives row by
+    // row rather than appearing all at once — "builds are cheap and they
+    // make ten levels feel like a journey". Rows above the build front are
+    // in; rows below have not arrived yet.
+    // ⚠️ The front sweeps the BRICK FIELD's height, not the window's. The
+    // bricks occupy only the top ~280 of 720 units, so sweeping FIELD_H
+    // put every row in during the first third of the build and the rest of
+    // the stage showed nothing arriving.
+    let brick_span = crate::state::BRICK_TOP
+        + crate::state::BRICK_ROWS as f32
+            * (crate::state::BRICK_H + crate::state::BRICK_GAP);
+    let build_front = match state.clear_progress() {
+        Some((true, t)) => Some(t * brick_span),
+        // During the WAVE stage the old field is already gone (the player
+        // destroyed the last brick) and the wave is drawn as chips, so
+        // there is nothing to hold back.
+        Some((false, _)) => Some(0.0),
+        None => None,
+    };
     for brick in &state.bricks {
-        if brick.alive() {
-            draw_brick(brick, canvas, theme, &vp, pal[brick.color_index % pal.len()]);
+        if !brick.alive() {
+            continue;
         }
+        if let Some(front) = build_front {
+            if brick.rect.center().y > front {
+                continue;
+            }
+        }
+        draw_brick(brick, canvas, theme, &vp, pal[brick.color_index % pal.len()]);
     }
 
     vp.rect(state.paddle.rect(), canvas, theme.foreground);
@@ -138,7 +170,7 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
         // Every trail first, then every ball, so a ball is never drawn
         // underneath another ball's trail.
         for ball in &state.balls {
-            draw_trail(ball, canvas, theme, &vp);
+            draw_trail(ball, canvas, theme, &vp, state.ball_speed());
         }
 
         for ball in &state.balls {
@@ -416,7 +448,13 @@ fn draw_brick(
 ///
 /// Takes a `Ball`, not the state: each ball owns its own trail, and drawing
 /// from a shared one would produce a line that whips between balls.
-fn draw_trail(ball: &Ball, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
+fn draw_trail(
+    ball: &Ball,
+    canvas: &mut Canvas<'_>,
+    theme: &Theme,
+    vp: &Viewport,
+    speed: f32,
+) {
     let n = ball.trail.len();
     if n < 2 {
         return;
@@ -429,7 +467,10 @@ fn draw_trail(ball: &Ball, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport
         // Fade and shrink together. Either alone reads as a bug — a
         // constant-size fading trail looks like ghosting, and a shrinking
         // opaque one looks like a string of beads.
-        let alpha = (ease::out_cubic(1.0 - t) * 150.0) as u8;
+        // ⚠️ Brightness tracks SPEED, so level 10 reads as fast rather
+        // than merely being fast. Length does too, but it is bounded by
+        // how far the ball travels between frames; brightness is free.
+        let alpha = (ease::out_cubic(1.0 - t) * crate::state::trail_alpha_for(speed)) as u8;
         if alpha == 0 {
             continue;
         }
@@ -493,6 +534,11 @@ fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme,
         Phase::Ready if state.just_advanced => (&advanced, theme.accent),
         Phase::Ready => ("PRESS SPACE", theme.light_foreground),
         Phase::Playing => return,
+        // ⚠️ No text during the cascade. The effect IS the message — a
+        // banner over it would compete with the thing the player just
+        // earned, and the "LEVEL n - SPACE" line arrives a beat later when
+        // the field has finished building.
+        Phase::Clearing => return,
         Phase::Won => ("YOU WIN - ENTER", theme.green),
         Phase::Lost => ("GAME OVER - ENTER", theme.red),
     };

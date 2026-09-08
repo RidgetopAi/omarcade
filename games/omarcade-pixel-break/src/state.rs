@@ -85,9 +85,70 @@ pub const LEVELS: u32 = 10;
 /// First level that puts armoured bricks on the field.
 pub const ARMOUR_FROM_LEVEL: u32 = 8;
 
-/// How many past ball positions the trail keeps. Long enough to read as
-/// motion, short enough that a slow ball does not smear.
+/// How many past ball positions the trail keeps AT LEVEL-1 PACE, and at
+/// the top speed.
+///
+/// ⚠️ The trail is sampled ONCE PER FRAME, not once per fixed tick — see
+/// `physics::record_trail`. So a longer trail is more samples, and because
+/// a faster ball covers more ground between frames, the streak lengthens
+/// twice over: more points, further apart. That is why the count only
+/// needs to move a little to read as a lot.
 pub const TRAIL_LEN: usize = 10;
+pub const TRAIL_LEN_TOP: usize = 16;
+
+/// Trail brightness at level-1 pace and at the top speed, out of 255.
+///
+/// ⚠️ Brightness carries more of this effect than length does. Length is
+/// bounded by how far the ball actually travels; brightness is free and
+/// reads instantly.
+pub const TRAIL_ALPHA: f32 = 150.0;
+pub const TRAIL_ALPHA_TOP: f32 = 210.0;
+
+/// How long the outgoing wave takes, and the incoming build, in seconds.
+///
+/// ⚠️ The plan says the whole thing is "brief — under a second". These two
+/// sum to 0.9s deliberately: long enough to read as a wave rather than a
+/// blink, short enough that ten of them across a run never feel like a
+/// tax on the player's time.
+pub const CLEAR_WAVE_SECONDS: f32 = 0.40;
+pub const CLEAR_BUILD_SECONDS: f32 = 0.50;
+
+/// How far through the level-clear cascade we are.
+///
+/// Two stages back to back: the field that was just cleared resolves
+/// outward in a wave, then the next field builds itself in row by row.
+///
+/// ⚠️ **The next field is not built until the wave has finished.** Building
+/// it up front would show the next level's bricks arriving while this
+/// level's are still coming apart, which reads as a rendering bug.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Clear {
+    /// Seconds elapsed in the current stage.
+    pub elapsed: f32,
+    /// True once the wave is done and the next field is arriving.
+    pub building: bool,
+}
+
+impl Clear {
+    pub fn new() -> Self {
+        Clear { elapsed: 0.0, building: false }
+    }
+
+    /// How far through the current stage, in `0.0..=1.0`.
+    pub fn progress(&self) -> f32 {
+        let total = if self.building { CLEAR_BUILD_SECONDS } else { CLEAR_WAVE_SECONDS };
+        if total <= 0.0 {
+            return 1.0;
+        }
+        (self.elapsed / total).clamp(0.0, 1.0)
+    }
+}
+
+impl Default for Clear {
+    fn default() -> Self {
+        Clear::new()
+    }
+}
 
 /// Steepest the ball may travel relative to horizontal, as |vy| / speed.
 /// Below this the ball is skimming and the game stalls.
@@ -193,6 +254,27 @@ pub fn release_held(ball: &mut Ball, paddle: &Paddle, speed: f32) {
     aim_off_paddle(ball, paddle, speed);
 }
 
+/// How many trail samples to keep at a given ball speed.
+///
+/// Interpolates between `TRAIL_LEN` at level-1 pace and `TRAIL_LEN_TOP` at
+/// the top speed, so the streak grows across the run rather than stepping
+/// at a level boundary.
+pub fn trail_len_for(speed: f32) -> usize {
+    let t = ((speed - BALL_SPEED) / (BALL_SPEED_TOP - BALL_SPEED)).clamp(0.0, 1.0);
+    let n = TRAIL_LEN as f32 + (TRAIL_LEN_TOP - TRAIL_LEN) as f32 * t;
+    (n.round() as usize).clamp(TRAIL_LEN, TRAIL_LEN_TOP)
+}
+
+/// Trail brightness at a given ball speed, out of 255.
+///
+/// ⚠️ Brightness carries more of this effect than length does, because
+/// length is bounded by how far the ball actually travels between frames
+/// while brightness is free.
+pub fn trail_alpha_for(speed: f32) -> f32 {
+    let t = ((speed - BALL_SPEED) / (BALL_SPEED_TOP - BALL_SPEED)).clamp(0.0, 1.0);
+    TRAIL_ALPHA + (TRAIL_ALPHA_TOP - TRAIL_ALPHA) * t
+}
+
 /// Where the game is in its lifecycle.
 ///
 /// Explicit states rather than a scatter of booleans: "is the ball
@@ -203,6 +285,16 @@ pub enum Phase {
     /// Ball rests on the paddle; Space launches it.
     Ready,
     Playing,
+    /// The field has been cleared and the next one is arriving.
+    ///
+    /// ⚠️ **A phase of its own rather than a timer on `Ready`.** The
+    /// cascade takes about a second, and during it the game must ignore
+    /// input — otherwise a player mashing Space skips the effect they paid
+    /// for by clearing the field, or worse, launches into a field that is
+    /// still building. An explicit phase makes that impossible rather than
+    /// merely unlikely, and it makes every `match` on `Phase` declare what
+    /// it does here.
+    Clearing,
     /// Out of lives.
     Lost,
     /// Field cleared.
@@ -434,6 +526,8 @@ pub struct GameState {
     /// draws; the default is a readable grey so a headless probe that never
     /// renders still produces sane particles.
     pub palette: [Color; 6],
+    /// The level-clear cascade, while one is running.
+    pub clear: Option<Clear>,
     /// True from clearing a field until the next launch.
     ///
     /// ⚠️ Exists because `Phase::Ready` means two different things to a
@@ -473,6 +567,7 @@ impl GameState {
             chips: crate::effects::new_pool(),
             shake: Shake::default(),
             effect_rng: Rng::default(),
+            clear: None,
             palette: [Color::rgb(160, 160, 160); 6],
             just_advanced: false,
         };
@@ -775,6 +870,7 @@ impl GameState {
         // into a fresh field.
         self.chips.clear();
         self.shake.clear();
+        self.clear = None;
         // ⚠️ The magnet clears here too. Every path that calls this also
         // rebuilds the balls through `rest_ball_on_paddle`, so no HELD ball
         // can survive — but the armed magnet would, and a 20 s ability
@@ -794,12 +890,112 @@ impl GameState {
             self.phase = Phase::Won;
             return;
         }
+        self.begin_clearing();
+    }
+
+    /// Start the level-clear cascade.
+    ///
+    /// ⚠️ **The next field is NOT built here.** Only `finish_clearing`
+    /// builds it, once the outgoing wave has actually finished — otherwise
+    /// the next level's bricks would arrive while this level's are still
+    /// coming apart, which reads as a rendering bug rather than as a
+    /// transition.
+    ///
+    /// ⚠️ The balls are cleared immediately. A ball still bouncing around
+    /// an empty field during the cascade would be the only thing on screen
+    /// not participating in it, and it could drain and cost a life for a
+    /// level the player has already beaten.
+    fn begin_clearing(&mut self) {
+        self.phase = Phase::Clearing;
+        self.clear = Some(Clear::new());
+        self.balls.clear();
+        self.items.clear();
+    }
+
+    /// The cascade is over: the next field is here and play can resume.
+    fn finish_clearing(&mut self) {
         self.level += 1;
         self.bricks = build_bricks(self.level);
         self.clear_level_effects();
+        self.clear = None;
         self.phase = Phase::Ready;
         self.just_advanced = true;
         self.rest_ball_on_paddle();
+    }
+
+    /// Advance the cascade. Returns once it has handed off to `Ready`.
+    ///
+    /// ⚠️ Two stages, and the field is rebuilt exactly at the seam between
+    /// them — which is the moment `render` starts drawing the new level's
+    /// bricks arriving instead of the old level's leaving.
+    pub fn tick_clear(&mut self, dt: f32) {
+        let Some(mut c) = self.clear else { return };
+        c.elapsed += dt;
+
+        if !c.building {
+            if c.elapsed >= CLEAR_WAVE_SECONDS {
+                // The wave is done. Build the next field NOW, and let the
+                // build stage animate it arriving.
+                c.building = true;
+                c.elapsed = 0.0;
+                self.clear = Some(c);
+                self.level += 1;
+                self.bricks = build_bricks(self.level);
+                // ⚠️ Effects are NOT cleared here: the chips thrown by the
+                // wave are still in the air and are the whole point of it.
+                // `finish_clearing` clears them, by which time they have
+                // had the build stage to fade out in.
+                return;
+            }
+            self.clear = Some(c);
+            return;
+        }
+
+        if c.elapsed >= CLEAR_BUILD_SECONDS {
+            // `finish_clearing` increments the level, so undo the increment
+            // the seam already did — the level is advanced exactly once.
+            self.level -= 1;
+            self.finish_clearing();
+            return;
+        }
+        self.clear = Some(c);
+    }
+
+    /// Run the level-clear cascade straight through to `Ready`.
+    ///
+    /// ⚠️ **For tests and headless probes only.** Real play watches the
+    /// cascade; a probe measuring difficulty must not spend 0.9 s of
+    /// simulated time per level on an effect, and a test asserting "the
+    /// next level is built" should not have to know how long the animation
+    /// takes. `advance_level` STARTS the transition; this finishes it.
+    pub fn skip_clear(&mut self) {
+        // Bounded rather than `while`: a bug that never leaves `Clearing`
+        // should fail a test, not hang it.
+        let limit = ((CLEAR_WAVE_SECONDS + CLEAR_BUILD_SECONDS) / (1.0 / 240.0)) as u32 + 8;
+        for _ in 0..limit {
+            if self.clear.is_none() {
+                return;
+            }
+            self.tick_clear(1.0 / 240.0);
+        }
+    }
+
+    /// Point the effects at a theme's brick colours.
+    ///
+    /// ⚠️ **Call this when the game is built, not only when it draws.**
+    /// `render` refreshes the palette every frame so a live theme change
+    /// reaches the chips — but an effect can fire before the first frame
+    /// ever renders, and then it draws in the grey placeholder. That is
+    /// not hypothetical: it is how the level-clear cascade came out
+    /// monochrome the first time it was rendered, because `dump_frame`
+    /// runs its whole simulation before drawing once.
+    pub fn set_palette(&mut self, palette: [Color; 6]) {
+        self.palette = palette;
+    }
+
+    /// How far through the cascade, for `render`. `None` when not clearing.
+    pub fn clear_progress(&self) -> Option<(bool, f32)> {
+        self.clear.map(|c| (c.building, c.progress()))
     }
 
     /// The play field itself, for wall collisions.
@@ -1146,6 +1342,7 @@ mod level_signal_tests {
             b.hits = 0;
         }
         s.advance_level();
+        s.skip_clear();
         assert_eq!(s.phase, Phase::Ready);
         assert!(s.just_advanced, "a cleared field must say so");
     }
@@ -1155,6 +1352,7 @@ mod level_signal_tests {
         let mut s = GameState::new();
         s.launch();
         s.advance_level();
+        s.skip_clear();
         assert!(s.just_advanced);
 
         s.launch();
@@ -1168,6 +1366,7 @@ mod level_signal_tests {
         let mut s = GameState::new();
         s.launch();
         s.advance_level();
+        s.skip_clear();
         assert!(s.just_advanced);
 
         s.launch();
@@ -1181,6 +1380,7 @@ mod level_signal_tests {
         let mut s = GameState::new();
         s.launch();
         s.advance_level();
+        s.skip_clear();
         s.restart();
         assert!(!s.just_advanced);
         assert_eq!(s.level, 1);
@@ -1197,6 +1397,7 @@ mod level_signal_tests {
             b.hits = 0;
         }
         s.advance_level();
+        s.skip_clear();
         assert_eq!(s.phase, Phase::Won);
         assert!(!s.just_advanced);
         assert_eq!(s.level, LEVELS);

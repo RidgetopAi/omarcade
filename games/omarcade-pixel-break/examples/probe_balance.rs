@@ -103,7 +103,16 @@ fn measure(level: u32) -> Measured {
 
         // Clearing the field advances the level, which is how we know we
         // are done. Winning happens only on the last one.
-        if s.level != level || s.phase == Phase::Won {
+        // ⚠️ Clearing a field now begins a ~0.9s cascade rather than
+        // advancing at once. The probe measures DIFFICULTY, not effects:
+        // counting the animation would add nine tenths of a second to
+        // every level and quietly move a number that ten sessions of
+        // comparisons depend on. Stop the clock the moment the field is
+        // clear.
+        if s.phase == state::Phase::Clearing || s.phase == Phase::Won {
+            break;
+        }
+        if s.level != level {
             break;
         }
         // A perfect paddle should never drain, but if it does, relaunch
@@ -113,7 +122,8 @@ fn measure(level: u32) -> Measured {
         }
     }
 
-    let cleared = s.level != level || s.phase == Phase::Won;
+    let cleared =
+        s.level != level || s.phase == Phase::Won || s.phase == state::Phase::Clearing;
 
     // The row shape, in the plan's own notation.
     let rows: String = (0..BRICK_ROWS)

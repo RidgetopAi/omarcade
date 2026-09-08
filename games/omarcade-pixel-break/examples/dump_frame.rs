@@ -79,6 +79,10 @@ fn main() {
 
     let theme = Theme::load();
     let mut s = GameState::new();
+    // ⚠️ This harness runs its whole simulation and renders ONCE at the
+    // end, so every effect fires before render's per-frame palette refresh
+    // ever happens. Without this the cascade draws in grey.
+    s.set_palette(render::palette(&theme));
 
     // These scenes drive step_fixed directly, which is the simulation and
     // nothing else. The trail is sampled once per FRAME by physics::step,
@@ -169,6 +173,46 @@ fn main() {
                 physics::step_fixed(&mut s);
             }
             fill_trail(&mut s);
+        }
+        // The level-clear cascade, caught at three points. ⚠️ These are
+        // the frames that prove the wave is not invisible: the field is
+        // ALREADY EMPTY when it fires, so the effect has to come from the
+        // field's geometry rather than from live bricks.
+        "cascade-early" | "cascade-late" | "cascade-build" => {
+            s.launch();
+            for b in &mut s.bricks {
+                b.hits = 0;
+            }
+            physics::step_fixed(&mut s);
+            let secs = match scene.as_str() {
+                "cascade-early" => state::CLEAR_WAVE_SECONDS * 0.45,
+                "cascade-late" => state::CLEAR_WAVE_SECONDS * 0.98,
+                _ => state::CLEAR_WAVE_SECONDS + state::CLEAR_BUILD_SECONDS * 0.55,
+            };
+            for _ in 0..(secs / physics::FIXED_DT) as u32 {
+                physics::step_fixed(&mut s);
+            }
+        }
+        // The same ball at level 1 and level 10, so the speed-reactive
+        // trail can be compared rather than admired.
+        "trail-slow" | "trail-fast" => {
+            s.level = if scene == "trail-slow" { 1 } else { state::LEVELS };
+            // ⚠️ Keep ONE brick alive. Clearing them all makes check_win
+            // fire on the first tick, and the scene cascades to a win
+            // instead of showing a ball with a trail.
+            s.bricks = state::build_bricks(s.level);
+            let keep = s.bricks.len() - 1;
+            for b in s.bricks.iter_mut().take(keep) {
+                b.hits = 0;
+            }
+            s.launch();
+            s.balls[0].pos = geom::Vec2::new(200.0, 420.0);
+            s.balls[0].vel = geom::Vec2::new(0.62, -0.42).with_length(s.ball_speed());
+            // Sample per FRAME, the way the real loop does — the trail's
+            // whole character depends on that spacing.
+            for _ in 0..40 {
+                physics::step(&mut s, &mut physics::Accumulator::default(), 1.0 / 60.0);
+            }
         }
         "midgame" => {
             s.launch();

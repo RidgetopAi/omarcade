@@ -67,6 +67,37 @@ pub const PARTIAL_SHARE: f32 = 0.35;
 pub const SHAKE_UNITS: f32 = 2.5;
 pub const SHAKE_DECAY: f32 = 9.0;
 
+/// Share of a full break thrown by each cell in the level-clear wave.
+///
+/// ⚠️ Smaller than a real break, and the pool is why. Sixty cells at a
+/// full eighteen chips is 1080 particles into a pool of 512 — the early
+/// rows would be recycled away before the wave reached the bottom, so the
+/// cascade would eat its own head. Keeping the whole wave on screen at
+/// once is the only way it reads as a wave.
+pub const CASCADE_SHARE: f32 = 0.4;
+
+/// How much bigger, brighter and longer-lived a cascade chip is than a
+/// brick chip.
+///
+/// ⚠️ **The wave cannot be tuned like a brick break, and the first attempt
+/// proved it.** A break throws eighteen chips into one brick-sized area
+/// with the brick's own colour still on screen behind them; the wave
+/// spreads seven over the same area against BLACK, with nothing behind
+/// them at all. Rendered at brick-break values it came out as grey dust —
+/// measured: a chip at 0.15 alpha over the dark background has a
+/// red-to-blue spread of 11 out of 255, which the eye reads as grey, not
+/// as red.
+///
+/// Additive light needs mass to carry colour on a dark ground. Bigger
+/// chips put more light in the same place; a slower fade holds them above
+/// the alpha where hue collapses; and starting brighter keeps them there
+/// longer. The pool budget is what stops the obvious fix — "throw more" —
+/// so each chip has to be worth more instead.
+pub const CASCADE_SIZE_SCALE: f32 = 2.2;
+pub const CASCADE_LIFE_SCALE: f32 = 1.9;
+/// Starting intensity of a cascade chip, out of 255.
+pub const CASCADE_ALPHA: u8 = 255;
+
 /// How many chips the pool can hold at once.
 ///
 /// Sized for the worst honest case rather than the average: ten balls in
@@ -102,6 +133,32 @@ pub fn shatter(
     color: Color,
     share: f32,
 ) {
+    burst(pool, rng, brick, dir, color, share, false);
+}
+
+/// One cell of the level-clear wave.
+///
+/// Same fan as a brick break, with chips scaled up so they still read as
+/// coloured light against an empty field — see `CASCADE_SIZE_SCALE`.
+pub fn cascade_burst(
+    pool: &mut ParticlePool,
+    rng: &mut Rng,
+    cell: Rect,
+    dir: Vec2,
+    color: Color,
+) {
+    burst(pool, rng, cell, dir, color, CASCADE_SHARE, true);
+}
+
+fn burst(
+    pool: &mut ParticlePool,
+    rng: &mut Rng,
+    brick: Rect,
+    dir: Vec2,
+    color: Color,
+    share: f32,
+    cascade: bool,
+) {
     let count = ((SHATTER_CHIPS as f32 * share).round() as usize).max(1);
     if share <= 0.0 {
         return;
@@ -121,8 +178,14 @@ pub fn shatter(
         // A little wobble on top of the fan, so it is not a perfect rake.
         let angle = base + t * SHATTER_SPREAD + rng.signed() * SHATTER_SPREAD * 0.15;
         let speed = SHATTER_SPEED * (1.0 + rng.signed() * SHATTER_JITTER);
-        let size = (CHIP_SIZE * (1.0 + rng.signed() * CHIP_SIZE_VAR)).max(1.0);
-        let life = (CHIP_LIFE * (1.0 + rng.signed() * CHIP_LIFE_VAR)).max(0.05);
+        let (size_scale, life_scale) = if cascade {
+            (CASCADE_SIZE_SCALE, CASCADE_LIFE_SCALE)
+        } else {
+            (1.0, 1.0)
+        };
+        let size = (CHIP_SIZE * size_scale * (1.0 + rng.signed() * CHIP_SIZE_VAR)).max(1.0);
+        let life = (CHIP_LIFE * life_scale * (1.0 + rng.signed() * CHIP_LIFE_VAR)).max(0.05);
+        let color = if cascade { color.with_alpha(CASCADE_ALPHA) } else { color };
 
         // Chips start spread across the brick's face, not all from its
         // centre — they are pieces OF the brick, so they begin where the

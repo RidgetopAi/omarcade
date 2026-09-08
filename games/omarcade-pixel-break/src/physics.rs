@@ -20,7 +20,9 @@ use crate::items::MAGNET_HOLD_SECONDS;
 // return gives it, and `state::release_held` owns that release — while
 // `state` cannot depend on `physics`, because two probes pull `state.rs`
 // via `#[path]` without it. One copy, in the module both sides can reach.
-use crate::state::{clamp_angle, Ball, GameState, Paddle, Phase, TRAIL_LEN};
+use crate::state::{
+    clamp_angle, Ball, GameState, Paddle, Phase, BRICK_COLS, BRICK_ROWS,
+};
 
 /// Simulation rate. High enough that per-tick movement (~1.75 units at
 /// ball speed) is far smaller than the thinnest brick, which is what
@@ -115,9 +117,15 @@ fn record_trail(state: &mut GameState) {
     }
     // ⚠️ Each ball samples into its OWN trail. One shared buffer with
     // several balls writing to it draws a line that whips between them.
+    // ⚠️ The trail LENGTHENS with speed, so level 10 looks fast. Two
+    // things compound here and it is worth being explicit about why the
+    // count only moves from 10 to 16: sampling is per FRAME, so a faster
+    // ball also puts its samples further apart. More points, further
+    // apart — the streak grows by much more than the count suggests.
+    let keep = crate::state::trail_len_for(state.ball_speed());
     for ball in &mut state.balls {
         ball.trail.insert(0, ball.pos);
-        ball.trail.truncate(TRAIL_LEN);
+        ball.trail.truncate(keep);
     }
 }
 
@@ -192,7 +200,80 @@ pub fn step_fixed(state: &mut GameState) {
             state.tick_magnet(FIXED_DT);
             check_win(state);
         }
+        // The level-clear cascade: the field resolves outward, then the
+        // next one builds itself in.
+        //
+        // ⚠️ Nothing else runs. No balls (there are none — `begin_clearing`
+        // removed them), no items, no collisions. The only thing advancing
+        // is the cascade itself and the chips it throws, and those tick
+        // above, outside this match, like every other decaying effect.
+        Phase::Clearing => {
+            cascade_chips(state);
+            state.tick_clear(FIXED_DT);
+        }
         Phase::Lost | Phase::Won => {}
+    }
+}
+
+/// Throw light from the field as the outgoing wave sweeps down it.
+///
+/// ⚠️ **There are no bricks left to burst.** The cascade fires when
+/// `bricks_remaining() == 0` — the player has just destroyed the last one —
+/// so a wave built from live bricks sweeps an empty field and shows
+/// nothing. That is a real trap: the obvious implementation compiles, runs
+/// and is completely invisible.
+///
+/// So the wave is thrown from the field's own GEOMETRY instead: the grid
+/// the bricks occupied, in the level's palette. What resolves outward is
+/// the shape of the level that was just beaten, which is what "everything
+/// left on screen resolves into a wave" means once the bricks themselves
+/// are gone.
+fn cascade_chips(state: &mut GameState) {
+    let Some(clear) = state.clear else { return };
+    if clear.building {
+        return;
+    }
+
+    // The band the wave front crossed THIS tick. Firing on a band rather
+    // than on "everything above the front" is what makes each row throw
+    // exactly once, however many ticks the wave takes.
+    let span = crate::state::BRICK_TOP
+        + BRICK_ROWS as f32 * (crate::state::BRICK_H + crate::state::BRICK_GAP);
+    let now = clear.progress() * span;
+    let prev = ((clear.elapsed - FIXED_DT).max(0.0)
+        / crate::state::CLEAR_WAVE_SECONDS.max(1e-6))
+        .clamp(0.0, 1.0)
+        * span;
+
+    let span_w = BRICK_COLS as f32 * crate::state::BRICK_W
+        + (BRICK_COLS - 1) as f32 * crate::state::BRICK_GAP;
+    let left = (crate::state::FIELD_W - span_w) / 2.0;
+
+    for row in 0..BRICK_ROWS {
+        let y = crate::state::BRICK_TOP
+            + row as f32 * (crate::state::BRICK_H + crate::state::BRICK_GAP);
+        let mid = y + crate::state::BRICK_H / 2.0;
+        if mid <= prev || mid > now {
+            continue;
+        }
+        let color = state.palette[row % state.palette.len()];
+        for col in 0..BRICK_COLS {
+            let x = left + col as f32 * (crate::state::BRICK_W + crate::state::BRICK_GAP);
+            let cell = Rect::new(x, y, crate::state::BRICK_W, crate::state::BRICK_H);
+            // Outward from the field's centre: a field resolving outward is
+            // what makes it a wave rather than one large explosion.
+            let dir = Vec2::new(
+                cell.center().x - crate::state::FIELD_W / 2.0,
+                cell.center().y - crate::state::FIELD_H / 2.0,
+            );
+            crate::effects::cascade_burst(
+                &mut state.chips,
+                &mut state.effect_rng,
+                cell,
+                dir,
+                color,
+            );
+        }
     }
 }
 
@@ -676,6 +757,10 @@ mod tests {
             b.hits = 0;
         }
         check_win(&mut s);
+        // ⚠️ Clearing a field now STARTS a cascade rather than finishing
+        // the advance in one call. The level arrives when it ends.
+        assert_eq!(s.phase, Phase::Clearing, "clearing should begin the cascade");
+        s.skip_clear();
 
         assert_eq!(s.level, level + 1);
         assert_eq!(s.phase, Phase::Ready, "the next level starts on the paddle");
@@ -1286,6 +1371,7 @@ mod level_tests {
         }
 
         s.advance_level();
+        s.skip_clear();
 
         assert_eq!(s.level, 2);
         assert_eq!(s.score, 1234, "score carries across levels");
@@ -1305,6 +1391,7 @@ mod level_tests {
                 b.hits = 0;
             }
             s.advance_level();
+        s.skip_clear();
         }
         assert_eq!(s.level, LEVELS);
 
@@ -1312,6 +1399,7 @@ mod level_tests {
             b.hits = 0;
         }
         s.advance_level();
+        s.skip_clear();
         assert_eq!(s.phase, Phase::Won, "clearing the last level wins");
     }
 
@@ -1657,6 +1745,11 @@ mod item_tests {
             b.hits = 0;
         }
         check_win(&mut s);
+        // ⚠️ Items are cleared the INSTANT the cascade begins, not when it
+        // ends — a power-up still falling through the wave would be the
+        // one thing on screen not participating in it.
+        assert!(s.items.is_empty(), "items should clear as the cascade starts");
+        s.skip_clear();
 
         assert_eq!(s.level, 2);
         assert!(s.items.is_empty(), "falling items do not cross levels");
@@ -2137,6 +2230,7 @@ mod magnet_tests {
         s.launch();
         s.apply_item(ItemKind::Magnet);
         s.advance_level();
+        s.skip_clear();
         assert!(!s.magnet_active(), "the magnet followed the player to the next level");
         assert_eq!(s.balls.len(), 1, "the next level starts with one ball");
         assert!(!s.balls[0].is_held(), "a held ball survived the level change");
@@ -2319,6 +2413,7 @@ mod effect_tests {
         assert!(!s.chips.is_empty());
 
         s.advance_level();
+        s.skip_clear();
         assert!(s.chips.is_empty(), "chips followed the player to the next level");
         assert!(s.shake.is_still(), "shake followed the player to the next level");
     }
@@ -2451,5 +2546,268 @@ mod effect_tests {
             }
             assert!(s.shake.amount.is_finite(), "NaN shake at tick {i}");
         }
+    }
+}
+
+/// The level-clear cascade and the speed-reactive trail.
+#[cfg(test)]
+mod cascade_tests {
+    use super::*;
+    use crate::state::{
+        trail_alpha_for, trail_len_for, BALL_SPEED, BALL_SPEED_TOP, CLEAR_BUILD_SECONDS,
+        CLEAR_WAVE_SECONDS, LEVELS, TRAIL_ALPHA, TRAIL_ALPHA_TOP, TRAIL_LEN, TRAIL_LEN_TOP,
+    };
+
+    fn cleared() -> GameState {
+        let mut s = GameState::new();
+        s.launch();
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+        check_win(&mut s);
+        s
+    }
+
+    // ---- the cascade ----
+
+    #[test]
+    fn clearing_a_field_begins_the_cascade_rather_than_advancing() {
+        let s = cleared();
+        assert_eq!(s.phase, Phase::Clearing);
+        assert_eq!(s.level, 1, "the level must not arrive until the cascade ends");
+        assert!(s.clear.is_some());
+    }
+
+    /// ⚠️ No ball may survive into the cascade. One still bouncing around
+    /// an empty field would be the only thing on screen not participating
+    /// in the effect — and it could drain, costing a life for a level the
+    /// player has already beaten.
+    #[test]
+    fn the_cascade_takes_the_balls_off_the_field() {
+        let s = cleared();
+        assert!(s.balls.is_empty(), "a ball survived into the cascade");
+        assert!(s.items.is_empty(), "an item survived into the cascade");
+    }
+
+    #[test]
+    fn the_cascade_cannot_cost_a_life() {
+        let mut s = cleared();
+        let lives = s.lives;
+        s.skip_clear();
+        assert_eq!(s.lives, lives, "the cascade took a life");
+    }
+
+    /// ⚠️ **The wave has to throw something.** There are no bricks left —
+    /// the player just destroyed the last one — so a cascade built from
+    /// live bricks would sweep an empty field and be invisible. It
+    /// compiles, it runs, and nothing happens.
+    #[test]
+    fn the_wave_actually_throws_chips() {
+        let mut s = cleared();
+        s.chips.clear();
+        assert!(s.bricks_remaining() == 0, "there should be no bricks to burst");
+
+        let ticks = (CLEAR_WAVE_SECONDS / FIXED_DT) as u32;
+        for _ in 0..ticks {
+            step_fixed(&mut s);
+        }
+        assert!(!s.chips.is_empty(), "the wave threw nothing — it is invisible");
+    }
+
+    /// It is a WAVE, not one explosion: the top of the field goes before
+    /// the bottom.
+    #[test]
+    fn the_wave_sweeps_downward() {
+        let mut s = cleared();
+        s.chips.clear();
+
+        // A quarter of the way through, only the upper field has fired.
+        let quarter = (CLEAR_WAVE_SECONDS * 0.25 / FIXED_DT) as u32;
+        for _ in 0..quarter {
+            step_fixed(&mut s);
+        }
+        let early_lowest = s
+            .chips
+            .particles()
+            .iter()
+            .map(|p| p.pos.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        for _ in 0..(CLEAR_WAVE_SECONDS / FIXED_DT) as u32 {
+            step_fixed(&mut s);
+        }
+        let late_lowest = s
+            .chips
+            .particles()
+            .iter()
+            .map(|p| p.pos.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        assert!(
+            late_lowest > early_lowest,
+            "the wave did not travel down the field: {early_lowest} then {late_lowest}"
+        );
+    }
+
+    /// ⚠️ The wave must fit in the pool. Sixty cells at a full burst is
+    /// 1080 particles into a pool of 512 — the early rows would be
+    /// recycled away before the wave reached the bottom, so the cascade
+    /// would eat its own head.
+    #[test]
+    fn the_whole_wave_fits_in_the_pool() {
+        let mut s = cleared();
+        let ticks = (CLEAR_WAVE_SECONDS / FIXED_DT) as u32;
+        let mut peak = 0;
+        for _ in 0..ticks {
+            step_fixed(&mut s);
+            peak = peak.max(s.chips.len());
+        }
+        assert!(
+            peak < crate::effects::POOL_CAPACITY,
+            "the wave peaked at {peak} of {} — it is recycling itself",
+            crate::effects::POOL_CAPACITY
+        );
+    }
+
+    #[test]
+    fn the_cascade_finishes_and_hands_off_to_ready() {
+        let mut s = cleared();
+        let ticks = ((CLEAR_WAVE_SECONDS + CLEAR_BUILD_SECONDS) / FIXED_DT) as u32 + 10;
+        for _ in 0..ticks {
+            step_fixed(&mut s);
+        }
+        assert_eq!(s.phase, Phase::Ready, "the cascade never ended");
+        assert_eq!(s.level, 2, "the level should have advanced exactly once");
+        assert!(s.clear.is_none());
+        assert!(s.bricks_remaining() > 0, "the next field should be built");
+        assert_eq!(s.balls.len(), 1, "and a ball waiting on the paddle");
+        assert!(s.just_advanced, "the LEVEL n banner should be armed");
+    }
+
+    /// ⚠️ **Exactly once.** The cascade increments the level at the seam
+    /// between its two stages and again when it finishes; the second must
+    /// undo the first. Off by one here and a ten-level game is five.
+    #[test]
+    fn the_cascade_advances_the_level_exactly_once() {
+        let mut s = cleared();
+        for _ in 0..5000 {
+            step_fixed(&mut s);
+            if s.phase == Phase::Ready {
+                break;
+            }
+        }
+        assert_eq!(s.level, 2);
+    }
+
+    /// The whole thing stays under the plan's "brief — under a second".
+    #[test]
+    fn the_cascade_is_brief() {
+        assert!(
+            CLEAR_WAVE_SECONDS + CLEAR_BUILD_SECONDS <= 1.0,
+            "the plan says the cascade is under a second"
+        );
+    }
+
+    /// ⚠️ Clearing the LAST level wins; it must not cascade into a level
+    /// that does not exist.
+    #[test]
+    fn clearing_the_last_level_wins_rather_than_cascading() {
+        let mut s = GameState::new();
+        s.level = LEVELS;
+        s.launch();
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+        check_win(&mut s);
+        assert_eq!(s.phase, Phase::Won, "the last level should win, not cascade");
+        assert!(s.clear.is_none());
+    }
+
+    /// A full run still reaches the end with the cascade in the way.
+    #[test]
+    fn a_full_run_still_reaches_the_win() {
+        let mut s = GameState::new();
+        s.launch();
+        for _ in 0..LEVELS {
+            for b in &mut s.bricks {
+                b.hits = 0;
+            }
+            check_win(&mut s);
+            s.skip_clear();
+            if s.phase == Phase::Won {
+                break;
+            }
+            s.launch();
+        }
+        assert_eq!(s.phase, Phase::Won, "a full run did not reach the win");
+        assert_eq!(s.level, LEVELS);
+    }
+
+    /// Input is ignored during the cascade — a mashed Space must not skip
+    /// the effect or launch into a field that is still building.
+    #[test]
+    fn space_does_nothing_during_the_cascade() {
+        let mut s = cleared();
+        for _ in 0..40 {
+            s.launch();
+            step_fixed(&mut s);
+        }
+        assert_eq!(s.phase, Phase::Clearing, "Space skipped the cascade");
+        assert!(s.balls.is_empty(), "Space launched a ball mid-cascade");
+    }
+
+    // ---- the speed-reactive trail ----
+
+    #[test]
+    fn the_trail_lengthens_with_speed() {
+        assert_eq!(trail_len_for(BALL_SPEED), TRAIL_LEN);
+        assert_eq!(trail_len_for(BALL_SPEED_TOP), TRAIL_LEN_TOP);
+        assert!(trail_len_for(BALL_SPEED_TOP) > trail_len_for(BALL_SPEED));
+        // Monotone across the range, so it grows rather than stepping.
+        let mid = trail_len_for((BALL_SPEED + BALL_SPEED_TOP) / 2.0);
+        assert!(mid > TRAIL_LEN && mid < TRAIL_LEN_TOP, "midpoint was {mid}");
+    }
+
+    #[test]
+    fn the_trail_brightens_with_speed() {
+        assert!((trail_alpha_for(BALL_SPEED) - TRAIL_ALPHA).abs() < 1e-3);
+        assert!((trail_alpha_for(BALL_SPEED_TOP) - TRAIL_ALPHA_TOP).abs() < 1e-3);
+        assert!(trail_alpha_for(BALL_SPEED_TOP) > trail_alpha_for(BALL_SPEED));
+    }
+
+    /// ⚠️ Alpha is cast to u8 for drawing. Above 255 it would wrap and the
+    /// brightest trail in the game would render as the dimmest.
+    #[test]
+    fn the_trail_never_overflows_its_alpha() {
+        for speed in [0.0, BALL_SPEED, BALL_SPEED_TOP, 10_000.0] {
+            let a = trail_alpha_for(speed);
+            assert!((0.0..=255.0).contains(&a), "alpha {a} at speed {speed}");
+        }
+    }
+
+    /// Out of range clamps rather than extrapolating — a speed below level
+    /// one or above level ten must not produce a negative or runaway trail.
+    #[test]
+    fn trail_values_clamp_outside_the_speed_range() {
+        assert_eq!(trail_len_for(0.0), TRAIL_LEN);
+        assert_eq!(trail_len_for(99_999.0), TRAIL_LEN_TOP);
+    }
+
+    /// The running game actually keeps the longer trail at speed.
+    #[test]
+    fn a_fast_level_records_a_longer_trail_than_a_slow_one() {
+        let sample = |level: u32| {
+            let mut s = GameState::new();
+            s.level = level;
+            s.launch();
+            for _ in 0..60 {
+                step(&mut s, &mut Accumulator::default(), 1.0 / 60.0);
+            }
+            s.balls[0].trail.len()
+        };
+        assert!(
+            sample(LEVELS) > sample(1),
+            "level {LEVELS} trail was not longer than level 1's"
+        );
     }
 }

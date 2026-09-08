@@ -1,0 +1,735 @@
+<title>Omarcade Shatter Playground</title>
+<style>
+  :root {
+    --bg: #1e2326; --panel: #272e33; --edge: #3a4248;
+    --fg: #d3c6aa; --muted: #859289; --accent: #83c092;
+    --warn: #e67e80;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--edge);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    flex: none;
+  }
+  header .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .04em; }
+  header p { margin: 0; color: var(--muted); font-size: 12px; }
+  main {
+    flex: 1; min-height: 0;
+    display: grid; grid-template-columns: minmax(0,1fr) 360px;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 20px; padding: 20px;
+  }
+  /* Each column scrolls by itself: the canvas and its tools stay in
+     frame while the sidebar is browsed. The page never scrolls. */
+  .col {
+    min-height: 0; min-width: 0; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .col > .panel { flex: none; }
+  @media (max-width: 900px) {
+    body { display: block; overflow: auto; height: auto; }
+    main { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 6px; padding: 14px;
+  }
+  .panel h2 {
+    font-size: 12px; margin: 0 0 10px; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); font-weight: 600;
+  }
+  button {
+    background: var(--edge); color: var(--fg); border: 1px solid #4a545c;
+    border-radius: 4px; padding: 5px 11px; cursor: pointer;
+    font: inherit; font-size: 12px;
+  }
+  button:hover { background: #46515a; }
+  button.on { background: var(--accent); color: #1e2326; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .hint { color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .warn { color: var(--warn); }
+  textarea {
+    width: 100%; height: 300px; background: #1b2023; color: var(--fg);
+    border: 1px solid var(--edge); border-radius: 4px; padding: 9px;
+    font: inherit; font-size: 11px; resize: vertical;
+  }
+  textarea.short { height: 110px; }
+  canvas { display: block; image-rendering: pixelated; border-radius: 4px; }
+  #stage { width: 100%; height: auto; background: #000; cursor: crosshair; }
+
+  /* ---- sliders ---- */
+  .slider { margin-bottom: 11px; }
+  .slider:last-child { margin-bottom: 0; }
+  .slider label {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; margin-bottom: 3px;
+  }
+  .slider label b { font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .slider input[type=range] {
+    width: 100%; margin: 0; accent-color: var(--accent); height: 16px;
+  }
+  .slider .note { font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .group { border-top: 1px solid var(--edge); margin-top: 12px; padding-top: 12px; }
+  .group:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+  .group h3 {
+    font-size: 11px; margin: 0 0 9px; color: var(--fg);
+    text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
+  }
+  .swatches { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 9px; }
+  .sw { width: 21px; height: 21px; border-radius: 3px; border: 1px solid #0004; }
+  kbd {
+    background: var(--edge); border: 1px solid #4a545c; border-bottom-width: 2px;
+    border-radius: 3px; padding: 0 4px; font-size: 11px;
+  }
+</style>
+
+<header>
+  <h1>OMARCADE &mdash; SHATTER PLAYGROUND</h1>
+  <p>S7 effects: brick chips, damage, screen shake. Tune here, paste the Rust into the game.</p>
+  <div class="controls">
+    <button id="plain" class="on">Plain break</button>
+    <button id="reinf">Reinforced hit</button>
+    <button id="armour">Armoured break</button>
+    <button id="wave">Level clear</button>
+    <button id="auto">Auto-repeat: on</button>
+  </div>
+</header>
+
+<main>
+  <div class="col">
+    <div class="panel">
+      <h2>The field &mdash; click a brick to break it</h2>
+      <canvas id="stage" width="960" height="720"></canvas>
+      <p class="hint" style="margin:9px 0 0">
+        Real geometry: 960&times;720 field, 84&times;28 bricks, 240&nbsp;Hz fixed step,
+        additive blending, linear alpha fade &mdash; all matched to
+        <code>core/src/particles.rs</code> so the numbers transfer rather than approximate.
+        The ball fires along its travel direction, because chips thrown
+        <b>with the ball</b> is what sells the effect.
+        <br><kbd>space</kbd> re-break &nbsp; <kbd>r</kbd> rebuild field &nbsp;
+        <kbd>1</kbd>&ndash;<kbd>4</kbd> pick the break kind
+      </p>
+    </div>
+
+    <div class="panel">
+      <h2>Rust &mdash; paste into effects.rs</h2>
+      <textarea id="out" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="copy">Copy</button>
+        <button id="load">Load from textarea</button>
+        <button id="reset">Reset to defaults</button>
+        <span class="hint" id="status"></span>
+      </div>
+      <p class="hint">
+        These constants are the <b>only</b> thing that crosses over. The playground is a
+        tuning instrument, not a second engine &mdash; two implementations of the same
+        physics are exactly the drift risk to avoid, so the JS below is a deliberately
+        plain transcription of <code>ParticlePool::update</code> and nothing more.
+      </p>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="panel">
+      <h2>Shatter</h2>
+      <div class="group">
+        <h3>The burst</h3>
+        <div class="slider" data-k="chips"   data-min="2"   data-max="40"  data-step="1"></div>
+        <div class="slider" data-k="speed"   data-min="20"  data-max="600" data-step="5"></div>
+        <div class="slider" data-k="spread"  data-min="0"   data-max="180" data-step="5"></div>
+        <div class="slider" data-k="jitter"  data-min="0"   data-max="100" data-step="5"></div>
+      </div>
+      <div class="group">
+        <h3>The chips</h3>
+        <div class="slider" data-k="size"    data-min="1"   data-max="10"  data-step="0.5"></div>
+        <div class="slider" data-k="sizevar" data-min="0"   data-max="100" data-step="5"></div>
+        <div class="slider" data-k="life"    data-min="0.1" data-max="2.0" data-step="0.05"></div>
+        <div class="slider" data-k="lifevar" data-min="0"   data-max="100" data-step="5"></div>
+        <div class="slider" data-k="gravity" data-min="0"   data-max="1200" data-step="20"></div>
+      </div>
+      <div class="group">
+        <h3>Partial breaks</h3>
+        <div class="slider" data-k="partial" data-min="0"   data-max="100" data-step="5"></div>
+        <p class="hint">
+          A reinforced brick's first hit throws this share of a full break. The plan wants
+          damage and shatter to be <b>one system</b>, partial &mdash; that is what keeps it cheap.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Screen shake</h2>
+      <div class="slider" data-k="shake"     data-min="0"   data-max="10"  data-step="0.5"></div>
+      <div class="slider" data-k="shakedecay" data-min="1"  data-max="30"  data-step="0.5"></div>
+      <p class="hint warn">
+        &#9888; The plan caps this at <b>~4 units, decayed fast</b>. Shake is the effect most
+        likely to be too much, and it makes people motion-sick before they can say why.
+        Judge it on the <b>armoured</b> break and on a lost ball, not on a plain one.
+      </p>
+    </div>
+
+    <div class="panel">
+      <h2>Theme</h2>
+      <div class="swatches" id="themeswatches"></div>
+      <div class="row">
+        <button id="pastetheme">Paste colors.toml</button>
+        <button id="resettheme">Everforest</button>
+        <span class="hint" id="themestatus"></span>
+      </div>
+      <div id="themebox" style="display:none;margin-top:9px">
+        <textarea id="themein" class="short" spellcheck="false"
+          placeholder="cat ~/.local/state/omarchy/current/theme/colors.toml"></textarea>
+        <div class="row" style="margin-top:6px"><button id="applytheme">Apply</button></div>
+      </div>
+      <p class="hint">
+        &#9888; Chips are drawn in <b>the brick's own colour</b> &mdash; they are made of the
+        brick, not a puff of generic dust. So the burst has to be checked under a real theme:
+        S5 killed two colour choices that read fine in code.
+      </p>
+    </div>
+
+    <div class="panel">
+      <h2>Live</h2>
+      <p class="hint" id="stats" style="font-size:12px"></p>
+    </div>
+  </div>
+</main>
+
+<script>
+'use strict';
+
+// ---------------------------------------------------------------------------
+// Geometry, matched to games/omarcade-pixel-break/src/state.rs.
+// ---------------------------------------------------------------------------
+const FIELD_W = 960, FIELD_H = 720;
+const BRICK_COLS = 10, BRICK_ROWS = 6;
+const BRICK_W = 84, BRICK_H = 28, BRICK_GAP = 6, BRICK_TOP = 90;
+const FIXED_DT = 1 / 240;          // physics::FIXED_DT
+const POOL_CAP = 512;              // what the game will size its pool at
+
+// ---------------------------------------------------------------------------
+// The numbers being tuned. Everything the sidebar drives lives here, and this
+// object is exactly what the Rust panel emits.
+// ---------------------------------------------------------------------------
+const DEFAULTS = {
+  chips:   14,    // chips thrown by a full break
+  speed:   240,   // burst speed, units/s
+  spread:  55,    // cone half-angle around the ball's travel, degrees
+  jitter:  40,    // % variation in per-chip speed
+  size:    3.0,   // chip side, field units
+  sizevar: 50,    // % variation in size
+  life:    0.70,  // seconds
+  lifevar: 40,    // % variation in life
+  gravity: 420,   // units/s^2
+  partial: 35,    // % of a full break thrown by a reinforced first hit
+  shake:   2.5,   // peak offset, field units
+  shakedecay: 9,  // e-folds per second
+};
+
+const META = {
+  chips:   ['chips per break',  '',        'how many pieces the brick becomes'],
+  speed:   ['burst speed',      ' u/s',    'how hard they are thrown'],
+  spread:  ['spread',           '°',  'cone half-angle around the ball’s travel'],
+  jitter:  ['speed jitter',     '%',       'variation, so the burst is not a starburst'],
+  size:    ['chip size',        ' u',      'side length; the ball is 16u across'],
+  sizevar: ['size variation',   '%',       ''],
+  life:    ['life',             ' s',      'how long a chip lasts'],
+  lifevar: ['life variation',   '%',       'uneven lifetimes stop them vanishing as one'],
+  gravity: ['gravity',          ' u/s²', 'chips fall; sparks would not'],
+  partial: ['reinforced share', '%',       'chips on a non-final hit'],
+  shake:   ['shake',            ' u',      'peak offset — the plan caps this near 4'],
+  shakedecay: ['shake decay',   '/s',      'higher is snappier'],
+};
+
+let P = { ...DEFAULTS };
+
+// ---------------------------------------------------------------------------
+// Theme. Everforest to start; a colors.toml paste re-resolves everything.
+// ---------------------------------------------------------------------------
+const EVERFOREST = {
+  background: '#272e33', dark_background: '#1e2326', darker_background: '#1b2023',
+  foreground: '#d3c6aa', accent: '#83c092',
+  red: '#e67e80', orange: '#e69875', yellow: '#dbbc7f',
+  green: '#a7c080', cyan: '#83c092', blue: '#7fbbb3', magenta: '#d699b6',
+};
+let theme = { ...EVERFOREST };
+
+/// Brick colours by row, matching render::brick_palette.
+function palette() {
+  return [theme.red, theme.orange, theme.yellow, theme.green, theme.cyan, theme.blue];
+}
+
+function hexToRgb(h) {
+  const s = h.replace('#', '').trim();
+  const n = s.length === 3
+    ? s.split('').map(c => c + c).join('')
+    : s.slice(0, 6);
+  const v = parseInt(n, 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+// ---------------------------------------------------------------------------
+// The particle pool. A plain transcription of core/src/particles.rs — same
+// integration order (velocity first, then position), same linear alpha fade,
+// same oldest-first recycling. Nothing clever: any divergence here would tune
+// numbers that do not transfer.
+// ---------------------------------------------------------------------------
+const pool = [];
+
+function spawn(p) {
+  if (p.life <= 0) return;
+  if (pool.length < POOL_CAP) { pool.push(p); return; }
+  // Full: overwrite whichever live particle has the least life left.
+  let worst = 0, best = -1;
+  for (let i = 0; i < pool.length; i++) {
+    const prog = pool[i].age / pool[i].life;
+    if (prog > best) { best = prog; worst = i; }
+  }
+  pool[worst] = p;
+}
+
+function updatePool(dt) {
+  for (let i = pool.length - 1; i >= 0; i--) {
+    const p = pool[i];
+    p.age += dt;
+    if (p.age >= p.life) { pool.splice(i, 1); continue; }
+    p.vy += P.gravity * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic randomness, so the same break looks the same twice while a
+// slider is being dragged. Without this every repaint reshuffles the burst and
+// you end up tuning noise.
+// ---------------------------------------------------------------------------
+let rngState = 1;
+function seedRng(s) { rngState = (s >>> 0) || 1; }
+function rnd() {
+  rngState = (Math.imul(rngState, 1664525) + 1013904223) >>> 0;
+  return ((rngState >>> 8) & 0xFFFF) / 65536;
+}
+/// A value in [-1, 1].
+function rnd2() { return rnd() * 2 - 1; }
+
+// ---------------------------------------------------------------------------
+// The burst itself. This is the function that becomes Rust.
+// ---------------------------------------------------------------------------
+function burst(cx, cy, dirx, diry, color, share) {
+  const count = Math.max(1, Math.round(P.chips * share));
+  const base = Math.atan2(diry, dirx);
+  const half = P.spread * Math.PI / 180;
+  const [r, g, b] = hexToRgb(color);
+
+  for (let i = 0; i < count; i++) {
+    // Fan the chips across the cone rather than sampling it randomly: an
+    // even fan reads as the brick coming apart, random clumps read as noise.
+    const t = count === 1 ? 0 : (i / (count - 1)) * 2 - 1;
+    const ang = base + t * half + rnd2() * half * 0.15;
+    const spd = P.speed * (1 + rnd2() * P.jitter / 100);
+    const size = Math.max(1, P.size * (1 + rnd2() * P.sizevar / 100));
+    const life = Math.max(0.05, P.life * (1 + rnd2() * P.lifevar / 100));
+    spawn({
+      x: cx + rnd2() * BRICK_W * 0.35,
+      y: cy + rnd2() * BRICK_H * 0.35,
+      vx: Math.cos(ang) * spd,
+      vy: Math.sin(ang) * spd,
+      size, life, age: 0, r, g, b,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Screen shake: a decaying offset applied to the viewport, nothing else.
+// ⚠️ It moves the DRAWING, never the field — a ball must not collide with
+// something it does not visually touch.
+// ---------------------------------------------------------------------------
+let shakeLeft = 0;
+function addShake(units) { shakeLeft = Math.max(shakeLeft, units); }
+function shakeOffset() {
+  if (shakeLeft <= 0.01) return [0, 0];
+  return [rnd2() * shakeLeft, rnd2() * shakeLeft];
+}
+function decayShake(dt) {
+  if (shakeLeft > 0) {
+    shakeLeft *= Math.exp(-P.shakedecay * dt);
+    if (shakeLeft < 0.01) shakeLeft = 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The field.
+// ---------------------------------------------------------------------------
+let bricks = [];
+function buildField() {
+  bricks = [];
+  const spanW = BRICK_COLS * BRICK_W + (BRICK_COLS - 1) * BRICK_GAP;
+  const left = (FIELD_W - spanW) / 2;
+  for (let row = 0; row < BRICK_ROWS; row++) {
+    for (let col = 0; col < BRICK_COLS; col++) {
+      bricks.push({
+        x: left + col * (BRICK_W + BRICK_GAP),
+        y: BRICK_TOP + row * (BRICK_H + BRICK_GAP),
+        row, alive: true,
+      });
+    }
+  }
+}
+
+// The ball, so chips can be thrown along a real travel direction.
+let ball = { x: 480, y: 470, vx: 0.55, vy: -0.83 };
+
+let mode = 'plain';
+let autoRepeat = true;
+let sinceBreak = 0;
+let lastBreak = null;   // {col,row} of the brick to keep re-breaking
+
+/// Break one brick, with the effect the current mode calls for.
+function breakBrick(i, kind) {
+  const b = bricks[i];
+  if (!b) return;
+  const cx = b.x + BRICK_W / 2, cy = b.y + BRICK_H / 2;
+  const color = palette()[b.row % 6];
+
+  // Chips are thrown along the ball's travel, away from the paddle.
+  const dx = ball.vx, dy = ball.vy;
+  const len = Math.hypot(dx, dy) || 1;
+
+  if (kind === 'reinf') {
+    burst(cx, cy, dx / len, dy / len, color, P.partial / 100);
+    // A reinforced brick survives its first hit.
+  } else if (kind === 'armour') {
+    burst(cx, cy, dx / len, dy / len, color, 1);
+    addShake(P.shake);
+    b.alive = false;
+  } else if (kind === 'wave') {
+    // The level-clear cascade: everything left resolves in a wave.
+    let n = 0;
+    for (const br of bricks) {
+      if (!br.alive) continue;
+      n++;
+      setTimeout(() => {
+        if (!br.alive) return;
+        br.alive = false;
+        burst(br.x + BRICK_W / 2, br.y + BRICK_H / 2, 0, -1,
+              palette()[br.row % 6], 0.6);
+      }, n * 12);
+    }
+  } else {
+    burst(cx, cy, dx / len, dy / len, color, 1);
+    b.alive = false;
+  }
+}
+
+function fireCurrentMode() {
+  if (mode === 'wave') { breakBrick(0, 'wave'); return; }
+  // Keep hitting the same brick so a slider drag shows the same burst.
+  let i = lastBreak;
+  if (i == null || !bricks[i] || (!bricks[i].alive && mode !== 'reinf')) {
+    const alive = bricks.map((b, j) => b.alive ? j : -1).filter(j => j >= 0);
+    if (!alive.length) { buildField(); return fireCurrentMode(); }
+    i = alive[Math.floor(alive.length / 2) + 3] ?? alive[0];
+    lastBreak = i;
+  }
+  seedRng(1234);            // same burst every repaint while tuning
+  if (mode === 'reinf') { breakBrick(i, 'reinf'); }
+  else { breakBrick(i, mode); }
+}
+
+// ---------------------------------------------------------------------------
+// Render.
+// ---------------------------------------------------------------------------
+const stage = document.getElementById('stage');
+const ctx = stage.getContext('2d');
+
+function draw() {
+  const [sx, sy] = shakeOffset();
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = theme.darker_background;
+  ctx.fillRect(0, 0, FIELD_W, FIELD_H);
+  ctx.setTransform(1, 0, 0, 1, sx, sy);
+
+  // Play area.
+  ctx.fillStyle = theme.background;
+  ctx.fillRect(0, 0, FIELD_W, FIELD_H);
+
+  // Bricks.
+  const pal = palette();
+  for (const b of bricks) {
+    if (!b.alive) continue;
+    ctx.fillStyle = pal[b.row % 6];
+    ctx.fillRect(b.x, b.y, BRICK_W, BRICK_H);
+  }
+
+  // Paddle and ball, for scale.
+  ctx.fillStyle = theme.foreground;
+  ctx.fillRect(FIELD_W / 2 - 60, FIELD_H - 60, 120, 16);
+  ctx.fillRect(ball.x - 8, ball.y - 8, 16, 16);
+
+  // Chips, additively — this is what makes them read as light rather than
+  // as translucent stickers, and it is why tuning on plain alpha would look
+  // wrong once it reached the game.
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of pool) {
+    const left = 1 - p.age / p.life;
+    ctx.fillStyle = `rgba(${p.r},${p.g},${p.b},${left.toFixed(3)})`;
+    ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+let last = performance.now();
+let acc = 0;
+function frame(now) {
+  let dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+
+  // Fixed timestep, same as the game: a variable step would make the arcs
+  // depend on the browser's frame rate rather than on the numbers.
+  acc += dt;
+  while (acc >= FIXED_DT) {
+    updatePool(FIXED_DT);
+    decayShake(FIXED_DT);
+    acc -= FIXED_DT;
+  }
+
+  if (autoRepeat) {
+    sinceBreak += dt;
+    if (sinceBreak > 1.4) { sinceBreak = 0; fireCurrentMode(); }
+  }
+
+  draw();
+  document.getElementById('stats').innerHTML =
+    `live chips <b>${pool.length}</b> / ${POOL_CAP}` +
+    `<br>shake <b>${shakeLeft.toFixed(2)}</b> u` +
+    `<br>bricks <b>${bricks.filter(b => b.alive).length}</b> / ${bricks.length}`;
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar wiring.
+// ---------------------------------------------------------------------------
+function buildSliders() {
+  for (const el of document.querySelectorAll('.slider')) {
+    const k = el.dataset.k;
+    const [label, unit, note] = META[k];
+    el.innerHTML =
+      `<label>${label} <b id="v_${k}"></b></label>` +
+      `<input type="range" id="s_${k}" min="${el.dataset.min}" max="${el.dataset.max}" ` +
+      `step="${el.dataset.step}" value="${P[k]}">` +
+      (note ? `<div class="note">${note}</div>` : '');
+    const input = el.querySelector('input');
+    const show = () => {
+      const dp = Number(el.dataset.step) < 1 ? 2 : 0;
+      document.getElementById('v_' + k).textContent = Number(P[k]).toFixed(dp) + unit;
+    };
+    input.addEventListener('input', () => {
+      P[k] = Number(input.value);
+      show(); emit();
+      // Re-throw the same burst so the change is visible immediately
+      // instead of waiting for the next auto-repeat.
+      pool.length = 0;
+      if (mode !== 'wave') fireCurrentMode();
+    });
+    show();
+  }
+}
+
+function syncSliders() {
+  for (const el of document.querySelectorAll('.slider')) {
+    const k = el.dataset.k;
+    const input = document.getElementById('s_' + k);
+    if (input) { input.value = P[k]; }
+    const dp = Number(el.dataset.step) < 1 ? 2 : 0;
+    const unit = META[k][1];
+    document.getElementById('v_' + k).textContent = Number(P[k]).toFixed(dp) + unit;
+  }
+}
+
+/// Emit the constants as Rust. This is the whole point of the tool.
+function emit() {
+  const f = (n, d = 1) => Number(n).toFixed(d);
+  document.getElementById('out').value =
+`// Tuned in tools/shatter-playground.html. Regenerate there, do not
+// hand-edit — the playground is the only place these were ever judged
+// against real motion, real scale and a live theme.
+
+/// Chips thrown when a brick is destroyed.
+pub const SHATTER_CHIPS: usize = ${P.chips};
+/// How hard they are thrown, in units/s.
+pub const SHATTER_SPEED: f32 = ${f(P.speed)};
+/// Half-angle of the cone around the ball's travel, in radians.
+///
+/// ⚠️ Chips go WITH the ball. A brick that sprays evenly in all directions
+/// reads as a generic puff; thrown along the impact it reads as the brick
+/// coming apart, which is what the plan means by "made of the brick".
+pub const SHATTER_SPREAD: f32 = ${f(P.spread * Math.PI / 180, 3)}; // ${P.spread}°
+/// Per-chip speed variation, as a fraction of SHATTER_SPEED.
+pub const SHATTER_JITTER: f32 = ${f(P.jitter / 100, 2)};
+
+/// Chip side length in field units, and its variation.
+pub const CHIP_SIZE: f32 = ${f(P.size, 1)};
+pub const CHIP_SIZE_VAR: f32 = ${f(P.sizevar / 100, 2)};
+/// Seconds a chip lives, and its variation.
+///
+/// ⚠️ The variation matters more than it looks: with a single lifetime the
+/// whole burst vanishes on one frame, which reads as a glitch rather than
+/// as settling.
+pub const CHIP_LIFE: f32 = ${f(P.life, 2)};
+pub const CHIP_LIFE_VAR: f32 = ${f(P.lifevar / 100, 2)};
+/// Downward acceleration on chips, units/s².
+pub const CHIP_GRAVITY: f32 = ${f(P.gravity)};
+
+/// Share of a full break thrown by a brick that SURVIVES the hit.
+///
+/// Damage and shatter are one system, partial — which is what keeps the
+/// reinforced-brick feedback cheap.
+pub const PARTIAL_SHARE: f32 = ${f(P.partial / 100, 2)};
+
+/// Peak screen-shake offset in field units, and how fast it decays.
+///
+/// ⚠️ Applied to the VIEWPORT only. Shake moves the drawing, never the
+/// field: a ball that collided with something it does not visually touch
+/// would be a real bug wearing an effect's clothes.
+/// ⚠️ The plan caps this near 4 units. Shake is the effect most likely to
+/// be too much, and it makes people motion-sick before they can say why.
+pub const SHAKE_UNITS: f32 = ${f(P.shake, 1)};
+pub const SHAKE_DECAY: f32 = ${f(P.shakedecay, 1)};
+`;
+}
+
+function setMode(m) {
+  mode = m;
+  for (const id of ['plain', 'reinf', 'armour', 'wave']) {
+    document.getElementById(id).classList.toggle('on', id === m);
+  }
+  pool.length = 0;
+  if (m === 'wave') { buildField(); }
+  fireCurrentMode();
+}
+
+document.getElementById('plain').onclick  = () => setMode('plain');
+document.getElementById('reinf').onclick  = () => setMode('reinf');
+document.getElementById('armour').onclick = () => setMode('armour');
+document.getElementById('wave').onclick   = () => setMode('wave');
+document.getElementById('auto').onclick = (e) => {
+  autoRepeat = !autoRepeat;
+  e.target.textContent = 'Auto-repeat: ' + (autoRepeat ? 'on' : 'off');
+  e.target.classList.toggle('on', autoRepeat);
+};
+
+document.getElementById('copy').onclick = async () => {
+  await navigator.clipboard.writeText(document.getElementById('out').value);
+  const s = document.getElementById('status');
+  s.textContent = 'copied';
+  setTimeout(() => s.textContent = '', 1400);
+};
+
+document.getElementById('load').onclick = () => {
+  // Read the constants back out of pasted Rust, so a round trip through the
+  // repo is not a one-way door.
+  const t = document.getElementById('out').value;
+  const grab = (name, fallback) => {
+    const m = t.match(new RegExp(name + '\\s*:\\s*\\w+\\s*=\\s*(-?[\\d.]+)'));
+    return m ? Number(m[1]) : fallback;
+  };
+  P.chips   = grab('SHATTER_CHIPS', P.chips);
+  P.speed   = grab('SHATTER_SPEED', P.speed);
+  P.spread  = Math.round(grab('SHATTER_SPREAD', P.spread * Math.PI / 180) * 180 / Math.PI);
+  P.jitter  = Math.round(grab('SHATTER_JITTER', P.jitter / 100) * 100);
+  P.size    = grab('CHIP_SIZE', P.size);
+  P.sizevar = Math.round(grab('CHIP_SIZE_VAR', P.sizevar / 100) * 100);
+  P.life    = grab('CHIP_LIFE', P.life);
+  P.lifevar = Math.round(grab('CHIP_LIFE_VAR', P.lifevar / 100) * 100);
+  P.gravity = grab('CHIP_GRAVITY', P.gravity);
+  P.partial = Math.round(grab('PARTIAL_SHARE', P.partial / 100) * 100);
+  P.shake   = grab('SHAKE_UNITS', P.shake);
+  P.shakedecay = grab('SHAKE_DECAY', P.shakedecay);
+  syncSliders(); emit();
+  const s = document.getElementById('status');
+  s.textContent = 'loaded';
+  setTimeout(() => s.textContent = '', 1400);
+};
+
+document.getElementById('reset').onclick = () => {
+  P = { ...DEFAULTS }; syncSliders(); emit(); pool.length = 0; fireCurrentMode();
+};
+
+// ---- theme ----
+function drawSwatches() {
+  const box = document.getElementById('themeswatches');
+  box.innerHTML = '';
+  for (const c of palette().concat([theme.foreground, theme.background])) {
+    const d = document.createElement('div');
+    d.className = 'sw'; d.style.background = c; d.title = c;
+    box.appendChild(d);
+  }
+}
+document.getElementById('pastetheme').onclick = () => {
+  const b = document.getElementById('themebox');
+  b.style.display = b.style.display === 'none' ? 'block' : 'none';
+};
+document.getElementById('resettheme').onclick = () => {
+  theme = { ...EVERFOREST }; drawSwatches();
+  document.getElementById('themestatus').textContent = 'everforest';
+};
+document.getElementById('applytheme').onclick = () => {
+  const txt = document.getElementById('themein').value;
+  let n = 0;
+  for (const line of txt.split('\n')) {
+    const m = line.match(/^\s*([a-z_]+)\s*=\s*['"]?(#?[0-9a-fA-F]{3,8})['"]?/);
+    if (m && m[1] in theme) { theme[m[1]] = m[2].startsWith('#') ? m[2] : '#' + m[2]; n++; }
+  }
+  drawSwatches();
+  document.getElementById('themestatus').textContent =
+    n ? `applied ${n} colours` : 'no colours found';
+};
+
+// ---- keys ----
+addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'TEXTAREA') return;
+  if (e.key === ' ') { e.preventDefault(); pool.length = 0; fireCurrentMode(); }
+  if (e.key === 'r') { buildField(); pool.length = 0; }
+  if (e.key === '1') setMode('plain');
+  if (e.key === '2') setMode('reinf');
+  if (e.key === '3') setMode('armour');
+  if (e.key === '4') setMode('wave');
+});
+
+stage.addEventListener('click', (e) => {
+  const r = stage.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width * FIELD_W;
+  const y = (e.clientY - r.top) / r.height * FIELD_H;
+  for (let i = 0; i < bricks.length; i++) {
+    const b = bricks[i];
+    if (!b.alive) continue;
+    if (x >= b.x && x <= b.x + BRICK_W && y >= b.y && y <= b.y + BRICK_H) {
+      // Throw from the ball toward the brick, as a real hit would.
+      const dx = b.x + BRICK_W / 2 - ball.x, dy = b.y + BRICK_H / 2 - ball.y;
+      const len = Math.hypot(dx, dy) || 1;
+      ball.vx = dx / len; ball.vy = dy / len;
+      lastBreak = i;
+      seedRng(Date.now() & 0xFFFF);
+      breakBrick(i, mode === 'wave' ? 'plain' : mode);
+      return;
+    }
+  }
+});
+
+buildField();
+buildSliders();
+drawSwatches();
+emit();
+setMode('plain');
+requestAnimationFrame(frame);
+</script>

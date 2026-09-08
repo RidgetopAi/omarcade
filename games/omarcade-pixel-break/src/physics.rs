@@ -134,6 +134,24 @@ fn record_trail(state: &mut GameState) {
 pub fn step_fixed(state: &mut GameState) {
     move_paddle(state);
 
+    // ⚠️ **Effects advance in EVERY phase, outside the match.** They were
+    // originally ticked inside the `Playing` arm, which looked right and
+    // was not: losing a ball moves the game to `Ready`, so the shake
+    // raised by `lose_life` was set and then never decayed — it kept
+    // shaking until the player launched again and re-entered `Playing`.
+    // Chips had the same bug, freezing mid-air on the Ready screen and
+    // forever on `Lost` or `Won`.
+    //
+    // A decaying effect is presentation, not simulation. It must run
+    // whenever time passes, and time passes in every phase. Reported from
+    // real play; no test caught it, because every effects test was written
+    // against a game already in `Playing`.
+    //
+    // Still on the FIXED step rather than the frame, so an arc tuned in
+    // the playground is the arc the player sees at any frame rate.
+    state.chips.update(FIXED_DT);
+    state.shake.tick(FIXED_DT);
+
     match state.phase {
         // Ball rides the paddle until launch.
         Phase::Ready => state.rest_ball_on_paddle(),
@@ -172,11 +190,6 @@ pub fn step_fixed(state: &mut GameState) {
             // the ball one frame behind the paddle it is stuck to, which
             // reads as the ball wobbling loose.
             state.tick_magnet(FIXED_DT);
-            // Chips and shake advance on the FIXED step, not the frame, so
-            // an arc tuned in the playground is the arc the player sees
-            // regardless of frame rate.
-            state.chips.update(FIXED_DT);
-            state.shake.tick(FIXED_DT);
             check_win(state);
         }
         Phase::Lost | Phase::Won => {}
@@ -2332,6 +2345,88 @@ mod effect_tests {
             step_fixed(&mut s);
         }
         assert!(s.chips.is_empty(), "{} chips outlived their life", s.chips.len());
+    }
+
+    // ---- ⚠️ effects must decay in EVERY phase ----
+
+    /// ⚠️ **The bug real play found.** `lose_life` raises the shake and
+    /// moves the game to `Ready`. With the effects ticked inside the
+    /// `Playing` arm, the shake was set and then never decayed — it kept
+    /// shaking until the player launched again, which could be forever.
+    ///
+    /// Every effects test before this one was written against a game
+    /// already in `Playing`, so twenty of them passed while the one phase
+    /// a player actually sits in was broken.
+    #[test]
+    fn shake_decays_while_waiting_to_launch() {
+        let mut s = playing();
+        s.lose_life();
+        assert_eq!(s.phase, Phase::Ready, "losing a ball should leave us waiting");
+        assert!(!s.shake.is_still(), "the lost ball should have shaken");
+
+        for _ in 0..240 {
+            step_fixed(&mut s);
+        }
+        assert_eq!(s.phase, Phase::Ready, "the test must stay in Ready");
+        assert!(
+            s.shake.is_still(),
+            "shake still running after a second in Ready: {} — it must be a timed \
+             event, not one that waits for the next launch",
+            s.shake.amount
+        );
+    }
+
+    /// The same for the two terminal phases: a game over must settle, not
+    /// sit there shaking.
+    #[test]
+    fn shake_decays_after_the_game_ends() {
+        for phase in [Phase::Lost, Phase::Won] {
+            let mut s = playing();
+            s.shake.add(SHAKE_UNITS);
+            s.phase = phase;
+            for _ in 0..240 {
+                step_fixed(&mut s);
+            }
+            assert!(s.shake.is_still(), "{phase:?} kept shaking: {}", s.shake.amount);
+        }
+    }
+
+    /// Chips had the same bug — they froze mid-air on the Ready screen
+    /// rather than falling and fading.
+    #[test]
+    fn chips_keep_falling_while_waiting_to_launch() {
+        let mut s = playing();
+        strike_first_brick(&mut s);
+        assert!(!s.chips.is_empty());
+
+        // Drop into Ready the way a lost ball does.
+        s.lose_life();
+        assert_eq!(s.phase, Phase::Ready);
+        // ⚠️ lose_life goes through rest_ball_on_paddle, not
+        // clear_level_effects, so the chips SHOULD still be there and
+        // should still be moving.
+        let before: Vec<_> = s.chips.particles().iter().map(|p| p.pos).collect();
+        assert!(!before.is_empty(), "a lost ball should not wipe the chips");
+
+        for _ in 0..12 {
+            step_fixed(&mut s);
+        }
+        let after: Vec<_> = s.chips.particles().iter().map(|p| p.pos).collect();
+        assert_ne!(before, after, "chips froze in mid-air while waiting to launch");
+    }
+
+    #[test]
+    fn chips_expire_while_waiting_to_launch() {
+        let mut s = playing();
+        strike_first_brick(&mut s);
+        s.lose_life();
+        assert_eq!(s.phase, Phase::Ready);
+
+        let ticks = ((crate::effects::CHIP_LIFE * 3.0) / FIXED_DT).ceil() as u32;
+        for _ in 0..ticks {
+            step_fixed(&mut s);
+        }
+        assert!(s.chips.is_empty(), "{} chips outlived their life in Ready", s.chips.len());
     }
 
     /// A long, busy run stays sane: no NaN, no unbounded pool, no panic.

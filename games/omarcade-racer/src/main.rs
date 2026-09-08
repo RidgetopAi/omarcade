@@ -118,6 +118,15 @@ struct Racer {
     bang: SoundId,
     /// A car going by, close.
     whoosh: SoundId,
+    /// The lights, and the sounds of banking time.
+    chime: SoundId,
+    /// The countdown digit shown on the last frame.
+    ///
+    /// The HUD counts `remaining.ceil()`, so a tick belongs on each
+    /// CHANGE of that number — the sound lands exactly when the digit
+    /// does, rather than on a timer of its own that would drift out of
+    /// step with what is on screen.
+    last_light: Option<u32>,
     /// Intensities for this frame's close passes, worst first.
     ///
     /// A frame can pass more than one car, but they would land on top of
@@ -171,6 +180,7 @@ impl Racer {
         surface: VoiceId,
         bang: SoundId,
         whoosh: SoundId,
+        chime: SoundId,
     ) -> Self {
         let art = Art::load(&theme);
         // The shipped course. `render::demo_track()` is still there and is
@@ -222,6 +232,8 @@ impl Racer {
             surface,
             bang,
             whoosh,
+            chime,
+            last_light: None,
             near: None,
             impact: None,
             engine_running: false,
@@ -293,6 +305,7 @@ impl Racer {
             self.surface,
             self.bang,
             self.whoosh,
+            self.chime,
         );
     }
 
@@ -542,6 +555,44 @@ impl Racer {
             audio.play_with(self.whoosh, intensity, 1.0);
         }
 
+        // The lights. A tick on each change of the digit the HUD is
+        // showing, so the sound and the number move together.
+        let light = match self.race.phase {
+            Phase::Countdown { remaining, .. } => Some(remaining.ceil().max(0.0) as u32),
+            _ => None,
+        };
+        if light != self.last_light {
+            // Only on the way DOWN, and never for the zero — the green
+            // light is its own sound, and a tick on top of it would read
+            // as a fourth count.
+            if let (Some(now), Some(was)) = (light, self.last_light) {
+                if now < was && now > 0 {
+                    audio.play_with(self.chime, 1.0, sound::Chimes::Tick.as_pitch());
+                }
+            } else if self.last_light.is_none() && light.is_some() {
+                // The first light, on the frame the countdown begins.
+                audio.play_with(self.chime, 1.0, sound::Chimes::Tick.as_pitch());
+            }
+            self.last_light = light;
+        }
+
+        // The events the HUD already flashes for, plus the two it does
+        // not: qualifying and finishing both deserve to be heard.
+        if let Some(event) = event {
+            let which = match event {
+                Event::GreenLight => Some(sound::Chimes::Go),
+                Event::Checkpoint { .. } => Some(sound::Chimes::Checkpoint),
+                Event::LapDone { .. } => Some(sound::Chimes::Lap),
+                Event::Finished { .. } | Event::Qualified { .. } => {
+                    Some(sound::Chimes::Finish)
+                }
+                Event::Over(_) => None,
+            };
+            if let Some(which) = which {
+                audio.play_with(self.chime, 1.0, which.as_pitch());
+            }
+        }
+
         // A crash ducks the engine away and lets it back over the
         // recovery window — which is derived from the tuning, so it is
         // already exactly as long as the player is out of control.
@@ -721,11 +772,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )));
     let bang = audio.register_sound(Box::new(sound::Crash::new()));
     let whoosh = audio.register_sound(Box::new(sound::Pass::new()));
+    let chime = audio.register_sound(Box::new(sound::Chime::new()));
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
         .run(
-            Racer::new(theme, engine, tyres, surface, bang, whoosh),
+            Racer::new(theme, engine, tyres, surface, bang, whoosh, chime),
             audio,
         )?;
 
@@ -754,6 +806,7 @@ mod tests {
             VoiceId::NONE,
             VoiceId::NONE,
             VoiceId::NONE,
+            SoundId::NONE,
             SoundId::NONE,
             SoundId::NONE,
         )
@@ -788,6 +841,7 @@ mod tests {
             VoiceId::NONE,
             VoiceId::NONE,
             VoiceId::NONE,
+            SoundId::NONE,
             SoundId::NONE,
             SoundId::NONE,
         );
@@ -1003,6 +1057,37 @@ mod tests {
         assert!(
             g.engine_running,
             "the voices went away while the wreck burned",
+        );
+    }
+
+    /// The countdown ticks once per light, and not on the green.
+    #[test]
+    fn the_lights_tick_with_the_digit_on_screen() {
+        // The HUD counts `remaining.ceil()`, so a tick belongs on each
+        // change of that number. Driving the countdown frame by frame
+        // should see exactly three distinct digits — 3, 2, 1 — and the
+        // green light is its own sound rather than a fourth tick.
+        let mut g = racer();
+        assert!(matches!(g.race.phase, Phase::Countdown { .. }), "fixture");
+
+        let mut seen = Vec::new();
+        for _ in 0..(race::COUNTDOWN_SECONDS * 70.0) as usize {
+            step(&mut g, 1.0 / 60.0);
+            if let Some(l) = g.last_light {
+                if seen.last() != Some(&l) {
+                    seen.push(l);
+                }
+            }
+            if !matches!(g.race.phase, Phase::Countdown { .. }) {
+                break;
+            }
+        }
+
+        // 3, 2, 1 — and 0 is never ticked, because GreenLight is.
+        assert_eq!(
+            seen,
+            vec![3, 2, 1],
+            "the lights should count 3, 2, 1 and leave the green to its own sound",
         );
     }
 

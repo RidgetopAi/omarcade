@@ -1061,6 +1061,365 @@ impl Voice for Pass {
     }
 }
 
+/// The chimes: the lights, and the sounds of banking time.
+///
+/// # One voice, five sounds
+///
+/// A countdown tick, the green light, a checkpoint, a lap and the
+/// finish. They share a voice because they share a shape — a short
+/// struck note, or two or three of them — and because only one can ever
+/// be sounding: you do not cross the line while the lights are counting.
+///
+/// # They are a family, not five unrelated noises
+///
+/// A checkpoint is two notes RISING, because time going up should sound
+/// like going up. A lap is the same shape a fifth higher with a third
+/// note on the end — "that again, bigger". The finish rises and then
+/// RESOLVES to the octave, which is what makes it sound finished rather
+/// than interrupted.
+///
+/// The lights are deliberately outside that family: single notes where
+/// the others are pairs, so a tick can never be mistaken for a
+/// checkpoint. And [`GO`](Chime::Go) is a CHORD where the ticks are
+/// single notes, so the ear reads it as a different kind of event
+/// instead of a fourth count.
+pub struct Chime {
+    which: Chimes,
+    t: f32,
+    alive: bool,
+    noise: u32,
+}
+
+/// Which of the five is sounding.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Chimes {
+    /// One of the countdown lights.
+    Tick,
+    /// The green light.
+    Go,
+    /// A checkpoint crossed, time banked.
+    Checkpoint,
+    /// A lap completed.
+    Lap,
+    /// The run finished.
+    Finish,
+}
+
+impl Chimes {
+    /// How this arrives through [`VoiceParams`], which carries floats.
+    pub fn as_pitch(self) -> f32 {
+        match self {
+            Chimes::Tick => 1.0,
+            Chimes::Go => 2.0,
+            Chimes::Checkpoint => 3.0,
+            Chimes::Lap => 4.0,
+            Chimes::Finish => 5.0,
+        }
+    }
+
+    fn from_pitch(p: f32) -> Chimes {
+        match p.round() as i32 {
+            2 => Chimes::Go,
+            3 => Chimes::Checkpoint,
+            4 => Chimes::Lap,
+            5 => Chimes::Finish,
+            _ => Chimes::Tick,
+        }
+    }
+}
+
+// Brian's tuning from `tools/sfx/chimes.html` — the first set he kept
+// unchanged, which is worth recording as its own result.
+const TICK_HZ: f32 = 700.0;
+const TICK_LEN: f32 = 0.14;
+const TICK_LEVEL: f32 = 0.34;
+
+const GO_HZ: f32 = 1180.0;
+const GO_LEN: f32 = 0.50;
+const GO_LEVEL: f32 = 0.46;
+/// The fifth stacked on top of GO. Zero would make it a higher tick.
+const GO_CHORD: f32 = 0.50;
+
+const CHECK_HZ: f32 = 620.0;
+/// A perfect fifth. Rising, because banking time should sound like it.
+const CHECK_INTERVAL: f32 = 1.5;
+const CHECK_GAP: f32 = 0.09;
+const CHECK_LEN: f32 = 0.24;
+const CHECK_LEVEL: f32 = 0.32;
+/// Harmonic content: 0 is a pure sine, 1 a reedy tone.
+const CHECK_TONE: f32 = 0.40;
+/// How far a lap sits above a checkpoint — another fifth.
+const LAP_LIFT: f32 = 1.5;
+const FINISH_LEN: f32 = 0.80;
+
+/// One struck note, summed into `out` starting at `start` seconds.
+///
+/// Struck, not switched on: a few milliseconds of attack so there is no
+/// click, then an exponential decay. Not `sin`, which is zero at t=0 and
+/// would fade every note in — the rumble tooth taught that one.
+/// One note of a chime: when it starts, what it plays, how it sounds.
+///
+/// Grouped rather than passed as five loose floats, because a call site
+/// reading `strike(out, sr, t0, 0.09, 930.0, 0.24, 0.32, 0.4)` tells a
+/// reader nothing about which number is which.
+#[derive(Clone, Copy)]
+struct Note {
+    /// Seconds after the chime began.
+    start: f32,
+    hz: f32,
+    len: f32,
+    level: f32,
+    /// Harmonic content: 0 is a pure sine, 1 a reedy tone.
+    tone: f32,
+}
+
+fn strike(out: &mut [f32], sample_rate: f32, t0: f32, note: Note) {
+    let Note { start, hz, len, level, tone } = note;
+    let dt = 1.0 / sample_rate;
+    for (i, sample) in out.iter_mut().enumerate() {
+        let t = t0 + i as f32 * dt - start;
+        if t < 0.0 || t >= len {
+            continue;
+        }
+        // A short attack so the note is struck rather than clicked on.
+        let attack = (t / 0.008).min(1.0);
+        let env = attack * (-t / (len * 0.35)).exp();
+
+        // A small harmonic stack: `tone` decides how reedy it is.
+        let mut v = (TAU * hz * t).sin();
+        let mut amp = tone;
+        for k in 2..6 {
+            if hz * k as f32 > sample_rate * 0.5 {
+                break;
+            }
+            v += amp * (TAU * hz * k as f32 * t).sin() / k as f32;
+            amp *= tone;
+        }
+
+        *sample += v * env * level;
+    }
+}
+
+impl Chime {
+    pub fn new() -> Chime {
+        Chime { which: Chimes::Tick, t: 0.0, alive: false, noise: 0x1357_9bdf }
+    }
+
+    /// How long this chime lasts, so the mixer can retire it.
+    fn length(which: Chimes) -> f32 {
+        match which {
+            Chimes::Tick => TICK_LEN,
+            Chimes::Go => GO_LEN,
+            Chimes::Checkpoint => CHECK_GAP + CHECK_LEN,
+            Chimes::Lap => CHECK_GAP * 2.0 + CHECK_LEN * 1.3,
+            Chimes::Finish => CHECK_GAP * 1.4 * 2.0 + FINISH_LEN,
+        }
+    }
+}
+
+impl Default for Chime {
+    fn default() -> Self {
+        Chime::new()
+    }
+}
+
+impl Voice for Chime {
+    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
+        for s in out.iter_mut() {
+            *s = 0.0;
+        }
+        if !self.alive {
+            return;
+        }
+        let _ = self.noise;
+
+        let t0 = self.t;
+        let sr = sample_rate;
+        match self.which {
+            Chimes::Tick => {
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: 0.0,
+                        hz: TICK_HZ,
+                        len: TICK_LEN,
+                        level: TICK_LEVEL,
+                        tone: 0.25,
+                    },
+                );
+            }
+            Chimes::Go => {
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: 0.0,
+                        hz: GO_HZ,
+                        len: GO_LEN,
+                        level: GO_LEVEL,
+                        tone: 0.35,
+                    },
+                );
+                // The fifth on top. This is what makes GO a chord and
+                // the ticks single notes.
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: 0.0,
+                        hz: GO_HZ * 1.5,
+                        len: GO_LEN * 0.9,
+                        level: GO_LEVEL * GO_CHORD,
+                        tone: 0.30,
+                    },
+                );
+            }
+            Chimes::Checkpoint => {
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: 0.0,
+                        hz: CHECK_HZ,
+                        len: CHECK_LEN,
+                        level: CHECK_LEVEL,
+                        tone: CHECK_TONE,
+                    },
+                );
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: CHECK_GAP,
+                        hz: CHECK_HZ * CHECK_INTERVAL,
+                        len: CHECK_LEN,
+                        level: CHECK_LEVEL,
+                        tone: CHECK_TONE,
+                    },
+                );
+            }
+            Chimes::Lap => {
+                let hz = CHECK_HZ * LAP_LIFT;
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: 0.0,
+                        hz,
+                        len: CHECK_LEN,
+                        level: CHECK_LEVEL,
+                        tone: CHECK_TONE,
+                    },
+                );
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: CHECK_GAP,
+                        hz: hz * CHECK_INTERVAL,
+                        len: CHECK_LEN,
+                        level: CHECK_LEVEL,
+                        tone: CHECK_TONE,
+                    },
+                );
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: CHECK_GAP * 2.0,
+                        hz: hz * CHECK_INTERVAL * CHECK_INTERVAL,
+                        len: CHECK_LEN * 1.3,
+                        level: CHECK_LEVEL,
+                        tone: CHECK_TONE,
+                    },
+                );
+            }
+            Chimes::Finish => {
+                let gap = CHECK_GAP * 1.4;
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: 0.0,
+                        hz: CHECK_HZ,
+                        len: FINISH_LEN * 0.4,
+                        level: CHECK_LEVEL,
+                        tone: CHECK_TONE,
+                    },
+                );
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: gap,
+                        hz: CHECK_HZ * CHECK_INTERVAL,
+                        len: FINISH_LEN * 0.4,
+                        level: CHECK_LEVEL,
+                        tone: CHECK_TONE,
+                    },
+                );
+                // Resolving to the octave is what makes it sound
+                // finished rather than cut off.
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: gap * 2.0,
+                        hz: CHECK_HZ * 2.0,
+                        len: FINISH_LEN,
+                        level: CHECK_LEVEL,
+                        tone: CHECK_TONE,
+                    },
+                );
+                strike(
+                    out,
+                    sr,
+                    t0,
+                    Note {
+                        start: gap * 2.0,
+                        hz: CHECK_HZ * 3.0,
+                        len: FINISH_LEN * 0.8,
+                        level: CHECK_LEVEL * 0.5,
+                        tone: CHECK_TONE,
+                    },
+                );
+            }
+        }
+
+        for s in out.iter_mut() {
+            *s = s.clamp(-1.0, 1.0);
+        }
+
+        self.t += out.len() as f32 / sample_rate;
+        if self.t > Chime::length(self.which) {
+            self.alive = false;
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.alive
+    }
+
+    /// `pitch` selects which of the five, via [`Chimes::as_pitch`].
+    fn retrigger(&mut self, _gain: f32, pitch: f32) {
+        self.which = Chimes::from_pitch(pitch);
+        self.t = 0.0;
+        self.alive = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1542,6 +1901,136 @@ mod tests {
         let mut buf = vec![0.0; (48_000.0 * PASS_LEN) as usize + 2_400];
         p.render(&mut buf, VoiceParams::SILENT, 48_000.0);
         assert!(!p.alive(), "a pass should end on its own");
+    }
+
+    fn render_chime(which: Chimes) -> Vec<f32> {
+        let mut c = Chime::new();
+        c.retrigger(1.0, which.as_pitch());
+        let mut buf = vec![0.0; 96_000];
+        c.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+        buf
+    }
+
+    fn peak_of(buf: &[f32]) -> f32 {
+        buf.iter().fold(0.0f32, |a, b| a.max(b.abs()))
+    }
+
+    #[test]
+    fn every_chime_can_be_heard_over_the_engine() {
+        // ⚠️ THE LESSON FROM THE PASS WHOOSH, applied before shipping
+        // rather than after. A one-shot that plays over a continuous
+        // voice is sized against that voice; tuned against silence, the
+        // whoosh measured a hundredth of the engine and Brian drove a
+        // full lap without hearing it once.
+        let mut engine = Engine::new();
+        let mut warm = vec![0.0; 48_000];
+        engine.render(&mut warm, VoiceParams::engine(0.8), 48_000.0);
+        engine.render(&mut warm, VoiceParams::engine(0.8), 48_000.0);
+        let engine_peak = peak_of(&warm);
+
+        for which in [
+            Chimes::Tick,
+            Chimes::Go,
+            Chimes::Checkpoint,
+            Chimes::Lap,
+            Chimes::Finish,
+        ] {
+            let peak = peak_of(&render_chime(which));
+            assert!(
+                peak > engine_peak * 0.25,
+                "{which:?} peaks at {peak} against an engine of {engine_peak} \
+                 — it will not be heard on track",
+            );
+        }
+    }
+
+    #[test]
+    fn each_chime_retires_itself() {
+        for which in [
+            Chimes::Tick,
+            Chimes::Go,
+            Chimes::Checkpoint,
+            Chimes::Lap,
+            Chimes::Finish,
+        ] {
+            let mut c = Chime::new();
+            c.retrigger(1.0, which.as_pitch());
+            let mut buf = vec![0.0; 96_000]; // two seconds
+            c.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+            assert!(!c.alive(), "{which:?} never ended");
+        }
+    }
+
+    #[test]
+    fn go_is_a_chord_and_a_tick_is_not() {
+        // The ear must never mistake the green light for a fourth count,
+        // and what separates them is that GO carries a SECOND NOTE.
+        //
+        // Measuring "richness" does not test that: a tick with a reedy
+        // timbre has plenty of harmonics too, and the first version of
+        // this test failed for exactly that reason — it was counting
+        // harmonics, not notes. So look for energy at GO's fifth
+        // specifically, which is not a harmonic of anything the tick
+        // plays.
+        let energy_at = |buf: &[f32], hz: f32| {
+            let n = buf.len().min(8_192);
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            for (i, s) in buf[..n].iter().enumerate() {
+                let a = TAU * hz * i as f32 / 48_000.0;
+                re += s * a.cos();
+                im -= s * a.sin();
+            }
+            (re * re + im * im).sqrt() / n as f32
+        };
+
+        let go = render_chime(Chimes::Go);
+        let fifth = energy_at(&go, GO_HZ * 1.5);
+        let root = energy_at(&go, GO_HZ);
+        assert!(
+            fifth > root * 0.2,
+            "GO's fifth ({fifth}) is missing against its root ({root}) — \
+             without it this is just a higher tick",
+        );
+
+        // And a tick really is one note: nothing at ITS fifth, which
+        // would be an interval rather than a harmonic.
+        let tick = render_chime(Chimes::Tick);
+        let tick_root = energy_at(&tick, TICK_HZ);
+        let tick_fifth = energy_at(&tick, TICK_HZ * 1.5);
+        assert!(
+            tick_fifth < tick_root * 0.2,
+            "a tick has energy at its fifth ({tick_fifth} against {tick_root}) — \
+             it is a chord too, and the two events will not be told apart",
+        );
+    }
+
+    #[test]
+    fn a_lap_sits_above_a_checkpoint() {
+        // "That again, bigger" — a lap is the checkpoint lifted, so it
+        // must actually be higher and longer, or the two are the same
+        // event to the ear.
+        assert!(LAP_LIFT > 1.0, "a lap must sit above a checkpoint");
+        let check = Chime::length(Chimes::Checkpoint);
+        let lap = Chime::length(Chimes::Lap);
+        let finish = Chime::length(Chimes::Finish);
+        assert!(lap > check, "a lap ({lap}s) should outlast a checkpoint ({check}s)");
+        assert!(finish > lap, "the finish ({finish}s) should outlast a lap ({lap}s)");
+    }
+
+    #[test]
+    fn no_chime_clips_or_goes_non_finite() {
+        for which in [
+            Chimes::Tick,
+            Chimes::Go,
+            Chimes::Checkpoint,
+            Chimes::Lap,
+            Chimes::Finish,
+        ] {
+            for s in render_chime(which) {
+                assert!(s.is_finite(), "{which:?} produced a non-finite sample");
+                assert!(s.abs() <= 1.0, "{which:?} clipped");
+            }
+        }
     }
 
     #[test]

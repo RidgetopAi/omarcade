@@ -3,6 +3,8 @@
 use omarcade_core::geom;
 #[path = "../src/physics.rs"]
 mod physics;
+#[path = "../src/items.rs"]
+mod items;
 #[path = "../src/state.rs"]
 mod state;
 

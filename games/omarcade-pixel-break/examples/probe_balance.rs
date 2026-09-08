@@ -19,6 +19,8 @@
 use omarcade_core::geom;
 #[path = "../src/physics.rs"]
 mod physics;
+#[path = "../src/items.rs"]
+mod items;
 #[path = "../src/state.rs"]
 mod state;
 
@@ -34,6 +36,8 @@ use state::{
 const PATIENCE_SECONDS: f32 = 900.0;
 
 struct Measured {
+    drops: u32,
+    caught: u32,
     level: u32,
     hits: u32,
     speed: f32,
@@ -54,6 +58,9 @@ fn measure(level: u32) -> Measured {
     s.launch();
 
     let hits = hits_to_clear(level);
+    let mut drops = 0u32;
+    let mut caught = 0u32;
+    let mut items_before = 0usize;
     let start_bricks = s.bricks_remaining();
     let mut ticks_to_90 = 0u32;
     let mut ticks = 0u32;
@@ -77,8 +84,17 @@ fn measure(level: u32) -> Measured {
             };
         }
 
+        let paddle_before = s.paddle.w;
         step_fixed(&mut s);
         ticks += 1;
+        // Count what appeared and what the paddle actually received.
+        if s.items.len() > items_before {
+            drops += (s.items.len() - items_before) as u32;
+        }
+        if s.paddle.w != paddle_before {
+            caught += 1;
+        }
+        items_before = s.items.len();
         if ticks_to_90 == 0 && s.bricks_remaining() * 10 <= start_bricks {
             ticks_to_90 = ticks;
         }
@@ -115,6 +131,8 @@ fn measure(level: u32) -> Measured {
         speed: ball_speed_for(level),
         seconds: ticks as f32 * FIXED_DT,
         seconds_to_90: ticks_to_90 as f32 * FIXED_DT,
+        drops,
+        caught,
         cleared,
         rows,
     }
@@ -127,23 +145,25 @@ fn main() {
     println!("  .  plain (1 hit)     #  reinforced (2)     =  armoured (4)");
     println!();
     println!(
-        "{:>3}  {:<13} {:>6} {:>8} {:>9} {:>8}",
-        "L", "rows", "hits", "speed", "seconds", "s/hit"
+        "{:>3}  {:<13} {:>6} {:>8} {:>9} {:>8} {:>7} {:>7}",
+        "L", "rows", "hits", "speed", "seconds", "s/hit", "drops", "caught"
     );
-    println!("{}", "-".repeat(56));
+    println!("{}", "-".repeat(72));
 
     let mut results = Vec::new();
     for level in 1..=LEVELS {
         let m = measure(level);
         let flag = if m.cleared { "" } else { "  <- NOT CLEARED" };
         println!(
-            "{:>3}  {:<13} {:>6} {:>8.0} {:>9.1} {:>8.3}{}",
+            "{:>3}  {:<13} {:>6} {:>8.0} {:>9.1} {:>8.3} {:>7} {:>7}{}",
             m.level,
             m.rows.trim_end(),
             m.hits,
             m.speed,
             m.seconds,
             m.seconds / m.hits as f32,
+            m.drops,
+            m.caught,
             flag
         );
         results.push(m);
@@ -173,11 +193,16 @@ fn main() {
     println!("a flawless run of all {LEVELS} levels: {:.0} seconds ({:.1} minutes)", total, total / 60.0);
     println!("⚠️ that is a FLOOR — a perfect paddle never misses. Real play is longer.");
     println!();
-    println!("⚠️ THE ENDGAME TAIL is the headline number here, not the totals. A third of the");
-    println!("   run is one ball hunting a nearly-empty field, and s/hit is WORST on the easy");
-    println!("   levels for exactly that reason — L2 is sparse for longer than L8 is. Power-ups");
-    println!("   (S5) and extra balls (S6) are what shorten it; re-run this after each and the");
-    println!("   tail percentage is the number that should fall.");
+    println!("⚠️ THE ENDGAME TAIL is the headline number here, not the totals. Much of the run");
+    println!("   is one ball hunting a nearly-empty field, and s/hit is WORST on the easy");
+    println!("   levels for exactly that reason — L2 is sparse for longer than L8 is.");
+    println!();
+    println!("⚠️ MEASURED AT S5: power-ups CUT THE DENSE PHASE BY 18% AND THE TAIL BY ONLY 8%,");
+    println!("   so the tail's SHARE of the run went UP (35% -> 38%) while the run itself got");
+    println!("   12 minutes shorter. That is not a failure, it is a diagnosis: a wider paddle");
+    println!("   returns more balls, it does not make ONE ball cover more field. The tail is a");
+    println!("   SEARCH problem, and only more balls searching at once can fix it — S6.");
+    println!("   Read the two phases separately; the single tail percentage hides this.");
     println!();
 
     // Anything that did not clear is a design problem, and worth an exit

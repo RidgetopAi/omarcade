@@ -18,6 +18,7 @@
 /// Re-exported under the old path so nothing else in the crate moved.
 use omarcade_core::geom;
 
+mod items;
 mod physics;
 mod render;
 mod state;

@@ -12,6 +12,7 @@ use omarcade_core::ease;
 use omarcade_core::text::{text, text_width, GLYPH_H};
 use omarcade_core::{Canvas, Color, Theme};
 
+use crate::items::Item;
 use crate::state::{Ball, Brick, GameState, Phase, Tier, FIELD_H, FIELD_W};
 
 /// Maps play-field coordinates onto the window.
@@ -101,6 +102,10 @@ pub fn draw(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
 
     vp.rect(state.paddle.rect(), canvas, theme.foreground);
 
+    for item in &state.items {
+        draw_item(item, canvas, theme, &vp);
+    }
+
     // Balls are hidden once the game is over — nothing is in play.
     if state.phase != Phase::Lost && state.phase != Phase::Won {
         // Every trail first, then every ball, so a ball is never drawn
@@ -120,6 +125,81 @@ pub fn draw(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
 
     draw_hud(state, canvas, theme, &vp);
     draw_phase_message(state, canvas, theme, &vp);
+}
+
+/// One falling power-up.
+///
+/// ⚠️ **An item must never be mistaken for a ball.** A player who dives for
+/// a falling bomb thinking it is the ball will call it a bug, and they will
+/// be right to. Three cues separate them, and no single one is trusted:
+///
+/// * **Shape.** Wide and flat — a capsule, twice as wide as tall — against
+///   the ball's small square.
+/// * **Motion.** Items fall straight down at roughly half ball speed, and
+///   they never bounce.
+/// * **No trail.** The trail is the ball's signature; nothing else has one.
+///
+/// A fourth cue separates the two KINDS from each other: a grow is drawn
+/// with a bar across it reading as "wider", a bomb with a gap reading as
+/// "cut". Colour agrees with that but never carries it alone — a player
+/// should not have to learn which colour is bad.
+fn draw_item(item: &Item, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
+    let r = item.rect();
+    let bad = item.kind.is_bad();
+
+    // ⚠️ **Colour is the weakest cue here and is never trusted alone.** Two
+    // attempts at picking theme slots both failed by LOOKING at them (the
+    // `items` scene in dump_frame): `green` resolved to the same yellow as
+    // brick row 3, and `magenta` came out a pink barely distinguishable from
+    // `red`. A game cannot choose what a theme puts in its slots, so any
+    // rule of the form "good is X, bad is Y" is one theme away from being
+    // wrong. What actually separates them is the GLYPH — an unbroken bar
+    // versus a bar with a bite out of it — and that is theme-proof.
+    //
+    // The border is what makes the glyph legible against whatever the body
+    // colour turns out to be, and it is why an item never disappears into a
+    // brick row even when their colours collide.
+    let body = if bad { theme.red } else { theme.green };
+
+    // A dark surround first, one unit proud on every side, so the item has
+    // an edge no matter what is behind it.
+    canvas.fill_rect_f(
+        vp.fx(r.x - 2.0),
+        vp.fy(r.y - 2.0),
+        vp.flen(r.w + 4.0),
+        vp.flen(r.h + 4.0),
+        theme.background,
+    );
+    canvas.fill_rect_f(vp.fx(r.x), vp.fy(r.y), vp.flen(r.w), vp.flen(r.h), body);
+
+    // The glyph inside: a bar that spans the item for a grow, a bar with a
+    // bite out of the middle for a bomb.
+    let mark = theme.background.with_alpha(200);
+    let bar_h = (r.h * 0.22).max(1.0);
+    let bar_y = r.y + r.h * 0.5 - bar_h * 0.5;
+    let inset = r.w * 0.18;
+
+    if bad {
+        // Two stubs with a gap — the paddle, cut.
+        let seg = (r.w - inset * 2.0) * 0.32;
+        canvas.fill_rect_f(vp.fx(r.x + inset), vp.fy(bar_y), vp.flen(seg), vp.flen(bar_h), mark);
+        canvas.fill_rect_f(
+            vp.fx(r.x + r.w - inset - seg),
+            vp.fy(bar_y),
+            vp.flen(seg),
+            vp.flen(bar_h),
+            mark,
+        );
+    } else {
+        // One unbroken bar — the paddle, whole and wide.
+        canvas.fill_rect_f(
+            vp.fx(r.x + inset),
+            vp.fy(bar_y),
+            vp.flen(r.w - inset * 2.0),
+            vp.flen(bar_h),
+            mark,
+        );
+    }
 }
 
 /// One brick, with its damage written into its shape.

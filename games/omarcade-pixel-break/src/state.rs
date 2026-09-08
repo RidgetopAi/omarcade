@@ -7,6 +7,7 @@
 //! until that situation happens.
 
 use crate::geom::{Rect, Vec2};
+use crate::items::{Dropper, Item, ItemKind, BOMB_SCALE};
 
 /// Play-field size in logical units.
 ///
@@ -255,6 +256,20 @@ pub struct GameState {
     /// the simulation never sets it, so the headless harnesses see 0 and
     /// stay deterministic.
     pub best: u32,
+    /// Power-ups currently falling.
+    pub items: Vec<Item>,
+    /// Decides what drops. Seeded, so a probe run is reproducible.
+    pub dropper: Dropper,
+    /// ⚠️ **Grow and bomb are ONE axis, not two effects.** A single scale
+    /// with a single timer, driven by whichever was caught last. Two
+    /// independent effects would contradict each other the moment a bomb
+    /// landed on a grown paddle, and there is no reading of "half grown and
+    /// also shrunk" that a player would guess right.
+    ///
+    /// 1.0 is the base width. Above is a grow, below is a bomb.
+    pub paddle_scale: f32,
+    /// Seconds left on `paddle_scale` before it returns to 1.0.
+    pub paddle_effect_left: f32,
 }
 
 impl GameState {
@@ -277,6 +292,10 @@ impl GameState {
             level: 1,
             phase: Phase::Ready,
             best: 0,
+            items: Vec::new(),
+            dropper: Dropper::default(),
+            paddle_scale: 1.0,
+            paddle_effect_left: 0.0,
         };
         state.rest_ball_on_paddle();
         state
@@ -391,6 +410,81 @@ impl GameState {
         paddle_speed_for(self.level)
     }
 
+    /// Apply a caught item.
+    ///
+    /// ⚠️ **A bomb caught while grown CANCELS the grow** rather than
+    /// stacking into a double-negative. It is the simplest rule to explain
+    /// and the only one a player guesses right: the last thing you caught is
+    /// the thing you have.
+    ///
+    /// ⚠️ **Grow stacks DURATION, not size.** Catching a second grow while
+    /// grown extends the timer and takes the larger of the two widths — it
+    /// never multiplies, or two lucky catches would make the paddle absurd
+    /// and a third would fill the field.
+    pub fn apply_item(&mut self, kind: ItemKind) {
+        match kind {
+            ItemKind::Grow(strength) => {
+                let already_grown = self.paddle_scale > 1.0;
+                self.paddle_scale = if already_grown {
+                    self.paddle_scale.max(strength.scale())
+                } else {
+                    // Growing out of a bomb replaces it outright.
+                    strength.scale()
+                };
+                self.paddle_effect_left = if already_grown {
+                    self.paddle_effect_left + strength.seconds()
+                } else {
+                    strength.seconds()
+                };
+            }
+            ItemKind::Bomb => {
+                self.paddle_scale = BOMB_SCALE;
+                self.paddle_effect_left = kind.seconds();
+            }
+        }
+        self.resize_paddle();
+    }
+
+    /// Set the paddle's width from `paddle_scale`, clamped at both ends.
+    ///
+    /// ⚠️ Never wider than the field and never narrower than the ball, and
+    /// both ends are tested. A paddle wider than the field cannot be moved
+    /// meaningfully; one narrower than the ball makes a return a coin flip
+    /// that no amount of skill improves.
+    ///
+    /// Resizing keeps the paddle CENTRED on where it already was, so an
+    /// item caught at the edge of the field does not teleport the paddle.
+    pub fn resize_paddle(&mut self) {
+        let centre = self.paddle.center_x();
+        let want = PADDLE_W * self.paddle_scale;
+        self.paddle.w = want.clamp(BALL_RADIUS * 2.0, FIELD_W);
+        self.paddle.x = (centre - self.paddle.w / 2.0).clamp(0.0, FIELD_W - self.paddle.w);
+    }
+
+    /// Count down the paddle effect and return the paddle to normal when it
+    /// runs out.
+    pub fn tick_paddle_effect(&mut self, dt: f32) {
+        if self.paddle_effect_left <= 0.0 {
+            return;
+        }
+        self.paddle_effect_left -= dt;
+        if self.paddle_effect_left <= 0.0 {
+            self.paddle_effect_left = 0.0;
+            self.paddle_scale = 1.0;
+            self.resize_paddle();
+        }
+    }
+
+    /// Drop everything the level was carrying: falling items and any paddle
+    /// effect. Called wherever a level ends, so last level's bomb does not
+    /// follow the player into the next one.
+    pub fn clear_level_effects(&mut self) {
+        self.items.clear();
+        self.paddle_scale = 1.0;
+        self.paddle_effect_left = 0.0;
+        self.resize_paddle();
+    }
+
     /// Clear the field: advance to the next level, or win the game.
     ///
     /// Lives, score and the best carry forward; the ball collapses back to
@@ -403,6 +497,7 @@ impl GameState {
         }
         self.level += 1;
         self.bricks = build_bricks(self.level);
+        self.clear_level_effects();
         self.phase = Phase::Ready;
         self.rest_ball_on_paddle();
     }

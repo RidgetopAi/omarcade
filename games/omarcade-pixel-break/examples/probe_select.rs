@@ -1,5 +1,7 @@
 //! Which brick does the selection loop pick, and is the comparison right?
 use omarcade_core::geom;
+#[path = "../src/items.rs"]
+mod items;
 #[path = "../src/state.rs"]
 mod state;
 use geom::{Axis, Rect, Vec2};

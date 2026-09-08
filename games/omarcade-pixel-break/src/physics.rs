@@ -154,6 +154,8 @@ pub fn step_fixed(state: &mut GameState) {
             // Draining is per ball; losing a life is per empty field.
             // Both happen only once every ball has had its tick.
             state.retire_drained_balls();
+            move_items(state);
+            state.tick_paddle_effect(FIXED_DT);
             check_win(state);
         }
         Phase::Lost | Phase::Won => {}
@@ -319,6 +321,18 @@ fn collide_bricks(state: &mut GameState, index: usize) {
     let destroyed = state.bricks[hit].hit();
     state.score += if destroyed { 10 } else { 5 };
 
+    // ⚠️ Only a FINAL hit rolls for a drop. Rolling on every hit would make
+    // an armoured brick roll four times, so the late levels — the ones with
+    // armour — would rain power-ups exactly where the player has earned the
+    // least help.
+    if destroyed {
+        let level = state.level;
+        let levels = crate::state::LEVELS;
+        if let Some(item) = state.dropper.roll(brick_rect.center(), level, levels) {
+            state.items.push(item);
+        }
+    }
+
     let ball = &mut state.balls[index];
 
     // Push out along the collision axis, then reflect that component.
@@ -367,6 +381,42 @@ fn clamp_angle(vel: &mut Vec2) {
         let vy = min_vy;
         let vx = (speed * speed - vy * vy).max(0.0).sqrt();
         *vel = Vec2::new(sign_x * vx, sign_y * vy);
+    }
+}
+
+/// Fall, catch, and forget.
+///
+/// ⚠️ An item that reaches the bottom is **missed harmlessly** — it is not
+/// a ball and losing it costs nothing. The plan is explicit that an uncaught
+/// item must never be mistaken for a ball, and punishing a miss would teach
+/// exactly the wrong reflex: diving for a falling bomb.
+fn move_items(state: &mut GameState) {
+    if state.items.is_empty() {
+        return;
+    }
+
+    let paddle = state.paddle.rect();
+    let floor = state.field().bottom();
+    let mut caught: Vec<crate::items::ItemKind> = Vec::new();
+
+    // Walk backwards so removal keeps the earlier indices valid — the same
+    // shape as retiring drained balls.
+    for i in (0..state.items.len()).rev() {
+        state.items[i].pos.y += crate::items::FALL_SPEED * FIXED_DT;
+
+        if state.items[i].rect().overlaps(&paddle) {
+            caught.push(state.items[i].kind);
+            state.items.remove(i);
+        } else if state.items[i].pos.y - crate::items::ITEM_H > floor {
+            state.items.remove(i);
+        }
+    }
+
+    // Applied after the sweep so a catch cannot disturb the vec mid-walk.
+    // Reversed back into fall order: two items caught in one tick apply
+    // oldest-first, so the newer one wins the paddle axis.
+    for kind in caught.into_iter().rev() {
+        state.apply_item(kind);
     }
 }
 
@@ -1247,6 +1297,370 @@ mod level_tests {
         let fast = s.balls[0].vel.length();
 
         assert!(fast > slow, "level {LEVELS} launch {fast} vs level 1 {slow}");
+    }
+}
+
+#[cfg(test)]
+mod item_tests {
+    use super::*;
+    use crate::items::{Item, ItemKind, Strength, BOMB_SCALE, FALL_SPEED, ITEM_H};
+    use crate::state::{BALL_RADIUS, FIELD_H, FIELD_W, PADDLE_W};
+
+    fn playing() -> GameState {
+        let mut s = GameState::new();
+        s.launch();
+        s
+    }
+
+    fn drop_at(s: &mut GameState, x: f32, y: f32, kind: ItemKind) {
+        s.items.push(Item::new(Vec2::new(x, y), kind));
+    }
+
+    // ---- falling and catching ----
+
+    #[test]
+    fn an_item_falls_straight_down() {
+        let mut s = playing();
+        drop_at(&mut s, 400.0, 200.0, ItemKind::Bomb);
+        let before = s.items[0].pos;
+        step_fixed(&mut s);
+        let after = s.items[0].pos;
+        assert_eq!(after.x, before.x, "items must not drift sideways");
+        assert!((after.y - before.y - FALL_SPEED * FIXED_DT).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_paddle_catches_an_item_and_it_takes_effect() {
+        let mut s = playing();
+        let p = s.paddle.rect();
+        drop_at(&mut s, p.center().x, p.center().y, ItemKind::Grow(Strength::Medium));
+
+        step_fixed(&mut s);
+
+        assert!(s.items.is_empty(), "a caught item leaves the field");
+        assert!(s.paddle.w > PADDLE_W, "and the paddle grew");
+        assert!(s.paddle_effect_left > 0.0);
+    }
+
+    /// ⚠️ A missed item costs NOTHING. Punishing a miss would teach exactly
+    /// the wrong reflex — diving for a falling bomb.
+    #[test]
+    fn a_missed_item_is_harmless() {
+        let mut s = playing();
+        let lives = s.lives;
+        drop_at(&mut s, 100.0, FIELD_H - 20.0, ItemKind::Grow(Strength::Large));
+
+        for _ in 0..240 {
+            step_fixed(&mut s);
+        }
+
+        assert!(s.items.is_empty(), "it fell off the bottom");
+        assert_eq!(s.lives, lives, "and cost nothing");
+        assert_eq!(s.paddle.w, PADDLE_W, "and had no effect");
+    }
+
+    #[test]
+    fn several_items_fall_and_are_caught_independently() {
+        let mut s = playing();
+        let p = s.paddle.rect();
+        drop_at(&mut s, p.center().x, p.center().y, ItemKind::Grow(Strength::Small));
+        drop_at(&mut s, 60.0, 100.0, ItemKind::Bomb);
+        drop_at(&mut s, 900.0, 100.0, ItemKind::Bomb);
+
+        step_fixed(&mut s);
+
+        assert_eq!(s.items.len(), 2, "only the one on the paddle was caught");
+        assert!(s.paddle.w > PADDLE_W);
+    }
+
+    // ---- drops come only from final hits ----
+
+    /// ⚠️ An armoured brick takes four hits. Rolling on each would make the
+    /// late levels rain power-ups exactly where the player earned the least.
+    #[test]
+    fn only_a_final_hit_can_drop_an_item() {
+        let mut s = playing();
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+        s.bricks[0].tier = crate::state::Tier::Armoured;
+        s.bricks[0].hits = 4;
+        let target = s.bricks[0].rect;
+
+        // The first three hits are chips: no drop is even rolled for.
+        for _ in 0..3 {
+            s.balls[0].pos = target.center();
+            s.balls[0].vel = Vec2::new(0.0, -100.0);
+            collide_bricks(&mut s, 0);
+            assert!(s.items.is_empty(), "a chip must never drop an item");
+        }
+        assert_eq!(s.bricks[0].hits, 1, "three chips taken");
+    }
+
+    /// Over many final hits the drop rate lands near the stated chance, and
+    /// the items land where the brick was.
+    #[test]
+    fn final_hits_drop_at_roughly_the_stated_rate() {
+        let mut s = playing();
+        let mut drops = 0;
+        let trials = 600;
+
+        for _ in 0..trials {
+            s.bricks = crate::state::build_bricks(1);
+            for b in &mut s.bricks[1..] {
+                b.hits = 0;
+            }
+            s.items.clear();
+            let target = s.bricks[0].rect;
+            s.balls[0].pos = target.center();
+            s.balls[0].vel = Vec2::new(0.0, -100.0);
+            collide_bricks(&mut s, 0);
+            if let Some(item) = s.items.first() {
+                drops += 1;
+                assert!(
+                    (item.pos.x - target.center().x).abs() < 1.0,
+                    "an item must appear where its brick was"
+                );
+            }
+        }
+
+        let rate = drops as f32 / trials as f32;
+        assert!(
+            (rate - crate::items::DROP_CHANCE_LOW).abs() < 0.06,
+            "level 1 drop rate {rate:.3} vs stated {:.3}",
+            crate::items::DROP_CHANCE_LOW
+        );
+    }
+
+    // ---- the paddle axis ----
+
+    #[test]
+    fn a_grow_widens_and_a_bomb_narrows() {
+        let mut s = playing();
+        s.apply_item(ItemKind::Grow(Strength::Large));
+        assert!(s.paddle.w > PADDLE_W);
+
+        let mut s = playing();
+        s.apply_item(ItemKind::Bomb);
+        assert!(s.paddle.w < PADDLE_W);
+        assert!((s.paddle.w - PADDLE_W * BOMB_SCALE).abs() < 0.01);
+    }
+
+    /// ⚠️ A bomb caught while grown CANCELS the grow — it does not stack
+    /// into a double-negative. The last thing you caught is what you have.
+    #[test]
+    fn a_bomb_cancels_a_grow_rather_than_compounding_it() {
+        let mut s = playing();
+        s.apply_item(ItemKind::Grow(Strength::Large));
+        let grown = s.paddle.w;
+        assert!(grown > PADDLE_W);
+
+        s.apply_item(ItemKind::Bomb);
+
+        assert!((s.paddle.w - PADDLE_W * BOMB_SCALE).abs() < 0.01, "plain bomb width");
+        assert!(s.paddle.w < PADDLE_W);
+        assert!(s.paddle.w > PADDLE_W * BOMB_SCALE * 0.9, "not compounded smaller");
+    }
+
+    /// ⚠️ Grow stacks DURATION, not size. Two catches last longer; they do
+    /// not multiply into a paddle that fills the field.
+    #[test]
+    fn a_second_grow_extends_the_timer_without_multiplying_the_width() {
+        let mut s = playing();
+        s.apply_item(ItemKind::Grow(Strength::Medium));
+        let w1 = s.paddle.w;
+        let t1 = s.paddle_effect_left;
+
+        s.apply_item(ItemKind::Grow(Strength::Medium));
+
+        assert!((s.paddle.w - w1).abs() < 0.01, "width must not stack");
+        assert!(s.paddle_effect_left > t1, "duration must stack");
+    }
+
+    #[test]
+    fn a_bigger_grow_caught_while_grown_takes_the_larger_width() {
+        let mut s = playing();
+        s.apply_item(ItemKind::Grow(Strength::Small));
+        let small = s.paddle.w;
+        s.apply_item(ItemKind::Grow(Strength::Large));
+        assert!(s.paddle.w > small, "the larger grow wins");
+
+        // And the reverse does not shrink it.
+        let large = s.paddle.w;
+        s.apply_item(ItemKind::Grow(Strength::Small));
+        assert!((s.paddle.w - large).abs() < 0.01, "a smaller grow must not shrink");
+    }
+
+    #[test]
+    fn the_effect_expires_and_the_paddle_returns_to_normal() {
+        let mut s = playing();
+        s.apply_item(ItemKind::Bomb);
+        assert!(s.paddle.w < PADDLE_W);
+
+        s.tick_paddle_effect(crate::items::BOMB_SECONDS + 0.1);
+
+        assert_eq!(s.paddle.w, PADDLE_W);
+        assert_eq!(s.paddle_scale, 1.0);
+        assert_eq!(s.paddle_effect_left, 0.0);
+    }
+
+    /// ⚠️ Both ends clamped. Wider than the field cannot be moved; narrower
+    /// than the ball makes a return a coin flip that skill cannot improve.
+    #[test]
+    fn the_paddle_never_leaves_its_sane_range() {
+        let mut s = playing();
+        for scale in [0.0, 0.01, 0.1, 1.0, 5.0, 50.0, 1000.0] {
+            s.paddle_scale = scale;
+            s.resize_paddle();
+            assert!(s.paddle.w >= BALL_RADIUS * 2.0, "scale {scale}: too narrow");
+            assert!(s.paddle.w <= FIELD_W, "scale {scale}: wider than the field");
+            assert!(s.paddle.x >= 0.0, "scale {scale}: off the left");
+            assert!(s.paddle.x + s.paddle.w <= FIELD_W + 0.01, "scale {scale}: off the right");
+        }
+    }
+
+    #[test]
+    fn resizing_keeps_the_paddle_where_it_was() {
+        let mut s = playing();
+        s.paddle.x = 500.0;
+        let centre = s.paddle.center_x();
+        s.apply_item(ItemKind::Grow(Strength::Large));
+        assert!((s.paddle.center_x() - centre).abs() < 0.01, "the paddle must not jump");
+    }
+
+    // ---- ⚠️ the one the plan warns about: does a narrow paddle break the ball? ----
+
+    /// ⚠️ `bounce_off_paddle` divides by `paddle.w / 2.0`, so a narrow paddle
+    /// steers HARDER. That is welcome emergent difficulty — but it must not
+    /// push outgoing angles so far that the ball starts behaving strangely
+    /// rather than the paddle just being small.
+    ///
+    /// The invariants that protect the game are speed and the vertical
+    /// clamp, and both must survive a bombed paddle at every strike point.
+    #[test]
+    fn a_bombed_paddle_never_distorts_the_ball() {
+        for scale in [BOMB_SCALE, 0.3, 0.1] {
+            let mut s = playing();
+            s.paddle_scale = scale;
+            s.resize_paddle();
+            let speed = s.ball_speed();
+
+            // Strike across the whole face, edge to edge.
+            for i in 0..=20 {
+                let t = i as f32 / 20.0;
+                let x = s.paddle.x + s.paddle.w * t;
+                s.balls[0].pos = Vec2::new(x, s.paddle.rect().top() - BALL_RADIUS + 0.5);
+                s.balls[0].vel = Vec2::new(0.0, 200.0);
+
+                let paddle = s.paddle;
+                collide_paddle(&mut s.balls[0], &paddle, speed);
+
+                let v = s.balls[0].vel;
+                assert!(v.x.is_finite() && v.y.is_finite(), "scale {scale} t {t}: NaN");
+                assert!(
+                    (v.length() - speed).abs() < 0.5,
+                    "scale {scale} t {t}: speed {} drifted from {speed}",
+                    v.length()
+                );
+                assert!(v.y < 0.0, "scale {scale} t {t}: must bounce upward");
+                // The clamp must still hold: no skimming.
+                assert!(
+                    v.y.abs() / v.length() >= 0.24,
+                    "scale {scale} t {t}: too shallow at {:.3}",
+                    v.y.abs() / v.length()
+                );
+            }
+        }
+    }
+
+    /// A narrow paddle SHOULD steer harder — that is the difficulty. This
+    /// pins the direction so a future change cannot quietly invert it.
+    #[test]
+    fn a_narrow_paddle_steers_harder_than_a_wide_one() {
+        let angle_at = |scale: f32| {
+            let mut s = playing();
+            s.paddle_scale = scale;
+            s.resize_paddle();
+            let speed = s.ball_speed();
+            // Strike a quarter of the way out from centre, in field units,
+            // so both paddles are hit at the same PLACE, not the same ratio.
+            let x = s.paddle.center_x() + 20.0;
+            s.balls[0].pos = Vec2::new(x, s.paddle.rect().top() - BALL_RADIUS + 0.5);
+            s.balls[0].vel = Vec2::new(0.0, 200.0);
+            let paddle = s.paddle;
+            collide_paddle(&mut s.balls[0], &paddle, speed);
+            s.balls[0].vel.x.abs()
+        };
+
+        assert!(
+            angle_at(BOMB_SCALE) > angle_at(1.8),
+            "a bombed paddle should steer more sharply than a grown one"
+        );
+    }
+
+    // ---- level boundaries ----
+
+    /// Last level's bomb must not follow the player into the next one.
+    #[test]
+    fn advancing_a_level_clears_items_and_the_paddle_effect() {
+        let mut s = playing();
+        s.apply_item(ItemKind::Bomb);
+        drop_at(&mut s, 300.0, 200.0, ItemKind::Grow(Strength::Large));
+        assert!(s.paddle.w < PADDLE_W);
+
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+        check_win(&mut s);
+
+        assert_eq!(s.level, 2);
+        assert!(s.items.is_empty(), "falling items do not cross levels");
+        assert_eq!(s.paddle.w, PADDLE_W, "and neither does a paddle effect");
+        assert_eq!(s.paddle_effect_left, 0.0);
+    }
+
+    #[test]
+    fn restarting_clears_items_and_the_paddle_effect() {
+        let mut s = playing();
+        s.apply_item(ItemKind::Grow(Strength::Large));
+        drop_at(&mut s, 300.0, 200.0, ItemKind::Bomb);
+        s.restart();
+        assert!(s.items.is_empty());
+        assert_eq!(s.paddle.w, PADDLE_W);
+    }
+
+    /// Items must not fall, be caught, or expire outside Playing.
+    #[test]
+    fn items_are_frozen_outside_play() {
+        let mut s = playing();
+        drop_at(&mut s, 400.0, 200.0, ItemKind::Bomb);
+        s.phase = Phase::Lost;
+        let before = s.items[0].pos;
+        for _ in 0..60 {
+            step_fixed(&mut s);
+        }
+        assert_eq!(s.items[0].pos, before, "a finished game does not keep dropping");
+    }
+
+    /// A long soak with drops enabled: nothing leaks, nothing NaNs, and the
+    /// paddle stays in range the whole time.
+    #[test]
+    fn a_long_run_with_drops_stays_sane() {
+        let mut s = playing();
+        let mut acc = Accumulator::new();
+        for _ in 0..4000 {
+            let target = s.balls.iter().map(|b| b.pos.x).next().unwrap_or(FIELD_W / 2.0);
+            let c = s.paddle.center_x();
+            s.paddle.dir = if (target - c).abs() < 4.0 { 0.0 } else if target > c { 1.0 } else { -1.0 };
+            step(&mut s, &mut acc, 1.0 / 60.0);
+
+            assert!(s.paddle.w >= BALL_RADIUS * 2.0 && s.paddle.w <= FIELD_W);
+            assert!(s.paddle.x >= 0.0 && s.paddle.x + s.paddle.w <= FIELD_W + 0.01);
+            for it in &s.items {
+                assert!(it.pos.x.is_finite() && it.pos.y.is_finite());
+                assert!(it.pos.y - ITEM_H <= FIELD_H + 50.0, "an item outlived the field");
+            }
+        }
     }
 }
 

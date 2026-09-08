@@ -5,6 +5,8 @@ use omarcade_core::geom;
 mod physics;
 #[path = "../src/render.rs"]
 mod render;
+#[path = "../src/items.rs"]
+mod items;
 #[path = "../src/state.rs"]
 mod state;
 
@@ -146,6 +148,34 @@ fn main() {
                 b.hits = max - taken;
             }
             s.phase = state::Phase::Playing;
+        }
+        // Items falling beside balls, which is the comparison that matters:
+        // ⚠️ an uncaught item must never be mistaken for a ball.
+        "items" => {
+            s.launch();
+            s.level = 6;
+            // Two balls, so there is something to confuse them with.
+            s.spawn_ball(geom::Vec2::new(300.0, 380.0), geom::Vec2::new(120.0, -260.0));
+            for _ in 0..90 {
+                physics::step_fixed(&mut s);
+            }
+            fill_trail(&mut s);
+            // A spread of items at different heights, both kinds.
+            let kinds = [
+                items::ItemKind::Grow(items::Strength::Small),
+                items::ItemKind::Bomb,
+                items::ItemKind::Grow(items::Strength::Large),
+                items::ItemKind::Bomb,
+                items::ItemKind::Grow(items::Strength::Medium),
+            ];
+            for (i, kind) in kinds.into_iter().enumerate() {
+                s.items.push(items::Item::new(
+                    geom::Vec2::new(150.0 + i as f32 * 150.0, 300.0 + i as f32 * 70.0),
+                    kind,
+                ));
+            }
+            // And show a grown paddle, since that is what catching one does.
+            s.apply_item(items::ItemKind::Grow(items::Strength::Large));
         }
         "won" => { for b in &mut s.bricks { b.hits = 0; } s.phase = state::Phase::Won; s.score = 600; s.best = 600; }
         "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.score = 250; s.best = 980; }

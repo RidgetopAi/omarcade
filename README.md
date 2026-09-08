@@ -6,13 +6,13 @@ Not emulation and not clones of anyone's ROMs — small games written from
 scratch in Rust, drawing straight into a pixel buffer, that read your active
 Omarchy theme and idle at roughly nothing when you're not playing.
 
-**Status:** early, but real. Three games (Breakout, Pong and Omaprix, a
+**Status:** early, but real. Three games (Pixel Break, Pong and Omaprix, a
 pseudo-3D racer) are playable and tested, the shared engine underneath them
 is the actual work, and the cross-game marquee is live in the Omarchy bar.
 
-![Omarcade Breakout](docs/breakout.png)
+![Pixel Break](docs/pixel-break.png)
 
-*Breakout, drawing itself in the active Omarchy theme.*
+*Pixel Break, drawing itself in the active Omarchy theme.*
 
 ![Omarcade Pong](docs/pong.png)
 
@@ -50,10 +50,10 @@ echo 'require("hypr.omarcade")' >> ~/.config/hypr/hyprland.lua
 
 ---
 
-## Breakout
+## Pixel Break
 
 ```bash
-omarcade-breakout
+omarcade-pixel-break
 ```
 
 | Key | Action |
@@ -143,7 +143,7 @@ core/src/geom.rs                Vec2, Rect, AABB overlap, collision axis
 core/src/ease.rs                easing curves, lerp, Decay
 core/src/scores.rs              the score contract the marquee reads
 core/src/theme.rs               reads your live Omarchy palette, always falls back
-games/omarcade-breakout/src/
+games/omarcade-pixel-break/src/
   state.rs     world model, no behaviour
   physics.rs   fixed 240Hz timestep + collision — the only file that advances time
   render.rs    letterboxed viewport, bitmap-font HUD
@@ -172,7 +172,7 @@ live inside the bar — only the marquee can.
 ```bash
 cargo test --workspace     # 67 tests
 cargo clippy --workspace
-cargo run -p omarcade-breakout
+cargo run -p omarcade-pixel-break
 ```
 
 The game is also driven headlessly, which is how it gets tested without a
@@ -181,17 +181,17 @@ physics run against a plain buffer:
 
 ```bash
 # Simulate 200,000 physics ticks and report the outcome
-cargo run -p omarcade-breakout --example simulate -- 200000
+cargo run -p omarcade-pixel-break --example simulate -- 200000
 
 # Adversarial collision probes
-cargo run -p omarcade-breakout --example probe_tunnel
-cargo run -p omarcade-breakout --example probe_shallow
+cargo run -p omarcade-pixel-break --example probe_tunnel
+cargo run -p omarcade-pixel-break --example probe_shallow
 
 # Measure how good the Pong opponent actually is, per difficulty
 cargo run --release -p omarcade-pong --example probe_ai
 
 # Render any game state straight to a PNG
-cargo run -p omarcade-breakout --example dump_frame -- midgame out.png
+cargo run -p omarcade-pixel-break --example dump_frame -- midgame out.png
 #   scenes: ready | playing | midgame | won | lost
 cargo run -p omarcade-pong --example dump_frame -- rally out.png
 #   scenes: select | serve | rally | matchpoint | won | lost

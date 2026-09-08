@@ -4,7 +4,7 @@
 //! whatever size Hyprland decides. This module bridges the two with a
 //! **letterbox**: one uniform scale factor for both axes, centred, with
 //! bars on whichever pair of edges has slack. A non-uniform stretch
-//! would be easier, but a stretched Breakout means the ball moves
+//! would be easier, but a stretched play field means the ball moves
 //! faster horizontally than vertically at the same speed, which players
 //! feel immediately even if they cannot name it.
 

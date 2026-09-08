@@ -1,6 +1,6 @@
 [package]
-name = "omarcade-breakout"
-description = "Breakout, the first Omarcade title."
+name = "omarcade-pixel-break"
+description = "Pixel Break — ten levels of bricks, power-ups and particles. The Omarcade release title."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

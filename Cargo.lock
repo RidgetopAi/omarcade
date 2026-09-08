@@ -1121,13 +1121,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "omarcade-breakout"
-version = "0.1.0"
-dependencies = [
- "omarcade-core",
-]
-
-[[package]]
 name = "omarcade-core"
 version = "0.1.0"
 dependencies = [
@@ -1137,6 +1130,13 @@ dependencies = [
  "softbuffer",
  "toml",
  "winit",
+]
+
+[[package]]
+name = "omarcade-pixel-break"
+version = "0.1.0"
+dependencies = [
+ "omarcade-core",
 ]
 
 [[package]]

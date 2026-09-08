@@ -1,4 +1,9 @@
-//! Breakout — the first Omarcade title.
+//! Pixel Break — the Omarcade release title.
+//!
+//! Shipped as `Breakout` through session 13; renamed here, in a commit
+//! that changed nothing else, because the identity is public surface:
+//! `GAME_ID` names the score file and the cabinet discovers games by
+//! scanning for installed binaries.
 //!
 //! This file is only wiring: input to intent, time to the simulation,
 //! state to the renderer. The game lives in `state`/`physics`, the
@@ -24,16 +29,16 @@ use omarcade_core::{Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, 
 use physics::Accumulator;
 use state::{GameState, Phase};
 
-const TITLE: &str = "Omarcade Breakout";
+const TITLE: &str = "Pixel Break";
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 720;
 
 /// Score-file id. Matches the binary name and the file the marquee reads,
 /// so it is public surface: renaming it orphans everyone's high scores.
-const GAME_ID: &str = "omarcade-breakout";
-const GAME_NAME: &str = "Breakout";
+const GAME_ID: &str = "omarcade-pixel-break";
+const GAME_NAME: &str = "Pixel Break";
 
-struct Breakout {
+struct PixelBreak {
     theme: Theme,
     state: GameState,
     accumulator: Accumulator,
@@ -51,13 +56,13 @@ struct Breakout {
     recorded: bool,
 }
 
-impl Breakout {
+impl PixelBreak {
     fn new(theme: Theme) -> Self {
         let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
         let mut state = GameState::new();
         state.best = scores.best().unwrap_or(0);
 
-        Breakout {
+        PixelBreak {
             theme,
             state,
             accumulator: Accumulator::new(),
@@ -93,7 +98,7 @@ impl Breakout {
     }
 }
 
-impl Game for Breakout {
+impl Game for PixelBreak {
     fn on_input(&mut self, event: InputEvent) -> bool {
         match event {
             InputEvent::KeyDown(Key::Escape) => return false,
@@ -143,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // redraws on its own. There is a ball to move now, so the loop
         // paces itself with WaitUntil — still never Poll.
         .idle(Idle::Animate { fps: 60 })
-        .run(Breakout::new(theme), AudioSystem::new())?;
+        .run(PixelBreak::new(theme), AudioSystem::new())?;
 
     Ok(())
 }

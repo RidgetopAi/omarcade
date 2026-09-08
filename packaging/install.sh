@@ -17,7 +17,7 @@ ICONDIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 # game is registered: the cabinet and the marquee discover games from
 # what is installed and what has written a score, never from a list of
 # their own.
-GAMES=(omarcade-breakout omarcade-pong omarcade-racer)
+GAMES=(omarcade-pixel-break omarcade-pong omarcade-racer)
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 say() { printf '  %s\n' "$*"; }
@@ -39,6 +39,42 @@ if [[ ${1:-} == --uninstall ]]; then
 fi
 
 command -v cargo >/dev/null 2>&1 || die "cargo not found. Install Rust: https://rustup.rs"
+
+# --- Breakout -> Pixel Break -------------------------------------------------
+# Session 14 renamed the title. GAME_ID names the score file AND the cabinet
+# discovers games by scanning $BINDIR, so a rename with no migration does not
+# error and does not vanish: it leaves a permanent, unplayable "Breakout" on
+# the cabinet next to the game that replaced it.
+#
+# Carried entries are stamped difficulty "legacy". Old scores came from a
+# single 60-brick field; a Pixel Break run is ten levels with tiered bricks and
+# level bonuses. ScoreFile groups by difficulty, so the history survives without
+# ever being ranked against a run of the game it is not.
+#
+# Runs at most once: it acts only when the old file exists and the new one does
+# not, so it can never overwrite a newer file with an older one.
+SCOREDIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarcade/scores"
+old_scores="$SCOREDIR/omarcade-breakout.json"
+new_scores="$SCOREDIR/omarcade-pixel-break.json"
+if [[ -f $old_scores && ! -f $new_scores ]]; then
+  mv "$old_scores" "$new_scores"
+  sed -i \
+    -e 's|"id": *"omarcade-breakout"|"id": "omarcade-pixel-break"|' \
+    -e 's|"name": *"Breakout"|"name": "Pixel Break"|' \
+    -e 's|"difficulty": *"[^"]*"|"difficulty": "legacy"|' \
+    "$new_scores"
+  # A v1 entry may carry no difficulty field at all (ScoreFile predates it).
+  # Give those one, so nothing carried lands in the current table.
+  sed -i -E '/"at": *"[^"]*"$/ s|$|,\n      "difficulty": "legacy"|' "$new_scores"
+  say "migrated Breakout scores -> $new_scores (entries marked legacy)"
+fi
+
+# Breakout's binary and launcher entry, left behind, are a second game on the
+# cabinet and a second entry in the app menu -- both launching a binary that no
+# longer exists. The uninstall loop cannot reach them: it iterates GAMES, which
+# now names pixel-break. Same reason as omarcade.desktop below.
+rm -f "$BINDIR/omarcade-breakout"
+rm -f "$APPDIR/omarcade-breakout.desktop"
 
 echo "Building Omarcade (release)..."
 # Build one -p flag per game as separate argv entries. A pattern-substitution

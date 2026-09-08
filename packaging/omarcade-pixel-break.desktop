@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Pixel Break
+GenericName=Arcade Game
+Comment=Ten levels of bricks, power-ups and particles. A theme-reactive arcade game native to Omarchy.
+Exec=@BINDIR@/omarcade-pixel-break
+Icon=omarcade
+Terminal=false
+Categories=Game;ArcadeGame;
+Keywords=arcade;pixelbreak;brickbreaker;bricks;retro;omarcade;game;
+StartupNotify=true
+StartupWMClass=omarcade

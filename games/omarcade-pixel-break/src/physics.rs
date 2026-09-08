@@ -14,7 +14,7 @@
 //!    the way it came. Only the deepest collision is resolved per tick.
 
 use crate::geom::{Axis, Rect, Vec2};
-use crate::state::{Ball, GameState, Paddle, Phase, BALL_SPEED, PADDLE_SPEED, TRAIL_LEN};
+use crate::state::{Ball, GameState, Paddle, Phase, TRAIL_LEN};
 
 /// Simulation rate. High enough that per-tick movement (~1.75 units at
 /// ball speed) is far smaller than the thinnest brick, which is what
@@ -36,6 +36,19 @@ const MIN_VERTICAL_FRACTION: f32 = 0.25;
 
 /// Tolerance for treating two penetration depths as equal.
 const EPS: f32 = 1e-4;
+
+/// The speed at which one fixed tick moves the ball a whole brick height —
+/// the point where tunnelling stops being impossible and starts being
+/// merely unlikely.
+///
+/// ⚠️ **DERIVED, never typed.** Written as a number it would go quietly
+/// wrong the day `BRICK_H` or `FIXED_DT` changed: the assertion would still
+/// pass while the thing it protects had moved. Computed from both, the
+/// guard moves with them. This is L026, and Omaprix paid for it twice.
+///
+/// At the shipped values this is 28 units / (1/240 s) = 6720 units/s,
+/// against a level-10 ball speed of 460 — a factor of fourteen of headroom.
+pub const TUNNELLING_LIMIT: f32 = crate::state::BRICK_H / FIXED_DT;
 
 /// How much the paddle steers the ball: at the very edge, this fraction
 /// of the outgoing velocity is horizontal.
@@ -127,11 +140,12 @@ pub fn step_fixed(state: &mut GameState) {
         Phase::Playing => {
             let field = state.field();
             let paddle = state.paddle;
+            let ball_speed = state.ball_speed();
 
             for i in 0..state.balls.len() {
                 move_ball(&mut state.balls[i]);
                 collide_walls(&mut state.balls[i], &field);
-                collide_paddle(&mut state.balls[i], &paddle);
+                collide_paddle(&mut state.balls[i], &paddle, ball_speed);
                 // Bricks need the whole state: a kill scores, and it must
                 // be visible to every later ball in this same tick.
                 collide_bricks(state, i);
@@ -147,8 +161,9 @@ pub fn step_fixed(state: &mut GameState) {
 }
 
 fn move_paddle(state: &mut GameState) {
+    let speed = state.paddle_speed();
     let p = &mut state.paddle;
-    p.x += p.dir * PADDLE_SPEED * FIXED_DT;
+    p.x += p.dir * speed * FIXED_DT;
     // Clamp inside the field; the paddle never leaves the play area.
     p.x = p.x.clamp(0.0, crate::state::FIELD_W - p.w);
 }
@@ -188,7 +203,7 @@ fn collide_walls(b: &mut Ball, field: &Rect) {
     }
 }
 
-fn collide_paddle(ball: &mut Ball, paddle: &Paddle) {
+fn collide_paddle(ball: &mut Ball, paddle: &Paddle, speed: f32) {
     // Only when moving downward. A ball on its way up that clips the
     // paddle from below should pass, not get batted back down.
     if ball.vel.y <= 0.0 {
@@ -202,14 +217,14 @@ fn collide_paddle(ball: &mut Ball, paddle: &Paddle) {
 
     // Sit the ball on top of the paddle so it cannot re-collide.
     ball.pos.y = rect.top() - ball.radius - 0.01;
-    bounce_off_paddle(ball, paddle);
+    bounce_off_paddle(ball, paddle, speed);
 }
 
 /// Where the ball strikes the paddle sets the outgoing angle.
 ///
 /// This is the mechanic that makes Breakout a game of skill rather than
 /// a screensaver: hitting with the paddle's edge steers the ball.
-fn bounce_off_paddle(ball: &mut Ball, paddle: &Paddle) {
+fn bounce_off_paddle(ball: &mut Ball, paddle: &Paddle, speed: f32) {
     // -1 at the left edge, 0 at the centre, +1 at the right edge.
     let offset = ((ball.pos.x - paddle.center_x()) / (paddle.w / 2.0)).clamp(-1.0, 1.0);
 
@@ -217,7 +232,7 @@ fn bounce_off_paddle(ball: &mut Ball, paddle: &Paddle) {
     // Always upward, and always steep enough to keep the game moving.
     let vy = -(1.0 - vx.abs() * vx.abs()).max(MIN_VERTICAL_FRACTION).sqrt();
 
-    ball.vel = Vec2::new(vx, vy).with_length(BALL_SPEED);
+    ball.vel = Vec2::new(vx, vy).with_length(speed);
     clamp_angle(&mut ball.vel);
 }
 
@@ -244,7 +259,7 @@ fn collide_bricks(state: &mut GameState, index: usize) {
 
     let mut best: Option<(usize, f32, Axis)> = None;
     for (i, brick) in state.bricks.iter().enumerate() {
-        if !brick.alive {
+        if !brick.alive() {
             continue;
         }
         let Some(pen) = ball_rect.penetration(&brick.rect) else {
@@ -297,8 +312,12 @@ fn collide_bricks(state: &mut GameState, index: usize) {
     // Scored once, by the ball that got there first. A second ball
     // overlapping the same brick this tick finds it already dead and
     // scores nothing — which is the rule, not an accident.
-    state.bricks[hit].alive = false;
-    state.score += 10;
+    //
+    // A tiered brick takes several hits; every hit scores, and destroying
+    // it scores again. Chipping an armoured brick is progress and should
+    // feel like it, but the brick that actually breaks is worth more.
+    let destroyed = state.bricks[hit].hit();
+    state.score += if destroyed { 10 } else { 5 };
 
     let ball = &mut state.balls[index];
 
@@ -351,16 +370,17 @@ fn clamp_angle(vel: &mut Vec2) {
     }
 }
 
+/// A cleared field advances the level — or, on the last one, wins the game.
 fn check_win(state: &mut GameState) {
     if state.bricks_remaining() == 0 {
-        state.phase = Phase::Won;
+        state.advance_level();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{BALL_RADIUS, FIELD_H, FIELD_W};
+    use crate::state::{BALL_RADIUS, BALL_SPEED, FIELD_H, FIELD_W};
 
     fn playing() -> GameState {
         let mut s = GameState::new();
@@ -472,7 +492,8 @@ mod tests {
         s.balls[0].pos = Vec2::new(s.paddle.center_x() - 50.0, s.paddle.y - BALL_RADIUS + 1.0);
         s.balls[0].vel = Vec2::new(0.0, 300.0);
         let paddle = s.paddle;
-        collide_paddle(&mut s.balls[0], &paddle);
+        let speed = s.ball_speed();
+        collide_paddle(&mut s.balls[0], &paddle, speed);
         assert!(s.balls[0].vel.x < 0.0, "vx = {}", s.balls[0].vel.x);
         assert!(s.balls[0].vel.y < 0.0, "must go up");
     }
@@ -484,7 +505,8 @@ mod tests {
         s.balls[0].pos = Vec2::new(s.paddle.center_x() + 50.0, s.paddle.y - BALL_RADIUS + 1.0);
         s.balls[0].vel = Vec2::new(0.0, 300.0);
         let paddle = s.paddle;
-        collide_paddle(&mut s.balls[0], &paddle);
+        let speed = s.ball_speed();
+        collide_paddle(&mut s.balls[0], &paddle, speed);
         assert!(s.balls[0].vel.x > 0.0);
         assert!(s.balls[0].vel.y < 0.0);
     }
@@ -495,7 +517,8 @@ mod tests {
         s.balls[0].pos = Vec2::new(s.paddle.center_x() + 20.0, s.paddle.y - BALL_RADIUS + 1.0);
         s.balls[0].vel = Vec2::new(10.0, 300.0);
         let paddle = s.paddle;
-        collide_paddle(&mut s.balls[0], &paddle);
+        let speed = s.ball_speed();
+        collide_paddle(&mut s.balls[0], &paddle, speed);
         assert!((s.balls[0].vel.length() - BALL_SPEED).abs() < 0.5,
             "speed drifted to {}", s.balls[0].vel.length());
     }
@@ -509,7 +532,8 @@ mod tests {
         s.balls[0].vel = Vec2::new(0.0, -300.0);
         let before = s.balls[0].vel;
         let paddle = s.paddle;
-        collide_paddle(&mut s.balls[0], &paddle);
+        let speed = s.ball_speed();
+        collide_paddle(&mut s.balls[0], &paddle, speed);
         assert_eq!(s.balls[0].vel, before);
     }
 
@@ -522,7 +546,7 @@ mod tests {
         s.balls[0].pos = Vec2::new(brick.center().x, brick.bottom() + BALL_RADIUS - 2.0);
         s.balls[0].vel = Vec2::new(0.0, -BALL_SPEED);
         collide_bricks(&mut s, 0);
-        assert!(!s.bricks[0].alive);
+        assert!(!s.bricks[0].alive());
         assert_eq!(s.score, 10);
         assert!(s.balls[0].vel.y > 0.0, "should bounce back downward");
     }
@@ -540,21 +564,39 @@ mod tests {
         let before = s.balls[0].vel;
         collide_bricks(&mut s, 0);
         // Exactly one brick dies this tick.
-        let dead = s.bricks.iter().filter(|k| !k.alive).count();
+        let dead = s.bricks.iter().filter(|k| !k.alive()).count();
         assert_eq!(dead, 1, "one collision per tick");
         // And the velocity did not flip twice back to its original sign.
         assert_ne!(s.balls[0].vel.x.signum(), before.x.signum(),
             "a single reflection must change direction");
     }
 
+    /// Clearing a field no longer wins — it advances. Winning is reaching
+    /// the end of the last level, and that is the only route to it.
     #[test]
-    fn clearing_every_brick_wins() {
+    fn clearing_a_field_advances_the_level() {
         let mut s = playing();
+        let level = s.level;
         for b in &mut s.bricks {
-            b.alive = false;
+            b.hits = 0;
+        }
+        check_win(&mut s);
+
+        assert_eq!(s.level, level + 1);
+        assert_eq!(s.phase, Phase::Ready, "the next level starts on the paddle");
+        assert!(s.bricks_remaining() > 0, "and it has a fresh field");
+    }
+
+    #[test]
+    fn clearing_the_last_level_wins_the_game() {
+        let mut s = playing();
+        s.level = crate::state::LEVELS;
+        for b in &mut s.bricks {
+            b.hits = 0;
         }
         check_win(&mut s);
         assert_eq!(s.phase, Phase::Won);
+        assert_eq!(s.level, crate::state::LEVELS, "the level does not run past the last");
     }
 
     // ---- angle clamping ----
@@ -583,7 +625,7 @@ mod tests {
 #[cfg(test)]
 mod multiball_tests {
     use super::*;
-    use crate::state::{BALL_CAP_HIGH, BALL_CAP_LOW, BRICK_H, FIELD_H, LEVEL_CAP_STEP};
+    use crate::state::{BALL_CAP_HIGH, BALL_CAP_LOW, BALL_SPEED, BRICK_H, FIELD_H, LEVEL_CAP_STEP};
 
     fn playing() -> GameState {
         let mut s = GameState::new();
@@ -653,7 +695,7 @@ mod multiball_tests {
     #[test]
     fn two_balls_hitting_the_same_brick_in_one_tick_score_it_once() {
         let mut s = playing();
-        let target = *s.bricks.iter().find(|b| b.alive).unwrap();
+        let target = *s.bricks.iter().find(|b| b.alive()).unwrap();
         let c = target.rect.center();
         let before = s.score;
         let alive_before = s.bricks_remaining();
@@ -802,13 +844,19 @@ mod multiball_tests {
         let mut s = playing();
         // Clear the field, then place two isolated bricks far apart.
         for b in &mut s.bricks {
-            b.alive = false;
+            b.hits = 0;
         }
-        s.bricks[0].alive = true;
+        s.bricks[0].hits = 1;
         let left = s.bricks[0].rect;
         let right_i = s.bricks.len() - 1;
-        s.bricks[right_i].alive = true;
+        s.bricks[right_i].hits = 1;
         let right = s.bricks[right_i].rect;
+        // ⚠️ Leave a third brick standing. Killing every brick on the field
+        // now ADVANCES THE LEVEL, which rebuilds `bricks` inside the same
+        // tick — the assertions below would then be reading a fresh field
+        // rather than the one these balls hit.
+        let spare = s.bricks.len() / 2;
+        s.bricks[spare].hits = 1;
 
         s.balls[0].pos = Vec2::new(left.center().x, left.bottom() - 1.0);
         s.balls[0].vel = Vec2::new(0.0, -200.0);
@@ -816,8 +864,8 @@ mod multiball_tests {
 
         step_fixed(&mut s);
 
-        assert!(!s.bricks[0].alive, "ball 0 broke its own brick");
-        assert!(!s.bricks[right_i].alive, "ball 1 broke its own brick");
+        assert!(!s.bricks[0].alive(), "ball 0 broke its own brick");
+        assert!(!s.bricks[right_i].alive(), "ball 1 broke its own brick");
         assert!(s.balls[0].vel.y > 0.0, "ball 0 reflected downward");
         assert!(s.balls[1].vel.y > 0.0, "ball 1 reflected downward");
     }
@@ -876,3 +924,329 @@ mod multiball_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+    use crate::state::{
+        ball_speed_for, hits_to_clear, paddle_speed_for, tier_for, Tier, BALL_SPEED,
+        BALL_SPEED_TOP, BRICK_COLS, BRICK_H, BRICK_ROWS, FIELD_W, LEVELS, PADDLE_SPEED,
+        PADDLE_SPEED_TOP,
+    };
+
+    // ---- ⚠️C: the tunnelling bound, DERIVED ----
+
+    /// ⚠️ **The guard the speed ramp exists inside.** The limit is computed
+    /// from `BRICK_H` and `FIXED_DT`, never typed, so changing either moves
+    /// this assertion instead of quietly invalidating it. That is L026, and
+    /// Omaprix paid for it twice.
+    #[test]
+    fn ball_speed_at_every_level_is_far_below_the_tunnelling_limit() {
+        // The limit really is "one tick crosses a whole brick".
+        assert!(
+            (TUNNELLING_LIMIT - BRICK_H / FIXED_DT).abs() < 1e-3,
+            "the limit must be derived from the geometry, not restated"
+        );
+
+        for level in 1..=LEVELS {
+            let speed = ball_speed_for(level);
+            let per_tick = speed * FIXED_DT;
+            assert!(
+                per_tick < BRICK_H / 4.0,
+                "level {level}: a tick moves {per_tick} units into a {BRICK_H}-unit brick"
+            );
+            assert!(
+                speed < TUNNELLING_LIMIT / 4.0,
+                "level {level}: {speed} is too close to the {TUNNELLING_LIMIT} limit"
+            );
+        }
+    }
+
+    /// The paddle must always be able to get under the ball, at every level.
+    /// If the ball outruns it the game stops being winnable, and no test of
+    /// either speed alone would catch it.
+    #[test]
+    fn the_paddle_outruns_the_ball_at_every_level() {
+        for level in 1..=LEVELS {
+            let ball = ball_speed_for(level);
+            let paddle = paddle_speed_for(level);
+            assert!(
+                paddle > ball,
+                "level {level}: paddle {paddle} cannot keep up with ball {ball}"
+            );
+            // And it can cross the field before a ball can cross it too.
+            let paddle_cross = FIELD_W / paddle;
+            let ball_cross = FIELD_W / ball;
+            assert!(paddle_cross < ball_cross, "level {level}: paddle crosses slower");
+        }
+    }
+
+    // ---- the speed ramp ----
+
+    #[test]
+    fn speed_climbs_from_level_one_to_the_top_and_stops() {
+        assert!((ball_speed_for(1) - BALL_SPEED).abs() < 0.01);
+        assert!((ball_speed_for(LEVELS) - BALL_SPEED_TOP).abs() < 0.01);
+        assert!((paddle_speed_for(1) - PADDLE_SPEED).abs() < 0.01);
+        assert!((paddle_speed_for(LEVELS) - PADDLE_SPEED_TOP).abs() < 0.01);
+
+        // Monotone, and clamped outside the real range.
+        for level in 2..=LEVELS {
+            assert!(ball_speed_for(level) > ball_speed_for(level - 1));
+        }
+        assert_eq!(ball_speed_for(0), ball_speed_for(1), "below range clamps");
+        assert_eq!(ball_speed_for(99), ball_speed_for(LEVELS), "above range clamps");
+    }
+
+    /// The whole point of a gentle ramp: work climbs 2.6x across the game,
+    /// and speed must climb far less or the last level is unplayable.
+    #[test]
+    fn work_climbs_much_faster_than_speed() {
+        let work = hits_to_clear(LEVELS) as f32 / hits_to_clear(1) as f32;
+        let speed = ball_speed_for(LEVELS) / ball_speed_for(1);
+        assert!(work > 2.0, "the game should get substantially longer: {work}x");
+        assert!(speed < 1.5, "but not much faster: {speed}x");
+        assert!(speed < work / 1.5, "speed {speed}x must lag work {work}x");
+    }
+
+    // ---- the curve ----
+
+    #[test]
+    fn level_one_is_all_plain() {
+        for row in 0..BRICK_ROWS {
+            assert_eq!(tier_for(1, row), Tier::Plain);
+        }
+    }
+
+    /// Reinforced rows fill down from the TOP, one more per level, until
+    /// the whole field is reinforced at L7.
+    #[test]
+    fn reinforced_rows_grow_from_the_top_to_the_peak_at_seven() {
+        for level in 2..=7u32 {
+            let expected = (level - 1) as usize;
+            for row in 0..BRICK_ROWS {
+                let want = if row < expected { Tier::Reinforced } else { Tier::Plain };
+                assert_eq!(
+                    tier_for(level, row),
+                    want,
+                    "level {level} row {row}: {expected} rows should be reinforced"
+                );
+            }
+        }
+        // L7 is the peak: every row reinforced, none plain, none armoured.
+        assert!((0..BRICK_ROWS).all(|r| tier_for(7, r) == Tier::Reinforced));
+    }
+
+    /// Armour restarts the count at one row on L8 and never touches the
+    /// bottom of the field.
+    #[test]
+    fn armour_arrives_at_eight_and_grows_to_three_rows() {
+        for (level, want) in [(8u32, 1usize), (9, 2), (10, 3)] {
+            let armoured = (0..BRICK_ROWS).filter(|&r| tier_for(level, r) == Tier::Armoured).count();
+            assert_eq!(armoured, want, "level {level} should have {want} armoured rows");
+            // Everything below the armour is reinforced — no plain rows
+            // survive this far in.
+            for row in want..BRICK_ROWS {
+                assert_eq!(tier_for(level, row), Tier::Reinforced, "level {level} row {row}");
+            }
+        }
+    }
+
+    #[test]
+    fn tiers_are_counted_from_the_top() {
+        // The hardest row is always row 0, at every level past the first.
+        for level in 2..=LEVELS {
+            let top = tier_for(level, 0).hits();
+            let bottom = tier_for(level, BRICK_ROWS - 1).hits();
+            assert!(top >= bottom, "level {level}: the crust must be on top");
+        }
+    }
+
+    // ---- the numbers the plan claims ----
+
+    /// ⚠️ The plan stated L1 = 60, L7 = 120, L10 = **156**. The first two
+    /// are right; the third is arithmetic that was never checked. The layout
+    /// Brian settled — 3 armoured rows of 4 hits plus 3 reinforced of 2,
+    /// across 10 columns — is 120 + 60 = **180**, and no row combination of
+    /// this field produces 156 at all (the nearest are 150 and 160).
+    ///
+    /// The LAYOUT is the decision and it is unchanged; only the total was
+    /// wrong. Asserting the real numbers here is what stops the mistake
+    /// being inherited by the balance work that reads them.
+    #[test]
+    fn hits_to_clear_matches_the_planned_curve() {
+        assert_eq!(hits_to_clear(1), 60, "L1: 6 plain rows of 10");
+        assert_eq!(hits_to_clear(7), 120, "L7: 6 reinforced rows of 10");
+        assert_eq!(hits_to_clear(10), 180, "L10: 3 armoured (120) + 3 reinforced (60)");
+
+        // The shape: +10 a level while reinforced rows fill in, then +20 a
+        // level once armour starts replacing them.
+        for level in 2..=7 {
+            assert_eq!(hits_to_clear(level) - hits_to_clear(level - 1), 10, "level {level}");
+        }
+        for level in 8..=10 {
+            assert_eq!(hits_to_clear(level) - hits_to_clear(level - 1), 20, "level {level}");
+        }
+
+        // Never gets easier as it climbs.
+        for level in 2..=LEVELS {
+            assert!(
+                hits_to_clear(level) >= hits_to_clear(level - 1),
+                "level {level} is easier than {}",
+                level - 1
+            );
+        }
+    }
+
+    #[test]
+    fn a_built_field_matches_its_tier_table() {
+        for level in 1..=LEVELS {
+            let bricks = crate::state::build_bricks(level);
+            assert_eq!(bricks.len(), BRICK_COLS * BRICK_ROWS);
+            let total: u32 = bricks.iter().map(|b| b.hits).sum();
+            assert_eq!(total, hits_to_clear(level), "level {level} field vs table");
+            for (i, b) in bricks.iter().enumerate() {
+                let row = i / BRICK_COLS;
+                assert_eq!(b.tier, tier_for(level, row));
+                assert_eq!(b.hits, b.tier.hits(), "a fresh brick starts undamaged");
+                assert!(b.alive());
+            }
+        }
+    }
+
+    // ---- tiered bricks take the right number of hits ----
+
+    #[test]
+    fn a_tiered_brick_survives_until_its_hits_run_out() {
+        for tier in [Tier::Plain, Tier::Reinforced, Tier::Armoured] {
+            let mut b = crate::state::build_bricks(1)[0];
+            b.tier = tier;
+            b.hits = tier.hits();
+
+            for remaining in (1..tier.hits()).rev() {
+                assert!(!b.hit(), "{tier:?} died early");
+                assert!(b.alive());
+                assert_eq!(b.hits, remaining);
+            }
+            assert!(b.hit(), "{tier:?} should die on its last hit");
+            assert!(!b.alive());
+        }
+    }
+
+    /// Damage runs 0 to 1 and is what the renderer chips the brick by.
+    #[test]
+    fn damage_reports_how_much_of_a_brick_is_gone() {
+        let mut b = crate::state::build_bricks(1)[0];
+        b.tier = Tier::Armoured;
+        b.hits = 4;
+        assert_eq!(b.damage(), 0.0);
+        b.hit();
+        assert_eq!(b.damage(), 0.25);
+        b.hit();
+        assert_eq!(b.damage(), 0.5);
+        b.hit();
+        assert_eq!(b.damage(), 0.75);
+        b.hit();
+        assert_eq!(b.damage(), 1.0);
+    }
+
+    /// Chipping scores, breaking scores more. A reinforced brick is worth
+    /// 5 + 10; an armoured one 5+5+5+10.
+    #[test]
+    fn every_hit_scores_and_the_breaking_hit_scores_more() {
+        let mut s = GameState::new();
+        s.launch();
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+        // One armoured brick, alone on the field.
+        s.bricks[0].tier = Tier::Armoured;
+        s.bricks[0].hits = 4;
+        let target = s.bricks[0].rect;
+
+        let mut score = 0;
+        for expected in [5u32, 5, 5, 10] {
+            let before = s.score;
+            s.balls[0].pos = Vec2::new(target.center().x, target.center().y);
+            s.balls[0].vel = Vec2::new(0.0, -100.0);
+            collide_bricks(&mut s, 0);
+            let gained = s.score - before;
+            assert_eq!(gained, expected, "hit scoring");
+            score += gained;
+        }
+        assert_eq!(score, 25, "an armoured brick is worth 25 in total");
+        assert!(!s.bricks[0].alive());
+    }
+
+    // ---- level progression ----
+
+    #[test]
+    fn advancing_keeps_score_and_lives_and_rebuilds_the_field() {
+        let mut s = GameState::new();
+        s.launch();
+        s.score = 1234;
+        s.lives = 2;
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+
+        s.advance_level();
+
+        assert_eq!(s.level, 2);
+        assert_eq!(s.score, 1234, "score carries across levels");
+        assert_eq!(s.lives, 2, "and so do lives");
+        assert_eq!(s.bricks_remaining(), BRICK_COLS * BRICK_ROWS);
+        assert_eq!(s.balls.len(), 1, "the next level starts with one ball");
+        assert_eq!(s.phase, Phase::Ready);
+    }
+
+    #[test]
+    fn a_full_run_reaches_the_last_level_and_then_wins() {
+        let mut s = GameState::new();
+        s.launch();
+        for level in 1..LEVELS {
+            assert_eq!(s.level, level);
+            for b in &mut s.bricks {
+                b.hits = 0;
+            }
+            s.advance_level();
+        }
+        assert_eq!(s.level, LEVELS);
+
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+        s.advance_level();
+        assert_eq!(s.phase, Phase::Won, "clearing the last level wins");
+    }
+
+    #[test]
+    fn restarting_returns_to_level_one() {
+        let mut s = GameState::new();
+        s.level = 9;
+        s.score = 5000;
+        s.restart();
+        assert_eq!(s.level, 1);
+        assert_eq!(s.bricks_remaining(), BRICK_COLS * BRICK_ROWS);
+        // A level-1 field is all plain.
+        assert!(s.bricks.iter().all(|b| b.tier == Tier::Plain));
+    }
+
+    /// Speed is read from the level every tick, so advancing actually makes
+    /// the ball faster rather than only changing a number.
+    #[test]
+    fn a_later_level_actually_plays_faster() {
+        let mut s = GameState::new();
+        s.launch();
+        let slow = s.balls[0].vel.length();
+
+        s.level = LEVELS;
+        s.phase = Phase::Ready;
+        s.rest_ball_on_paddle();
+        s.launch();
+        let fast = s.balls[0].vel.length();
+
+        assert!(fast > slow, "level {LEVELS} launch {fast} vs level 1 {slow}");
+    }
+}
+

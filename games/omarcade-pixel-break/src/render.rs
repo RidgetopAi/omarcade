@@ -12,7 +12,7 @@ use omarcade_core::ease;
 use omarcade_core::text::{text, text_width, GLYPH_H};
 use omarcade_core::{Canvas, Color, Theme};
 
-use crate::state::{Ball, GameState, Phase, FIELD_H, FIELD_W};
+use crate::state::{Ball, Brick, GameState, Phase, Tier, FIELD_H, FIELD_W};
 
 /// Maps play-field coordinates onto the window.
 #[derive(Debug, Clone, Copy)]
@@ -94,8 +94,8 @@ pub fn draw(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
 
     let pal = palette(theme);
     for brick in &state.bricks {
-        if brick.alive {
-            vp.rect(brick.rect, canvas, pal[brick.color_index % pal.len()]);
+        if brick.alive() {
+            draw_brick(brick, canvas, theme, &vp, pal[brick.color_index % pal.len()]);
         }
     }
 
@@ -120,6 +120,81 @@ pub fn draw(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
 
     draw_hud(state, canvas, theme, &vp);
     draw_phase_message(state, canvas, theme, &vp);
+}
+
+/// One brick, with its damage written into its shape.
+///
+/// ⚠️ **Remaining hits are read from the SHAPE, never from a colour.** A
+/// player should be able to glance at a brick and know it is nearly gone
+/// without having learned a palette. Two devices carry it:
+///
+/// * **The brick shrinks as it is damaged**, anchored so it visibly loses
+///   material from a corner rather than shrinking evenly toward its middle.
+///   That is what "breaking pieces off" looks like at this size.
+/// * **The tier keeps its border for as long as it lives.** A reinforced
+///   brick keeps its seam and an armoured one its heavy frame right down to
+///   the last hit, so a chipped armoured brick still reads as armoured
+///   rather than as a small plain one.
+///
+/// Nothing here picks a colour of its own: the row colour arrives as an
+/// argument and the border comes from the theme.
+fn draw_brick(
+    brick: &Brick,
+    canvas: &mut Canvas<'_>,
+    theme: &Theme,
+    vp: &Viewport,
+    color: Color,
+) {
+    let r = brick.rect;
+    let damage = brick.damage();
+
+    // Undamaged bricks take the cheap path — the overwhelmingly common
+    // case, and identical to what shipped before tiers existed.
+    if damage <= 0.0 && brick.tier == Tier::Plain {
+        vp.rect(r, canvas, color);
+        return;
+    }
+
+    // Lose up to a third of each side across the brick's whole life. More
+    // than that and a damaged brick stops reading as a brick.
+    let shrink = damage * 0.34;
+    let w = r.w * (1.0 - shrink);
+    let h = r.h * (1.0 - shrink);
+    // Anchored top-left rather than centred: material comes off the bottom
+    // right corner, which reads as a piece breaking away instead of the
+    // whole brick receding.
+    canvas.fill_rect_f(vp.fx(r.x), vp.fy(r.y), vp.flen(w), vp.flen(h), color);
+
+    match brick.tier {
+        Tier::Plain => {}
+        // A seam across the middle: one line, and it survives the first hit.
+        // ⚠️ Thin on purpose. Judged against dump_frame's `tiers` scene: at
+        // 14% of a 28-unit brick the seam reads as two separate stripes
+        // rather than as one brick that is scored across the middle.
+        Tier::Reinforced => {
+            let seam = (h * 0.07).max(1.0);
+            canvas.fill_rect_f(
+                vp.fx(r.x),
+                vp.fy(r.y + h * 0.5 - seam * 0.5),
+                vp.flen(w),
+                vp.flen(seam),
+                theme.background.with_alpha(150),
+            );
+        }
+        // A heavy frame, drawn as four edges so the row colour still shows
+        // through the middle and the brick keeps its identity.
+        Tier::Armoured => {
+            // ⚠️ Also judged by looking: at 18% the frame eats the middle
+            // and an armoured brick stops showing its row colour, so it no
+            // longer reads as part of the row it belongs to.
+            let t = (h * 0.11).max(1.0);
+            let edge = theme.foreground.with_alpha(120);
+            canvas.fill_rect_f(vp.fx(r.x), vp.fy(r.y), vp.flen(w), vp.flen(t), edge);
+            canvas.fill_rect_f(vp.fx(r.x), vp.fy(r.y + h - t), vp.flen(w), vp.flen(t), edge);
+            canvas.fill_rect_f(vp.fx(r.x), vp.fy(r.y), vp.flen(t), vp.flen(h), edge);
+            canvas.fill_rect_f(vp.fx(r.x + w - t), vp.fy(r.y), vp.flen(t), vp.flen(h), edge);
+        }
+    }
 }
 
 /// One ball's recent path, fading out behind it.

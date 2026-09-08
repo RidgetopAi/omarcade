@@ -149,8 +149,15 @@ L10  = = = # # #      3 armoured   <- final
 Rows are counted **from the top**, which is the row hardest to reach — the field gets a
 harder crust as you climb, and the ball has to get behind it.
 
-**Total hits required:** L1 = 60, L7 = 120, L10 = 156. That is a 2.6x climb in work, so
+**Total hits required:** L1 = 60, L7 = 120, L10 = **180**. That is a 3.0x climb in work, so
 **ball speed must not climb anything like that** or L10 is unplayable.
+
+⚠️ *Corrected at S4.* This originally read "L10 = 156", which is arithmetic that was never
+checked: 3 armoured rows of 4 hits plus 3 reinforced rows of 2, over 10 columns, is
+120 + 60 = 180, and no row combination of a 6x10 field produces 156 at all (150 and 160 are
+the nearest). The layout above is unchanged — only the total was wrong. The curve it makes is
++10 per level to L7 as reinforced rows fill in, then +20 per level as armour replaces them.
+`hits_to_clear_matches_the_planned_curve` asserts every step of it.
 
 ### Ball speed
 
@@ -405,8 +412,9 @@ watch for. That is how you read this codebase and it has not failed yet.
 3. **Core changes touch two shipped games.** S2 lands alone, with the racer and Pong green,
    before anything is built on it.
 4. **The Omarchy wordmark.** §6. Ask before building on it.
-5. **Difficulty.** L10 at 156 hits with three lives may simply be too hard, and we will not
-   know until it is played. `probe_balance` gives us numbers, but your hands give the verdict.
+5. **Difficulty.** L10 at **180** hits with three lives may simply be too hard, and we will
+   not know until it is played. `probe_balance` gives us numbers, but your hands give the
+   verdict. (The 180 is corrected from 156 — see §3.)
 6. **Competitor census — still open, now partly answered.** A search for an Omarchy
    brick-breaker turns up nothing. That is *no evidence of one*, not *proof of none*: web
    search is poor at surfacing week-old repos, which is exactly what this ecosystem is made

@@ -25,8 +25,35 @@ pub const PADDLE_Y: f32 = FIELD_H - 60.0;
 pub const PADDLE_SPEED: f32 = 600.0;
 
 pub const BALL_RADIUS: f32 = 8.0;
-/// Level-1 pace. Later levels are expected to raise this.
+/// Level-1 pace. Every later level scales up from here.
 pub const BALL_SPEED: f32 = 340.0;
+/// Level-10 pace. The climb is deliberately gentle: clearing L10 takes
+/// 2.6x the hits of L1, and matching that in speed would make it
+/// unplayable rather than hard.
+pub const BALL_SPEED_TOP: f32 = 460.0;
+/// Level-10 paddle pace, up from `PADDLE_SPEED`. It rises with the ball so
+/// the paddle can always still get under it.
+pub const PADDLE_SPEED_TOP: f32 = 700.0;
+
+/// Ball speed on a given level: `BALL_SPEED` at 1, `BALL_SPEED_TOP` at
+/// `LEVELS`, linear between.
+///
+/// ⚠️ Bounded by the tunnelling invariant — see
+/// `physics::TUNNELLING_LIMIT`, which DERIVES the ceiling from `BRICK_H`
+/// and the fixed timestep rather than restating a number here.
+pub fn ball_speed_for(level: u32) -> f32 {
+    lerp_by_level(level, BALL_SPEED, BALL_SPEED_TOP)
+}
+
+pub fn paddle_speed_for(level: u32) -> f32 {
+    lerp_by_level(level, PADDLE_SPEED, PADDLE_SPEED_TOP)
+}
+
+fn lerp_by_level(level: u32, at_one: f32, at_top: f32) -> f32 {
+    let level = level.clamp(1, LEVELS);
+    let t = (level - 1) as f32 / (LEVELS - 1) as f32;
+    at_one + (at_top - at_one) * t
+}
 
 pub const BRICK_COLS: usize = 10;
 pub const BRICK_ROWS: usize = 6;
@@ -48,6 +75,11 @@ pub const BALL_CAP_LOW: usize = 5;
 pub const BALL_CAP_HIGH: usize = 10;
 /// The level at which the cap goes up.
 pub const LEVEL_CAP_STEP: u32 = 6;
+
+/// How many levels the game runs to. Clearing the last one beats it.
+pub const LEVELS: u32 = 10;
+/// First level that puts armoured bricks on the field.
+pub const ARMOUR_FROM_LEVEL: u32 = 8;
 
 /// How many past ball positions the trail keeps. Long enough to read as
 /// motion, short enough that a slow ball does not smear.
@@ -137,15 +169,68 @@ impl Ball {
     }
 }
 
+/// How much punishment a brick takes, and how it reads on screen.
+///
+/// ⚠️ **A brick's remaining hits must be readable from its SHAPE**, never
+/// from a colour the player has to learn. The tier picks the border; the
+/// hits left pick how much has already chipped away. `render` owns both,
+/// and neither is a palette lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    /// One hit. A solid brick in its row colour.
+    Plain,
+    /// Two hits. Carries a visible seam; the first hit breaks a corner off.
+    Reinforced,
+    /// Four hits. Heavy border, chipping away in four visible stages.
+    Armoured,
+}
+
+impl Tier {
+    /// Hits this tier starts with.
+    pub const fn hits(self) -> u32 {
+        match self {
+            Tier::Plain => 1,
+            Tier::Reinforced => 2,
+            Tier::Armoured => 4,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Brick {
     pub rect: Rect,
-    pub alive: bool,
+    /// Hits left. Zero is dead; there is no separate `alive` flag, so the
+    /// two can never disagree.
+    pub hits: u32,
+    /// What this brick was built as. Kept after damage so the renderer can
+    /// still draw an armoured brick's heavy border at one hit left.
+    pub tier: Tier,
     /// Index into the renderer's palette, NOT a resolved colour.
     ///
     /// Storing a `Color` here would freeze the theme into the level, so
     /// a live theme change could not repaint it.
     pub color_index: usize,
+}
+
+impl Brick {
+    pub fn alive(&self) -> bool {
+        self.hits > 0
+    }
+
+    /// Take one hit. Returns true if this destroyed the brick.
+    pub fn hit(&mut self) -> bool {
+        self.hits = self.hits.saturating_sub(1);
+        self.hits == 0
+    }
+
+    /// How much of this brick is gone, in `0.0..=1.0`.
+    ///
+    /// Drives the chipping in `render`: 0.0 is untouched, and a brick at
+    /// 1.0 is destroyed and no longer drawn at all.
+    pub fn damage(&self) -> f32 {
+        let start = self.tier.hits() as f32;
+        (start - self.hits as f32) / start
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -186,7 +271,7 @@ impl GameState {
         let mut state = GameState {
             balls: vec![Ball::new(Vec2::ZERO, Vec2::ZERO, BALL_RADIUS)],
             paddle,
-            bricks: build_bricks(),
+            bricks: build_bricks(1),
             lives: STARTING_LIVES,
             score: 0,
             level: 1,
@@ -227,7 +312,10 @@ impl GameState {
         if self.phase != Phase::Ready {
             return;
         }
-        let vel = Vec2::new(0.35, -1.0).with_length(BALL_SPEED);
+        // ⚠️ The LEVEL's speed, not the constant. Reading BALL_SPEED here
+        // would leave the ramp working everywhere except the one moment the
+        // player actually feels it.
+        let vel = Vec2::new(0.35, -1.0).with_length(self.ball_speed());
         for ball in &mut self.balls {
             ball.vel = vel;
         }
@@ -290,7 +378,33 @@ impl GameState {
     }
 
     pub fn bricks_remaining(&self) -> usize {
-        self.bricks.iter().filter(|b| b.alive).count()
+        self.bricks.iter().filter(|b| b.alive()).count()
+    }
+
+    /// Ball speed for the current level.
+    pub fn ball_speed(&self) -> f32 {
+        ball_speed_for(self.level)
+    }
+
+    /// Paddle speed for the current level.
+    pub fn paddle_speed(&self) -> f32 {
+        paddle_speed_for(self.level)
+    }
+
+    /// Clear the field: advance to the next level, or win the game.
+    ///
+    /// Lives, score and the best carry forward; the ball collapses back to
+    /// one on the paddle and the next field is built. Clearing the last
+    /// level is the only way to reach `Phase::Won`.
+    pub fn advance_level(&mut self) {
+        if self.level >= LEVELS {
+            self.phase = Phase::Won;
+            return;
+        }
+        self.level += 1;
+        self.bricks = build_bricks(self.level);
+        self.phase = Phase::Ready;
+        self.rest_ball_on_paddle();
     }
 
     /// The play field itself, for wall collisions.
@@ -324,13 +438,60 @@ impl Default for GameState {
     }
 }
 
-/// Lay out the brick grid, centred horizontally.
-fn build_bricks() -> Vec<Brick> {
+/// Which tier the given row gets on the given level.
+///
+/// Rows are counted **from the top** — row 0 is the topmost and hardest to
+/// reach, so the field grows a harder crust as the levels climb and the
+/// ball has to work its way behind it.
+///
+/// ```text
+/// L1   . . . . . .      all plain
+/// L2   # . . . . .      1 row reinforced
+/// ...
+/// L7   # # # # # #      6   <- reinforced peak
+/// L8   = # # # # #      1 row armoured, 5 reinforced
+/// L9   = = # # # #      2 armoured
+/// L10  = = = # # #      3 armoured
+/// ```
+pub fn tier_for(level: u32, row: usize) -> Tier {
+    let level = level.clamp(1, LEVELS);
+
+    // L8-10 put a band of armoured rows at the very top, restarting the
+    // count at one row: the third tier arrives as its own escalation
+    // rather than continuing the reinforced ramp.
+    let armoured_rows = level.saturating_sub(ARMOUR_FROM_LEVEL - 1) as usize;
+    if row < armoured_rows {
+        return Tier::Armoured;
+    }
+
+    // Below the armour, reinforced rows fill down from the top. L2 has one,
+    // L7 has six — the whole field.
+    let reinforced_rows = (level.saturating_sub(1) as usize).min(BRICK_ROWS);
+    if row < reinforced_rows {
+        Tier::Reinforced
+    } else {
+        Tier::Plain
+    }
+}
+
+/// Total hits needed to clear a level, without building it.
+///
+/// Used by tests and `probe_balance` to check the shape of the difficulty
+/// curve against what the plan claims.
+pub fn hits_to_clear(level: u32) -> u32 {
+    (0..BRICK_ROWS)
+        .map(|row| tier_for(level, row).hits() * BRICK_COLS as u32)
+        .sum()
+}
+
+/// Lay out the brick grid for a level, centred horizontally.
+pub fn build_bricks(level: u32) -> Vec<Brick> {
     let total_w = BRICK_COLS as f32 * BRICK_W + (BRICK_COLS - 1) as f32 * BRICK_GAP;
     let x0 = (FIELD_W - total_w) / 2.0;
 
     let mut bricks = Vec::with_capacity(BRICK_COLS * BRICK_ROWS);
     for row in 0..BRICK_ROWS {
+        let tier = tier_for(level, row);
         for col in 0..BRICK_COLS {
             bricks.push(Brick {
                 rect: Rect::new(
@@ -339,7 +500,8 @@ fn build_bricks() -> Vec<Brick> {
                     BRICK_W,
                     BRICK_H,
                 ),
-                alive: true,
+                hits: tier.hits(),
+                tier,
                 // One colour per row.
                 color_index: row,
             });
@@ -449,7 +611,7 @@ mod tests {
         let mut s = GameState::new();
         s.score = 500;
         s.lives = 1;
-        s.bricks[0].alive = false;
+        s.bricks[0].hits = 0;
         s.restart();
         assert_eq!(s.score, 0);
         assert_eq!(s.lives, STARTING_LIVES);

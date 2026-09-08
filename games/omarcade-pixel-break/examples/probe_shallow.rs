@@ -14,8 +14,8 @@ fn main() {
     // Clear bricks so this is a pure paddle-wall rally — but leave ONE
     // alive and park it off in a corner the ball cannot reach. With
     // zero bricks, check_win fires instantly and the sim never plays.
-    for b in &mut s.bricks { b.alive = false; }
-    s.bricks[0].alive = true;
+    for b in &mut s.bricks { b.hits = 0; }
+    s.bricks[0].hits = 1;
     s.bricks[0].rect = geom::Rect::new(-500.0, -500.0, 10.0, 10.0);
     s.phase = state::Phase::Ready;
     s.launch();

@@ -8,7 +8,7 @@ use state::{GameState, BALL_RADIUS};
 fn scan(ball: Rect, s: &GameState) -> Vec<(usize, f32, Axis)> {
     let mut hits = vec![];
     for (i, b) in s.bricks.iter().enumerate() {
-        if !b.alive { continue; }
+        if !b.alive() { continue; }
         let Some(pen) = ball.penetration(&b.rect) else { continue };
         let Some(axis) = ball.collision_axis(&b.rect) else { continue };
         let depth = match axis { Axis::X => pen.x, Axis::Y => pen.y };

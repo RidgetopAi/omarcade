@@ -131,7 +131,23 @@ fn main() {
             }
             fill_trail(&mut s);
         }
-        "won" => { for b in &mut s.bricks { b.alive = false; } s.phase = state::Phase::Won; s.score = 600; s.best = 600; }
+        // Every tier at every damage stage, so the "hits are readable from
+        // the SHAPE" claim can actually be looked at.
+        "tiers" => {
+            s.level = 10;
+            s.bricks = state::build_bricks(10);
+            // Row 0-2 are armoured, 3-5 reinforced at L10. Walk each row's
+            // columns through progressively more damage.
+            for (i, b) in s.bricks.iter_mut().enumerate() {
+                let col = i % state::BRICK_COLS;
+                let max = b.tier.hits();
+                // Column n has taken n hits, clamped to one short of death.
+                let taken = (col as u32).min(max - 1);
+                b.hits = max - taken;
+            }
+            s.phase = state::Phase::Playing;
+        }
+        "won" => { for b in &mut s.bricks { b.hits = 0; } s.phase = state::Phase::Won; s.score = 600; s.best = 600; }
         "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.score = 250; s.best = 980; }
         other => { eprintln!("unknown scene {other}"); std::process::exit(2); }
     }

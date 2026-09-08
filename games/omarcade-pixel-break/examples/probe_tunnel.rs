@@ -6,6 +6,8 @@ use omarcade_core::geom;
 mod physics;
 #[path = "../src/items.rs"]
 mod items;
+#[path = "../src/effects.rs"]
+mod effects;
 #[path = "../src/state.rs"]
 mod state;
 

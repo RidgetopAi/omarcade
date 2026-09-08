@@ -7,7 +7,10 @@
 //! until that situation happens.
 
 use crate::geom::{Rect, Vec2};
+use crate::effects::{Rng, Shake};
 use crate::items::{Dropper, Item, ItemKind, BOMB_SCALE};
+use omarcade_core::particles::ParticlePool;
+use omarcade_core::Color;
 
 /// Play-field size in logical units.
 ///
@@ -405,6 +408,32 @@ pub struct GameState {
     ///
     /// The ball's own hold lives on `Ball::held_for`, not here.
     pub magnet_left: f32,
+    /// Brick chips in flight.
+    ///
+    /// ⚠️ Presentation state in the world model, like `Ball::trail` and for
+    /// the same reason: physics is the only thing that knows a brick just
+    /// broke, and spawning chips in `render` would tie them to frame rate
+    /// instead of to the fixed timestep.
+    pub chips: ParticlePool,
+    /// The screen shake, which offsets the VIEWPORT and nothing else.
+    pub shake: Shake,
+    /// The effects' random source. Seeded, so a probe run is reproducible.
+    pub effect_rng: Rng,
+    /// The brick palette, refreshed from the theme every frame.
+    ///
+    /// ⚠️ **A cache, not a source of truth.** `Brick` deliberately stores a
+    /// `color_index` rather than a `Color`, so a live theme change repaints
+    /// the field — freezing colours into the level would defeat that, and
+    /// theme-reactivity is the suite's whole visual argument.
+    ///
+    /// A chip is a different case: it lives under a second, so the worst a
+    /// stale palette can do is tint a handful of already-fading chips for
+    /// one frame. What it BUYS is that `physics` — which knows a brick
+    /// broke but has no `Theme` and should not gain one — can still throw
+    /// chips in that brick's own colour. `render` refreshes this before it
+    /// draws; the default is a readable grey so a headless probe that never
+    /// renders still produces sane particles.
+    pub palette: [Color; 6],
     /// True from clearing a field until the next launch.
     ///
     /// ⚠️ Exists because `Phase::Ready` means two different things to a
@@ -441,6 +470,10 @@ impl GameState {
             paddle_scale: 1.0,
             paddle_effect_left: 0.0,
             magnet_left: 0.0,
+            chips: crate::effects::new_pool(),
+            shake: Shake::default(),
+            effect_rng: Rng::default(),
+            palette: [Color::rgb(160, 160, 160); 6],
             just_advanced: false,
         };
         state.rest_ball_on_paddle();
@@ -736,6 +769,12 @@ impl GameState {
         self.items.clear();
         self.paddle_scale = 1.0;
         self.paddle_effect_left = 0.0;
+        // ⚠️ Chips and shake clear too, for exactly the reason the items
+        // do: last level's debris must not still be falling through the
+        // next one, and a shake started by the final brick must not carry
+        // into a fresh field.
+        self.chips.clear();
+        self.shake.clear();
         // ⚠️ The magnet clears here too. Every path that calls this also
         // rebuilds the balls through `rest_ball_on_paddle`, so no HELD ball
         // can survive — but the armed magnet would, and a 20 s ability
@@ -770,6 +809,11 @@ impl GameState {
 
     /// Lose a life and reset for the next ball, or end the game.
     pub fn lose_life(&mut self) {
+        // ⚠️ The plan asks for shake here as well as on an armoured break.
+        // This is the case where shake is ALONE — nothing else is happening
+        // to soften it — so it is the one that decides whether the amount
+        // is right.
+        self.shake.add(crate::effects::SHAKE_UNITS);
         self.lives = self.lives.saturating_sub(1);
         if self.lives == 0 {
             self.phase = Phase::Lost;

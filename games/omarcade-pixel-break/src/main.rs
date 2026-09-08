@@ -18,6 +18,7 @@
 /// Re-exported under the old path so nothing else in the crate moved.
 use omarcade_core::geom;
 
+mod effects;
 mod items;
 mod physics;
 mod render;
@@ -150,7 +151,7 @@ impl Game for PixelBreak {
     }
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
-        render::draw(&self.state, canvas, &self.theme);
+        render::draw(&mut self.state, canvas, &self.theme);
     }
 }
 

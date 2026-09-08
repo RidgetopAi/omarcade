@@ -24,6 +24,20 @@ pub struct Viewport {
 }
 
 impl Viewport {
+    /// Shift the whole viewport by `d` field units.
+    ///
+    /// ⚠️ **This is the ONLY place screen shake exists.** It moves the
+    /// drawing; the field's own coordinates never change, so physics
+    /// cannot see it and a ball can never collide with something it does
+    /// not visually touch. Every other function in this file is unaware
+    /// shake is a feature — which is exactly what centralising the
+    /// coordinates in `Viewport` bought.
+    fn shifted(mut self, d: crate::geom::Vec2) -> Self {
+        self.off_x += d.x * self.scale;
+        self.off_y += d.y * self.scale;
+        self
+    }
+
     /// Fit the play field inside `(w, h)`, preserving aspect ratio.
     pub fn fit(w: u32, h: u32) -> Self {
         // A zero-sized window would give a zero or NaN scale; clamp to
@@ -78,8 +92,19 @@ fn palette(theme: &Theme) -> [Color; 6] {
 }
 
 /// Draw the whole frame.
-pub fn draw(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
-    let vp = Viewport::fit(canvas.width(), canvas.height());
+pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
+    // Refresh the palette cache the effects read. `Brick` stores an index
+    // rather than a colour so a live theme change repaints the field; this
+    // is what lets `physics` throw chips in a brick's own colour without
+    // ever learning what a `Theme` is.
+    state.palette = palette(theme);
+
+    // ⚠️ Shake is applied to the VIEWPORT and nowhere else. The letterbox
+    // is drawn BEFORE the shift and stays put — an effect that moves
+    // everything is invisible, because nothing is left standing still to
+    // see it against. The bars are that reference.
+    let offset = state.shake.offset(&mut state.effect_rng);
+    let vp = Viewport::fit(canvas.width(), canvas.height()).shifted(offset);
 
     // The letterbox bars are darker than the field, so the play area
     // reads as a distinct surface rather than the window just being an
@@ -105,6 +130,8 @@ pub fn draw(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
     for item in &state.items {
         draw_item(item, canvas, theme, &vp);
     }
+
+    draw_chips(state, canvas, &vp);
 
     // Balls are hidden once the game is over — nothing is in play.
     if state.phase != Phase::Lost && state.phase != Phase::Won {
@@ -279,6 +306,30 @@ fn draw_item(item: &Item, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport)
                 );
             }
         }
+    }
+}
+
+/// Brick chips, as added light.
+///
+/// ⚠️ **Drawn here rather than through `ParticlePool::draw`.** That method
+/// writes in RAW FIELD COORDINATES, which is right for a game whose canvas
+/// is the field — and wrong for this one, which letterboxes. Calling it
+/// would put every chip in the correct place at exactly one window size
+/// and visibly adrift at all the others.
+///
+/// Additive, so chips brighten what is under them and read as light rather
+/// than as translucent stickers. That is also what the playground tuned
+/// against; on plain alpha these numbers would look wrong.
+fn draw_chips(state: &GameState, canvas: &mut Canvas<'_>, vp: &Viewport) {
+    for p in state.chips.particles() {
+        let half = p.size * 0.5;
+        canvas.fill_rect_add_f(
+            vp.fx(p.pos.x - half),
+            vp.fy(p.pos.y - half),
+            vp.flen(p.size),
+            vp.flen(p.size),
+            p.fade(),
+        );
     }
 }
 

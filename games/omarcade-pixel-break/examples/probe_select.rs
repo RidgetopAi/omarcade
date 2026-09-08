@@ -2,6 +2,8 @@
 use omarcade_core::geom;
 #[path = "../src/items.rs"]
 mod items;
+#[path = "../src/effects.rs"]
+mod effects;
 #[path = "../src/state.rs"]
 mod state;
 use geom::{Axis, Rect, Vec2};

@@ -7,6 +7,8 @@ mod physics;
 mod render;
 #[path = "../src/items.rs"]
 mod items;
+#[path = "../src/effects.rs"]
+mod effects;
 #[path = "../src/state.rs"]
 mod state;
 
@@ -95,6 +97,77 @@ fn main() {
         "playing" => {
             s.launch();
             for _ in 0..1500 { physics::step_fixed(&mut s); }
+            fill_trail(&mut s);
+        }
+        // ⚠️ Chips frozen partway through their flight. This is the scene
+        // that decides whether the shatter tuning survived the port from
+        // tools/shatter-playground.html — the numbers were judged there
+        // against real motion, and only a rendered frame proves the game
+        // is drawing what the playground drew.
+        "shatter" => {
+            s.launch();
+            // Break a row of bricks with a ball travelling up and right, so
+            // the chips fan the way the playground showed them.
+            let targets: Vec<usize> = s
+                .bricks
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.alive())
+                .map(|(i, _)| i)
+                .skip(22)
+                .take(5)
+                .collect();
+            for (n, i) in targets.iter().enumerate() {
+                let r = s.bricks[*i].rect;
+                s.balls[0].pos = geom::Vec2::new(r.center().x, r.bottom() + 8.0);
+                s.balls[0].vel = geom::Vec2::new(140.0, -300.0);
+                physics::step_fixed(&mut s);
+                // Stagger them, so the burst is caught at several ages at
+                // once — one frame showing early, middle and late chips.
+                for _ in 0..(n * 14) {
+                    physics::step_fixed(&mut s);
+                }
+            }
+            fill_trail(&mut s);
+        }
+        // The same armoured break with shake FORCED OFF, so a rendered
+        // pair isolates what the shake is actually doing.
+        "armoured-noshake" => {
+            s.level = 9;
+            s.bricks = state::build_bricks(9);
+            s.launch();
+            let i = s
+                .bricks
+                .iter()
+                .position(|b| b.alive() && b.tier == state::Tier::Armoured)
+                .unwrap_or(0);
+            s.bricks[i].hits = 1;
+            let r = s.bricks[i].rect;
+            s.balls[0].pos = geom::Vec2::new(r.center().x, r.bottom() + 8.0);
+            s.balls[0].vel = geom::Vec2::new(-120.0, -320.0);
+            for _ in 0..10 {
+                physics::step_fixed(&mut s);
+            }
+            s.shake.clear();
+            fill_trail(&mut s);
+        }
+        // An armoured brick breaking: the case that also shakes.
+        "armoured" => {
+            s.level = 9;
+            s.bricks = state::build_bricks(9);
+            s.launch();
+            let i = s
+                .bricks
+                .iter()
+                .position(|b| b.alive() && b.tier == state::Tier::Armoured)
+                .unwrap_or(0);
+            s.bricks[i].hits = 1;
+            let r = s.bricks[i].rect;
+            s.balls[0].pos = geom::Vec2::new(r.center().x, r.bottom() + 8.0);
+            s.balls[0].vel = geom::Vec2::new(-120.0, -320.0);
+            for _ in 0..10 {
+                physics::step_fixed(&mut s);
+            }
             fill_trail(&mut s);
         }
         "midgame" => {
@@ -199,7 +272,7 @@ fn main() {
     let mut buf = vec![0u32; (w * h) as usize];
     {
         let mut c = Canvas::new(&mut buf, w, h);
-        render::draw(&s, &mut c, &theme);
+        render::draw(&mut s, &mut c, &theme);
     }
     write_png(&out, w, h, &buf).expect("write png");
     println!("{out}: scene={scene} {w}x{h} phase={:?} bricks={} score={} lives={}",

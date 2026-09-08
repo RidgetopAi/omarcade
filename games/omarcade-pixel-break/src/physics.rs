@@ -172,6 +172,11 @@ pub fn step_fixed(state: &mut GameState) {
             // the ball one frame behind the paddle it is stuck to, which
             // reads as the ball wobbling loose.
             state.tick_magnet(FIXED_DT);
+            // Chips and shake advance on the FIXED step, not the frame, so
+            // an arc tuned in the playground is the arc the player sees
+            // regardless of frame rate.
+            state.chips.update(FIXED_DT);
+            state.shake.tick(FIXED_DT);
             check_win(state);
         }
         Phase::Lost | Phase::Won => {}
@@ -339,6 +344,31 @@ fn collide_bricks(state: &mut GameState, index: usize) {
     // feel like it, but the brick that actually breaks is worth more.
     let destroyed = state.bricks[hit].hit();
     state.score += if destroyed { 10 } else { 5 };
+
+    // Chips, in the brick's OWN colour and thrown along the ball's travel.
+    // ⚠️ Damage and shatter are ONE system, partial: a brick that survives
+    // throws a smaller burst rather than getting an effect of its own.
+    // That is what makes the reinforced feedback cheap, and it is what
+    // answers S4's note that the damage shrink reads too subtly.
+    let tier = state.bricks[hit].tier;
+    let idx = state.bricks[hit].color_index % state.palette.len();
+    let chip_color = state.palette[idx];
+    let share = if destroyed { 1.0 } else { crate::effects::PARTIAL_SHARE };
+    crate::effects::shatter(
+        &mut state.chips,
+        &mut state.effect_rng,
+        brick_rect,
+        ball_vel,
+        chip_color,
+        share,
+    );
+
+    // ⚠️ Shake only on an ARMOURED break. Shaking on every brick would
+    // wobble the whole game, and the plan is explicit that shake is the
+    // effect most likely to be too much.
+    if destroyed && tier == crate::state::Tier::Armoured {
+        state.shake.add(crate::effects::SHAKE_UNITS);
+    }
 
     // ⚠️ Only a FINAL hit rolls for a drop. Rolling on every hit would make
     // an armoured brick roll four times, so the late levels — the ones with
@@ -2122,6 +2152,209 @@ mod magnet_tests {
                 assert!(b.vel.x.is_finite() && b.vel.y.is_finite(), "NaN velocity at {i}");
             }
             assert!(s.balls.len() <= s.ball_cap(), "over the cap at tick {i}");
+        }
+    }
+}
+
+/// Chips, damage feedback and shake, where they meet the running game.
+#[cfg(test)]
+mod effect_tests {
+    use super::*;
+    use crate::effects::{SHAKE_UNITS, SHATTER_CHIPS};
+    use crate::state::{Tier, BALL_RADIUS};
+    use omarcade_core::Color;
+
+    fn playing() -> GameState {
+        let mut s = GameState::new();
+        s.launch();
+        s
+    }
+
+    /// Put the ball on a brick and let the tick resolve the hit.
+    fn strike_first_brick(s: &mut GameState) -> usize {
+        let target = s.bricks.iter().position(|b| b.alive()).expect("a brick");
+        let r = s.bricks[target].rect;
+        s.balls[0].pos = Vec2::new(r.center().x, r.bottom() + BALL_RADIUS - 1.0);
+        s.balls[0].vel = Vec2::new(0.0, -s.ball_speed());
+        step_fixed(s);
+        target
+    }
+
+    #[test]
+    fn breaking_a_brick_throws_chips() {
+        let mut s = playing();
+        assert!(s.chips.is_empty(), "the pool should start empty");
+        strike_first_brick(&mut s);
+        assert!(!s.chips.is_empty(), "a broken brick threw nothing");
+    }
+
+    /// ⚠️ Damage and shatter are ONE system, partial. A reinforced brick's
+    /// first hit throws a smaller burst rather than getting an effect of
+    /// its own — that is what keeps it cheap, and it answers S4's note that
+    /// the damage shrink reads too subtly on its own.
+    #[test]
+    fn a_surviving_brick_throws_fewer_chips_than_a_destroyed_one() {
+        let mut destroyed = playing();
+        strike_first_brick(&mut destroyed);
+        let full = destroyed.chips.len();
+
+        let mut survives = playing();
+        let target = survives.bricks.iter().position(|b| b.alive()).unwrap();
+        survives.bricks[target].tier = Tier::Armoured;
+        survives.bricks[target].hits = Tier::Armoured.hits();
+        strike_first_brick(&mut survives);
+
+        assert!(survives.bricks[target].alive(), "the brick should have survived");
+        assert!(
+            survives.chips.len() < full,
+            "a survived hit threw {} chips, a break threw {full}",
+            survives.chips.len()
+        );
+        assert!(!survives.chips.is_empty(), "a survived hit must still show something");
+        assert_eq!(full, SHATTER_CHIPS);
+    }
+
+    /// ⚠️ Chips are made OF the brick. A chip in some other colour is a
+    /// generic puff, which the plan explicitly does not want.
+    #[test]
+    fn chips_take_the_bricks_own_colour() {
+        let mut s = playing();
+        s.palette = [
+            Color::rgb(1, 0, 0),
+            Color::rgb(2, 0, 0),
+            Color::rgb(3, 0, 0),
+            Color::rgb(4, 0, 0),
+            Color::rgb(5, 0, 0),
+            Color::rgb(6, 0, 0),
+        ];
+        let target = s.bricks.iter().position(|b| b.alive()).unwrap();
+        let want = s.palette[s.bricks[target].color_index % s.palette.len()];
+        strike_first_brick(&mut s);
+        for p in s.chips.particles() {
+            assert_eq!(p.color, want, "a chip did not take the brick's colour");
+        }
+    }
+
+    // ---- shake ----
+
+    /// ⚠️ Shake on an ARMOURED break only. Shaking on every brick would
+    /// wobble the whole game.
+    #[test]
+    fn an_ordinary_break_does_not_shake() {
+        let mut s = playing();
+        strike_first_brick(&mut s);
+        assert!(s.shake.is_still(), "a plain brick shook the screen");
+    }
+
+    #[test]
+    fn an_armoured_break_shakes() {
+        let mut s = playing();
+        let target = s.bricks.iter().position(|b| b.alive()).unwrap();
+        s.bricks[target].tier = Tier::Armoured;
+        s.bricks[target].hits = 1; // one hit from breaking
+        strike_first_brick(&mut s);
+        assert!(!s.bricks[target].alive(), "the brick should have broken");
+        assert!(!s.shake.is_still(), "an armoured break did not shake");
+    }
+
+    /// The plan asks for shake on a lost ball too — the case where it is
+    /// alone, with nothing else happening to soften it.
+    #[test]
+    fn losing_a_ball_shakes() {
+        let mut s = playing();
+        s.shake.clear();
+        s.lose_life();
+        assert!(!s.shake.is_still(), "a lost ball did not shake");
+    }
+
+    /// ⚠️ **Shake moves the DRAWING, never the world.** A ball colliding
+    /// with something it does not visually touch would be a real bug
+    /// wearing an effect's clothes. Physics must be identical with a shake
+    /// running and with none.
+    #[test]
+    fn shake_does_not_move_the_world() {
+        let run = |shaking: bool| {
+            let mut s = playing();
+            s.balls[0].pos = Vec2::new(300.0, 400.0);
+            s.balls[0].vel = Vec2::new(120.0, -260.0);
+            if shaking {
+                s.shake.add(SHAKE_UNITS * 4.0);
+            } else {
+                s.shake.clear();
+            }
+            for _ in 0..2000 {
+                step_fixed(&mut s);
+            }
+            (
+                s.balls.iter().map(|b| (b.pos, b.vel)).collect::<Vec<_>>(),
+                s.score,
+                s.lives,
+            )
+        };
+        assert_eq!(run(true), run(false), "shake changed the simulation");
+    }
+
+    // ---- clearing ----
+
+    /// ⚠️ S5's rule, extended again: last level's debris must not still be
+    /// falling through the next one.
+    #[test]
+    fn advancing_a_level_clears_chips_and_shake() {
+        let mut s = playing();
+        strike_first_brick(&mut s);
+        s.shake.add(SHAKE_UNITS);
+        assert!(!s.chips.is_empty());
+
+        s.advance_level();
+        assert!(s.chips.is_empty(), "chips followed the player to the next level");
+        assert!(s.shake.is_still(), "shake followed the player to the next level");
+    }
+
+    #[test]
+    fn restarting_clears_chips_and_shake() {
+        let mut s = playing();
+        strike_first_brick(&mut s);
+        s.shake.add(SHAKE_UNITS);
+        s.restart();
+        assert!(s.chips.is_empty());
+        assert!(s.shake.is_still());
+    }
+
+    /// Chips must actually retire — a pool that only fills is a leak that
+    /// ends with the newest break evicting the one before it.
+    #[test]
+    fn chips_expire_on_their_own() {
+        let mut s = playing();
+        strike_first_brick(&mut s);
+        assert!(!s.chips.is_empty());
+        let ticks = ((crate::effects::CHIP_LIFE * 3.0) / FIXED_DT).ceil() as u32;
+        for _ in 0..ticks {
+            step_fixed(&mut s);
+        }
+        assert!(s.chips.is_empty(), "{} chips outlived their life", s.chips.len());
+    }
+
+    /// A long, busy run stays sane: no NaN, no unbounded pool, no panic.
+    #[test]
+    fn a_long_run_with_effects_stays_sane() {
+        let mut s = playing();
+        s.apply_item(crate::items::ItemKind::Magnet);
+        for i in 0..60_000 {
+            if i % 900 == 0 {
+                s.apply_item(crate::items::ItemKind::Omarchy);
+            }
+            if i % 137 == 0 {
+                s.paddle.dir = if (i / 137) % 2 == 0 { 1.0 } else { -1.0 };
+            }
+            step_fixed(&mut s);
+            assert!(
+                s.chips.len() <= crate::effects::POOL_CAPACITY,
+                "pool overran its capacity at tick {i}"
+            );
+            for p in s.chips.particles() {
+                assert!(p.pos.x.is_finite() && p.pos.y.is_finite(), "NaN chip at tick {i}");
+            }
+            assert!(s.shake.amount.is_finite(), "NaN shake at tick {i}");
         }
     }
 }

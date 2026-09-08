@@ -913,10 +913,24 @@ impl Voice for Crash {
 /// ```
 ///
 /// So closeness sets the LEVEL rather than deciding whether there is a
-/// sound at all. The falloff is cubic, so a near miss is some
-/// twenty-five times louder than a wide berth: always there if you
-/// passed someone, only loud if you nearly touched. That is reachable
-/// however you drive and still a moment rather than a texture.
+/// sound at all: always there if you passed someone, louder if you
+/// nearly touched.
+///
+/// # ⚠️ The level is set against the ENGINE, not against silence
+///
+/// The first version of that falloff was cubic and topped out at 0.30,
+/// which is a fine shape on its own and inaudible in the game. The
+/// engine runs continuously at a peak of 0.34; the whooshes it produced
+/// measured 0.001 to 0.19, so most passes were under a hundredth of the
+/// sound they had to be heard over. Brian drove a full qualifying lap
+/// and heard nothing at any volume — not because the sound was missing
+/// but because it was buried.
+///
+/// A one-shot competing with a continuous voice has to be sized against
+/// that voice. The quietest pass now sits around 60% of the engine's
+/// peak and the closest above it, while a near miss stays a bit over
+/// twice the level of a wide one — enough spread to mean something,
+/// never so little that it vanishes into the mix.
 pub struct Pass {
     t: f32,
     /// 0 at the threshold, 1 for a pass that nearly touched.
@@ -940,12 +954,19 @@ const PASS_LEN: f32 = 0.42;
 /// something that was coming towards you and is now going away.
 const PASS_HZ_START: f32 = 900.0;
 const PASS_HZ_END: f32 = 260.0;
-const PASS_LEVEL: f32 = 0.30;
+/// Peak level of the closest possible pass.
+///
+/// Sized against the engine, which runs continuously at a peak of about
+/// 0.34. A one-shot that has to be heard over a continuous voice is
+/// measured against that voice, not against silence.
+const PASS_LEVEL: f32 = 0.55;
+
+/// The quietest a qualifying pass may be, as a fraction of
+/// [`PASS_LEVEL`]. Keeps a wide pass audible over the engine instead of
+/// technically present and practically silent.
+const PASS_FLOOR: f32 = 0.35;
 
 impl Pass {
-    /// For probes: the threshold, readable without importing it.
-    pub const CLOSE_ENOUGH_DEBUG: f32 = CLOSE_ENOUGH;
-
     pub fn new() -> Pass {
         Pass {
             t: 0.0,
@@ -960,16 +981,16 @@ impl Pass {
     /// How loud a pass at this gap should be, or `None` if it is too
     /// far away to make a sound at all.
     ///
-    /// CUBIC, and that is the whole design: a linear falloff leaves a
-    /// distant pass nearly as loud as a near miss, which is how a sound
-    /// meant for moments becomes a texture. Cubed, a pass at the median
-    /// separation is a fifth the level of one that nearly touched.
+    /// Squared with a floor under it. The floor is what keeps a wide
+    /// pass audible over the engine; the square is what keeps a near
+    /// miss clearly louder. A cubic falloff with no floor was measured
+    /// at a hundredth of the engine for most passes — see the type docs.
     pub fn intensity_for(gap: f32) -> Option<f32> {
         if gap >= CLOSE_ENOUGH {
             return None;
         }
         let t = (1.0 - gap / CLOSE_ENOUGH).clamp(0.0, 1.0);
-        Some(t * t * t)
+        Some(PASS_FLOOR + (1.0 - PASS_FLOOR) * t * t)
     }
 
     fn white(&mut self) -> f32 {
@@ -1015,9 +1036,8 @@ impl Voice for Pass {
             // edge as it goes by rather than being a pure rumble.
             let air = self.air.tick(n, hz * 3.0, sample_rate) * (1.0 - phase) * 0.4;
 
-            // No floor: the intensity IS the volume. A floor would put
-            // a wide pass within half the level of a near miss, and the
-            // cubic falloff above exists precisely so it is not.
+            // The floor lives in `intensity_for`, so everything that
+            // asks how loud a pass is gets the same answer.
             let level = PASS_LEVEL * self.intensity;
             *sample = ((body + air) * env * level).clamp(-1.0, 1.0);
         }
@@ -1440,6 +1460,40 @@ mod tests {
     }
 
     #[test]
+    fn every_pass_can_be_heard_over_the_engine() {
+        // ⚠️ THE BUG BRIAN FOUND TWICE. The first threshold made the
+        // sound unreachable; the falloff that replaced it made the sound
+        // INAUDIBLE, which from the driver's seat is the same thing. A
+        // cubic falloff peaking at 0.30 put most passes at a hundredth
+        // of the engine they play over, and he ran a full qualifying lap
+        // and heard nothing at any volume.
+        //
+        // A one-shot competing with a continuous voice is sized against
+        // that voice, never against silence. This measures both.
+        let mut engine = Engine::new();
+        let mut warm = vec![0.0; 48_000];
+        engine.render(&mut warm, VoiceParams::engine(0.8), 48_000.0);
+        engine.render(&mut warm, VoiceParams::engine(0.8), 48_000.0);
+        let engine_peak = warm.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(engine_peak > 0.05, "fixture: the engine should be loud");
+
+        // The widest pass that still qualifies is the worst case.
+        let widest = CLOSE_ENOUGH * 0.98;
+        let i = Pass::intensity_for(widest).expect("just inside the gate");
+        let mut p = Pass::new();
+        p.retrigger(i, 1.0);
+        let mut buf = vec![0.0; 24_000];
+        p.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+        let peak = buf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+
+        assert!(
+            peak > engine_peak * 0.2,
+            "the quietest qualifying pass is {peak} against an engine of \
+             {engine_peak} — it will not be heard",
+        );
+    }
+
+    #[test]
     fn a_near_miss_is_far_louder_than_a_wide_pass() {
         // What stops a reachable sound becoming wallpaper is the
         // FALLOFF, not the gate. A linear one would leave a wide pass
@@ -1448,13 +1502,16 @@ mod tests {
         let median = Pass::intensity_for(0.50).expect("a median pass sounds");
         let wide = Pass::intensity_for(0.95).expect("a wide pass still sounds");
 
+        // Enough spread to mean something, but not so much that the
+        // quiet end disappears — see `every_pass_can_be_heard_over_the_engine`
+        // for why that balance is the whole design.
         assert!(
-            near > median * 3.0,
-            "a near miss ({near}) should dwarf a median pass ({median})",
+            near > wide * 1.8,
+            "a near miss ({near}) should clearly beat a wide pass ({wide})",
         );
         assert!(
-            median > wide * 3.0,
-            "a median pass ({median}) should dwarf a wide one ({wide})",
+            near > median && median > wide,
+            "closeness must order the levels: {near} / {median} / {wide}",
         );
         assert!(Pass::intensity_for(CLOSE_ENOUGH + 0.01).is_none(), "past the gate is silent");
     }

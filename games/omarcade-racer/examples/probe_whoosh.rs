@@ -50,7 +50,7 @@ fn main() {
 
     println!("\n  WITH {} CARS (the game's TRAFFIC_CARS), 3 laps:\n", 5);
     println!("    {} passes, {fired} close enough to sound", gaps.len());
-    println!("    threshold CLOSE_ENOUGH = {}", sound::Pass::CLOSE_ENOUGH_DEBUG);
+    println!("    threshold CLOSE_ENOUGH = {}", sound::CLOSE_ENOUGH);
     if !gaps.is_empty() {
         gaps.sort_by(|a: &f32, b| a.partial_cmp(b).unwrap());
         let n = gaps.len();

@@ -13,8 +13,8 @@
 //!    reflecting off both flips the velocity twice and sends it back
 //!    the way it came. Only the deepest collision is resolved per tick.
 
-use crate::geom::{Axis, Vec2};
-use crate::state::{GameState, Phase, BALL_SPEED, PADDLE_SPEED, TRAIL_LEN};
+use crate::geom::{Axis, Rect, Vec2};
+use crate::state::{Ball, GameState, Paddle, Phase, BALL_SPEED, PADDLE_SPEED, TRAIL_LEN};
 
 /// Simulation rate. High enough that per-tick movement (~1.75 units at
 /// ball speed) is far smaller than the thinnest brick, which is what
@@ -95,14 +95,29 @@ pub fn step(state: &mut GameState, accumulator: &mut Accumulator, dt: f32) {
 /// copies of the same point.
 fn record_trail(state: &mut GameState) {
     if state.phase != Phase::Playing {
-        state.trail.clear();
+        for ball in &mut state.balls {
+            ball.trail.clear();
+        }
         return;
     }
-    state.trail.insert(0, state.ball.pos);
-    state.trail.truncate(TRAIL_LEN);
+    // ⚠️ Each ball samples into its OWN trail. One shared buffer with
+    // several balls writing to it draws a line that whips between them.
+    for ball in &mut state.balls {
+        ball.trail.insert(0, ball.pos);
+        ball.trail.truncate(TRAIL_LEN);
+    }
 }
 
 /// One fixed tick.
+///
+/// ⚠️ **Every ball is simulated independently, start to finish, before the
+/// next one begins.** Movement, walls, paddle and bricks are resolved for
+/// ball 0, then for ball 1, and so on — never gathered across balls and
+/// resolved together. The shallowest-collision-wins rule is a statement
+/// about ONE ball's tick; applied to a pool of collisions from several
+/// balls it silently picks the wrong face and the ball leaves at an angle
+/// nothing on screen explains. That failure reads as bad luck, not as a
+/// bug, which is exactly why it is spelled out here.
 pub fn step_fixed(state: &mut GameState) {
     move_paddle(state);
 
@@ -110,10 +125,21 @@ pub fn step_fixed(state: &mut GameState) {
         // Ball rides the paddle until launch.
         Phase::Ready => state.rest_ball_on_paddle(),
         Phase::Playing => {
-            move_ball(state);
-            collide_walls(state);
-            collide_paddle(state);
-            collide_bricks(state);
+            let field = state.field();
+            let paddle = state.paddle;
+
+            for i in 0..state.balls.len() {
+                move_ball(&mut state.balls[i]);
+                collide_walls(&mut state.balls[i], &field);
+                collide_paddle(&mut state.balls[i], &paddle);
+                // Bricks need the whole state: a kill scores, and it must
+                // be visible to every later ball in this same tick.
+                collide_bricks(state, i);
+            }
+
+            // Draining is per ball; losing a life is per empty field.
+            // Both happen only once every ball has had its tick.
+            state.retire_drained_balls();
             check_win(state);
         }
         Phase::Lost | Phase::Won => {}
@@ -127,16 +153,21 @@ fn move_paddle(state: &mut GameState) {
     p.x = p.x.clamp(0.0, crate::state::FIELD_W - p.w);
 }
 
-fn move_ball(state: &mut GameState) {
-    state.ball.pos += state.ball.vel * FIXED_DT;
+fn move_ball(ball: &mut Ball) {
+    ball.pos += ball.vel * FIXED_DT;
 }
 
-/// Bounce off the side and top walls; falling past the bottom loses a
-/// life.
-fn collide_walls(state: &mut GameState) {
-    let field = state.field();
-    let r = state.ball.radius;
-    let b = &mut state.ball;
+/// Bounce off the side and top walls; falling past the bottom drains the
+/// ball.
+///
+/// ⚠️ **Draining only marks the ball.** The single-ball version called
+/// `lose_life()` right here, because with one ball "this ball is gone" and
+/// "you lost a life" were the same event. With several in play that costs
+/// a life for the first ball to drain while the rest are still bouncing.
+/// The flag is collected by `GameState::retire_drained_balls` after every
+/// ball has moved.
+fn collide_walls(b: &mut Ball, field: &Rect) {
+    let r = b.radius;
 
     if b.pos.x - r < field.left() {
         b.pos.x = field.left() + r;
@@ -153,52 +184,63 @@ fn collide_walls(state: &mut GameState) {
 
     // Bottom is not a wall — it is how you lose the ball.
     if b.pos.y - r > field.bottom() {
-        state.lose_life();
+        b.drained = true;
     }
 }
 
-fn collide_paddle(state: &mut GameState) {
+fn collide_paddle(ball: &mut Ball, paddle: &Paddle) {
     // Only when moving downward. A ball on its way up that clips the
     // paddle from below should pass, not get batted back down.
-    if state.ball.vel.y <= 0.0 {
+    if ball.vel.y <= 0.0 {
         return;
     }
 
-    let paddle = state.paddle.rect();
-    if !state.ball.rect().overlaps(&paddle) {
+    let rect = paddle.rect();
+    if !ball.rect().overlaps(&rect) {
         return;
     }
 
     // Sit the ball on top of the paddle so it cannot re-collide.
-    state.ball.pos.y = paddle.top() - state.ball.radius - 0.01;
-    bounce_off_paddle(state);
+    ball.pos.y = rect.top() - ball.radius - 0.01;
+    bounce_off_paddle(ball, paddle);
 }
 
 /// Where the ball strikes the paddle sets the outgoing angle.
 ///
 /// This is the mechanic that makes Breakout a game of skill rather than
 /// a screensaver: hitting with the paddle's edge steers the ball.
-fn bounce_off_paddle(state: &mut GameState) {
-    let paddle = &state.paddle;
+fn bounce_off_paddle(ball: &mut Ball, paddle: &Paddle) {
     // -1 at the left edge, 0 at the centre, +1 at the right edge.
-    let offset = ((state.ball.pos.x - paddle.center_x()) / (paddle.w / 2.0)).clamp(-1.0, 1.0);
+    let offset = ((ball.pos.x - paddle.center_x()) / (paddle.w / 2.0)).clamp(-1.0, 1.0);
 
     let vx = offset * PADDLE_STEER;
     // Always upward, and always steep enough to keep the game moving.
     let vy = -(1.0 - vx.abs() * vx.abs()).max(MIN_VERTICAL_FRACTION).sqrt();
 
-    state.ball.vel = Vec2::new(vx, vy).with_length(BALL_SPEED);
-    clamp_angle(&mut state.ball.vel);
+    ball.vel = Vec2::new(vx, vy).with_length(BALL_SPEED);
+    clamp_angle(&mut ball.vel);
 }
 
-/// Resolve the single deepest brick collision this tick.
+/// Resolve the single shallowest brick collision this tick, for ONE ball.
 ///
 /// Deliberately not "every overlapping brick": a ball touching two
 /// bricks would reflect twice and reverse into the direction it came
 /// from. One collision per tick, and at 240Hz the next tick handles any
 /// remaining overlap.
-fn collide_bricks(state: &mut GameState) {
-    let ball_rect = state.ball.rect();
+///
+/// ⚠️ **The `best` candidate is per ball and must stay that way.** Pooling
+/// candidates across balls and resolving the winner would mean one ball's
+/// geometry decides another ball's bounce. Each ball gets its own call,
+/// its own search and its own resolution.
+///
+/// Takes the whole state and an index rather than `&mut Ball`, because a
+/// kill has to be visible to every later ball in this same tick: ball B
+/// simply sees `alive: false`. That is correct and free — and it is what
+/// makes the order of the vec observable, so `state.balls` must stay
+/// stable while this loop runs.
+fn collide_bricks(state: &mut GameState, index: usize) {
+    let ball_rect = state.balls[index].rect();
+    let ball_vel = state.balls[index].vel;
 
     let mut best: Option<(usize, f32, Axis)> = None;
     for (i, brick) in state.bricks.iter().enumerate() {
@@ -232,10 +274,10 @@ fn collide_bricks(state: &mut GameState) {
                 let cand = brick.rect.center();
                 match axis {
                     Axis::X => {
-                        if state.ball.vel.x >= 0.0 { cand.x > cur.x } else { cand.x < cur.x }
+                        if ball_vel.x >= 0.0 { cand.x > cur.x } else { cand.x < cur.x }
                     }
                     Axis::Y => {
-                        if state.ball.vel.y >= 0.0 { cand.y > cur.y } else { cand.y < cur.y }
+                        if ball_vel.y >= 0.0 { cand.y > cur.y } else { cand.y < cur.y }
                     }
                 }
             }
@@ -246,37 +288,43 @@ fn collide_bricks(state: &mut GameState) {
         }
     }
 
-    let Some((index, depth, axis)) = best else {
+    let Some((hit, depth, axis)) = best else {
         return;
     };
 
-    let brick_rect = state.bricks[index].rect;
-    state.bricks[index].alive = false;
+    // `index` is the ball; `hit` is the brick it struck.
+    let brick_rect = state.bricks[hit].rect;
+    // Scored once, by the ball that got there first. A second ball
+    // overlapping the same brick this tick finds it already dead and
+    // scores nothing — which is the rule, not an accident.
+    state.bricks[hit].alive = false;
     state.score += 10;
+
+    let ball = &mut state.balls[index];
 
     // Push out along the collision axis, then reflect that component.
     match axis {
         Axis::X => {
-            if state.ball.pos.x < brick_rect.center().x {
-                state.ball.pos.x -= depth;
-                state.ball.vel.x = -state.ball.vel.x.abs();
+            if ball.pos.x < brick_rect.center().x {
+                ball.pos.x -= depth;
+                ball.vel.x = -ball.vel.x.abs();
             } else {
-                state.ball.pos.x += depth;
-                state.ball.vel.x = state.ball.vel.x.abs();
+                ball.pos.x += depth;
+                ball.vel.x = ball.vel.x.abs();
             }
         }
         Axis::Y => {
-            if state.ball.pos.y < brick_rect.center().y {
-                state.ball.pos.y -= depth;
-                state.ball.vel.y = -state.ball.vel.y.abs();
+            if ball.pos.y < brick_rect.center().y {
+                ball.pos.y -= depth;
+                ball.vel.y = -ball.vel.y.abs();
             } else {
-                state.ball.pos.y += depth;
-                state.ball.vel.y = state.ball.vel.y.abs();
+                ball.pos.y += depth;
+                ball.vel.y = ball.vel.y.abs();
             }
         }
     }
 
-    clamp_angle(&mut state.ball.vel);
+    clamp_angle(&mut ball.vel);
 }
 
 /// Keep the ball from skimming too close to horizontal.
@@ -361,28 +409,40 @@ mod tests {
     #[test]
     fn ball_bounces_off_the_side_walls() {
         let mut s = playing();
-        s.ball.pos = Vec2::new(BALL_RADIUS - 1.0, 300.0);
-        s.ball.vel = Vec2::new(-100.0, -100.0);
-        collide_walls(&mut s);
-        assert!(s.ball.vel.x > 0.0, "should reflect rightward");
-        assert!(s.ball.pos.x >= BALL_RADIUS);
+        s.balls[0].pos = Vec2::new(BALL_RADIUS - 1.0, 300.0);
+        s.balls[0].vel = Vec2::new(-100.0, -100.0);
+        let field = s.field();
+        collide_walls(&mut s.balls[0], &field);
+        assert!(s.balls[0].vel.x > 0.0, "should reflect rightward");
+        assert!(s.balls[0].pos.x >= BALL_RADIUS);
     }
 
     #[test]
     fn ball_bounces_off_the_ceiling() {
         let mut s = playing();
-        s.ball.pos = Vec2::new(400.0, BALL_RADIUS - 1.0);
-        s.ball.vel = Vec2::new(50.0, -100.0);
-        collide_walls(&mut s);
-        assert!(s.ball.vel.y > 0.0, "should reflect downward");
+        s.balls[0].pos = Vec2::new(400.0, BALL_RADIUS - 1.0);
+        s.balls[0].vel = Vec2::new(50.0, -100.0);
+        let field = s.field();
+        collide_walls(&mut s.balls[0], &field);
+        assert!(s.balls[0].vel.y > 0.0, "should reflect downward");
     }
 
+    /// Two steps now, not one: the wall pass MARKS the ball, and retiring
+    /// the marked balls is what costs the life. With one ball in play the
+    /// two are indistinguishable from outside — which is the point, the
+    /// single-ball behaviour is unchanged.
     #[test]
     fn falling_past_the_bottom_costs_a_life() {
         let mut s = playing();
         let lives = s.lives;
-        s.ball.pos = Vec2::new(400.0, FIELD_H + 50.0);
-        collide_walls(&mut s);
+        s.balls[0].pos = Vec2::new(400.0, FIELD_H + 50.0);
+        let field = s.field();
+
+        collide_walls(&mut s.balls[0], &field);
+        assert!(s.balls[0].drained, "passing the bottom must mark the ball");
+        assert_eq!(s.lives, lives, "but must NOT cost a life by itself");
+
+        s.retire_drained_balls();
         assert_eq!(s.lives, lives - 1);
         assert_eq!(s.phase, Phase::Ready);
     }
@@ -409,32 +469,35 @@ mod tests {
     fn hitting_the_paddle_left_of_centre_sends_the_ball_left() {
         let mut s = playing();
         s.paddle.x = 400.0;
-        s.ball.pos = Vec2::new(s.paddle.center_x() - 50.0, s.paddle.y - BALL_RADIUS + 1.0);
-        s.ball.vel = Vec2::new(0.0, 300.0);
-        collide_paddle(&mut s);
-        assert!(s.ball.vel.x < 0.0, "vx = {}", s.ball.vel.x);
-        assert!(s.ball.vel.y < 0.0, "must go up");
+        s.balls[0].pos = Vec2::new(s.paddle.center_x() - 50.0, s.paddle.y - BALL_RADIUS + 1.0);
+        s.balls[0].vel = Vec2::new(0.0, 300.0);
+        let paddle = s.paddle;
+        collide_paddle(&mut s.balls[0], &paddle);
+        assert!(s.balls[0].vel.x < 0.0, "vx = {}", s.balls[0].vel.x);
+        assert!(s.balls[0].vel.y < 0.0, "must go up");
     }
 
     #[test]
     fn hitting_the_paddle_right_of_centre_sends_the_ball_right() {
         let mut s = playing();
         s.paddle.x = 400.0;
-        s.ball.pos = Vec2::new(s.paddle.center_x() + 50.0, s.paddle.y - BALL_RADIUS + 1.0);
-        s.ball.vel = Vec2::new(0.0, 300.0);
-        collide_paddle(&mut s);
-        assert!(s.ball.vel.x > 0.0);
-        assert!(s.ball.vel.y < 0.0);
+        s.balls[0].pos = Vec2::new(s.paddle.center_x() + 50.0, s.paddle.y - BALL_RADIUS + 1.0);
+        s.balls[0].vel = Vec2::new(0.0, 300.0);
+        let paddle = s.paddle;
+        collide_paddle(&mut s.balls[0], &paddle);
+        assert!(s.balls[0].vel.x > 0.0);
+        assert!(s.balls[0].vel.y < 0.0);
     }
 
     #[test]
     fn paddle_bounce_preserves_speed() {
         let mut s = playing();
-        s.ball.pos = Vec2::new(s.paddle.center_x() + 20.0, s.paddle.y - BALL_RADIUS + 1.0);
-        s.ball.vel = Vec2::new(10.0, 300.0);
-        collide_paddle(&mut s);
-        assert!((s.ball.vel.length() - BALL_SPEED).abs() < 0.5,
-            "speed drifted to {}", s.ball.vel.length());
+        s.balls[0].pos = Vec2::new(s.paddle.center_x() + 20.0, s.paddle.y - BALL_RADIUS + 1.0);
+        s.balls[0].vel = Vec2::new(10.0, 300.0);
+        let paddle = s.paddle;
+        collide_paddle(&mut s.balls[0], &paddle);
+        assert!((s.balls[0].vel.length() - BALL_SPEED).abs() < 0.5,
+            "speed drifted to {}", s.balls[0].vel.length());
     }
 
     /// A ball travelling upward through the paddle must not be batted
@@ -442,11 +505,12 @@ mod tests {
     #[test]
     fn upward_ball_passes_through_the_paddle() {
         let mut s = playing();
-        s.ball.pos = Vec2::new(s.paddle.center_x(), s.paddle.y);
-        s.ball.vel = Vec2::new(0.0, -300.0);
-        let before = s.ball.vel;
-        collide_paddle(&mut s);
-        assert_eq!(s.ball.vel, before);
+        s.balls[0].pos = Vec2::new(s.paddle.center_x(), s.paddle.y);
+        s.balls[0].vel = Vec2::new(0.0, -300.0);
+        let before = s.balls[0].vel;
+        let paddle = s.paddle;
+        collide_paddle(&mut s.balls[0], &paddle);
+        assert_eq!(s.balls[0].vel, before);
     }
 
     // ---- bricks ----
@@ -455,12 +519,12 @@ mod tests {
     fn hitting_a_brick_kills_it_and_scores() {
         let mut s = playing();
         let brick = s.bricks[0].rect;
-        s.ball.pos = Vec2::new(brick.center().x, brick.bottom() + BALL_RADIUS - 2.0);
-        s.ball.vel = Vec2::new(0.0, -BALL_SPEED);
-        collide_bricks(&mut s);
+        s.balls[0].pos = Vec2::new(brick.center().x, brick.bottom() + BALL_RADIUS - 2.0);
+        s.balls[0].vel = Vec2::new(0.0, -BALL_SPEED);
+        collide_bricks(&mut s, 0);
         assert!(!s.bricks[0].alive);
         assert_eq!(s.score, 10);
-        assert!(s.ball.vel.y > 0.0, "should bounce back downward");
+        assert!(s.balls[0].vel.y > 0.0, "should bounce back downward");
     }
 
     /// Two bricks in one tick must produce ONE reflection, not two.
@@ -471,15 +535,15 @@ mod tests {
         let a = s.bricks[0].rect;
         let b = s.bricks[1].rect;
         let seam = (a.right() + b.left()) / 2.0;
-        s.ball.pos = Vec2::new(seam, a.center().y);
-        s.ball.vel = Vec2::new(BALL_SPEED, 0.0);
-        let before = s.ball.vel;
-        collide_bricks(&mut s);
+        s.balls[0].pos = Vec2::new(seam, a.center().y);
+        s.balls[0].vel = Vec2::new(BALL_SPEED, 0.0);
+        let before = s.balls[0].vel;
+        collide_bricks(&mut s, 0);
         // Exactly one brick dies this tick.
         let dead = s.bricks.iter().filter(|k| !k.alive).count();
         assert_eq!(dead, 1, "one collision per tick");
         // And the velocity did not flip twice back to its original sign.
-        assert_ne!(s.ball.vel.x.signum(), before.x.signum(),
+        assert_ne!(s.balls[0].vel.x.signum(), before.x.signum(),
             "a single reflection must change direction");
     }
 
@@ -513,5 +577,302 @@ mod tests {
         let mut down = Vec2::new(100.0, 1.0);
         clamp_angle(&mut down);
         assert!(down.y > 0.0, "downward stays downward");
+    }
+}
+
+#[cfg(test)]
+mod multiball_tests {
+    use super::*;
+    use crate::state::{BALL_CAP_HIGH, BALL_CAP_LOW, BRICK_H, FIELD_H, LEVEL_CAP_STEP};
+
+    fn playing() -> GameState {
+        let mut s = GameState::new();
+        s.launch();
+        s
+    }
+
+    /// Put a ball at `pos` moving `vel`, ignoring the cap. Test-only: it
+    /// reaches past `spawn_ball` so a test can set up more balls than a
+    /// level would ever allow.
+    fn add_ball(s: &mut GameState, pos: Vec2, vel: Vec2) {
+        let r = s.balls[0].radius;
+        s.balls.push(crate::state::Ball::new(pos, vel, r));
+    }
+
+    // ---- the five the plan names ----
+
+    #[test]
+    fn a_ball_draining_with_others_in_play_costs_no_life() {
+        let mut s = playing();
+        add_ball(&mut s, Vec2::new(300.0, 300.0), Vec2::new(0.0, -200.0));
+        let lives = s.lives;
+
+        // Drop the FIRST ball past the bottom; the second is mid-field.
+        s.balls[0].pos = Vec2::new(400.0, FIELD_H + 50.0);
+        step_fixed(&mut s);
+
+        assert_eq!(s.lives, lives, "a life must survive while a ball is in play");
+        assert_eq!(s.balls.len(), 1, "the drained ball must be gone");
+        assert_eq!(s.phase, Phase::Playing, "and play must continue");
+    }
+
+    #[test]
+    fn the_last_ball_draining_costs_a_life() {
+        let mut s = playing();
+        add_ball(&mut s, Vec2::new(300.0, 300.0), Vec2::new(0.0, -200.0));
+        let lives = s.lives;
+
+        // Both below the floor in the same tick.
+        s.balls[0].pos = Vec2::new(400.0, FIELD_H + 50.0);
+        s.balls[1].pos = Vec2::new(500.0, FIELD_H + 50.0);
+        step_fixed(&mut s);
+
+        assert_eq!(s.lives, lives - 1, "the field emptied: one life, not two");
+        assert_eq!(s.phase, Phase::Ready);
+        assert_eq!(s.balls.len(), 1, "Ready holds exactly one ball");
+    }
+
+    /// ⚠️ Several balls draining at once must cost ONE life, not one each.
+    /// With three balls and three lives, a per-ball charge is game over.
+    #[test]
+    fn many_balls_draining_together_cost_exactly_one_life() {
+        let mut s = playing();
+        add_ball(&mut s, Vec2::new(300.0, 300.0), Vec2::ZERO);
+        add_ball(&mut s, Vec2::new(500.0, 300.0), Vec2::ZERO);
+        let lives = s.lives;
+
+        for b in &mut s.balls {
+            b.pos = Vec2::new(b.pos.x, FIELD_H + 50.0);
+        }
+        step_fixed(&mut s);
+
+        assert_eq!(s.lives, lives - 1, "one empty field, one life");
+        assert_ne!(s.phase, Phase::Lost, "three balls must not end a three-life game");
+    }
+
+    #[test]
+    fn two_balls_hitting_the_same_brick_in_one_tick_score_it_once() {
+        let mut s = playing();
+        let target = *s.bricks.iter().find(|b| b.alive).unwrap();
+        let c = target.rect.center();
+        let before = s.score;
+        let alive_before = s.bricks_remaining();
+
+        // Both balls overlapping the same brick, from below.
+        //
+        // ⚠️ Placed against the brick's CENTRE line, not its bottom edge. At
+        // bottom-1 an 8-radius ball spans 16 units and reaches into the row
+        // below (row 1 starts 6 units under row 0's bottom), so each ball
+        // straddles two bricks and they resolve against different ones —
+        // which is correct behaviour, and would make this test assert the
+        // wrong thing. Kept inside one brick, the collision is unambiguous.
+        let y = c.y;
+        s.balls[0].pos = Vec2::new(c.x - 4.0, y);
+        s.balls[0].vel = Vec2::new(0.0, -100.0);
+        add_ball(&mut s, Vec2::new(c.x + 4.0, y), Vec2::new(0.0, -100.0));
+
+        step_fixed(&mut s);
+
+        assert_eq!(s.bricks_remaining(), alive_before - 1, "exactly one brick died");
+        assert_eq!(s.score - before, 10, "and it scored exactly once");
+    }
+
+    #[test]
+    fn the_ball_cap_is_five_below_level_six_and_ten_above() {
+        let mut s = playing();
+
+        s.level = 1;
+        assert_eq!(s.ball_cap(), BALL_CAP_LOW);
+        s.level = LEVEL_CAP_STEP - 1;
+        assert_eq!(s.ball_cap(), BALL_CAP_LOW, "level 5 is still the low cap");
+        s.level = LEVEL_CAP_STEP;
+        assert_eq!(s.ball_cap(), BALL_CAP_HIGH, "level 6 raises it");
+        s.level = 10;
+        assert_eq!(s.ball_cap(), BALL_CAP_HIGH);
+    }
+
+    #[test]
+    fn a_level_starts_with_exactly_one_ball() {
+        let mut s = playing();
+        add_ball(&mut s, Vec2::new(300.0, 300.0), Vec2::ZERO);
+        add_ball(&mut s, Vec2::new(500.0, 300.0), Vec2::ZERO);
+        assert_eq!(s.balls.len(), 3);
+
+        // Every route back to Ready collapses to one ball.
+        s.rest_ball_on_paddle();
+        assert_eq!(s.balls.len(), 1);
+
+        let fresh = GameState::new();
+        assert_eq!(fresh.balls.len(), 1);
+    }
+
+    // ---- the cap, enforced ----
+
+    #[test]
+    fn spawning_stops_at_the_cap_and_says_so() {
+        let mut s = playing();
+        s.level = 1;
+        let mut spawned = 1;
+        // Ask for far more than the cap allows.
+        for _ in 0..20 {
+            if s.spawn_ball(Vec2::new(400.0, 300.0), Vec2::new(50.0, -50.0)) {
+                spawned += 1;
+            }
+        }
+        assert_eq!(s.balls.len(), BALL_CAP_LOW);
+        assert_eq!(spawned, BALL_CAP_LOW, "spawn_ball must report the refusals");
+
+        // The high cap admits more.
+        s.level = LEVEL_CAP_STEP;
+        while s.spawn_ball(Vec2::new(400.0, 300.0), Vec2::new(50.0, -50.0)) {}
+        assert_eq!(s.balls.len(), BALL_CAP_HIGH);
+    }
+
+    #[test]
+    fn a_spawned_ball_goes_to_the_back_and_keeps_the_others_in_place() {
+        let mut s = playing();
+        add_ball(&mut s, Vec2::new(111.0, 300.0), Vec2::ZERO);
+        let first = s.balls[0].pos;
+        let second = s.balls[1].pos;
+
+        s.spawn_ball(Vec2::new(999.0, 300.0), Vec2::new(0.0, -100.0));
+
+        assert_eq!(s.balls[0].pos, first, "existing balls must not move in the vec");
+        assert_eq!(s.balls[1].pos, second);
+        assert_eq!(s.balls[2].pos.x, 999.0, "the new ball is at the back");
+    }
+
+    // ---- trails are per ball ----
+
+    /// ⚠️ The bug this prevents renders as a line whipping between balls,
+    /// and gets reported as a rendering bug. Each ball keeps its own.
+    #[test]
+    fn every_ball_keeps_its_own_trail() {
+        let mut s = playing();
+        s.balls[0].pos = Vec2::new(100.0, 300.0);
+        s.balls[0].vel = Vec2::new(0.0, -150.0);
+        add_ball(&mut s, Vec2::new(800.0, 300.0), Vec2::new(0.0, -150.0));
+
+        let mut acc = Accumulator::new();
+        for _ in 0..6 {
+            step(&mut s, &mut acc, 1.0 / 60.0);
+        }
+
+        assert!(s.balls[0].trail.len() >= 2, "ball 0 recorded a trail");
+        assert!(s.balls[1].trail.len() >= 2, "ball 1 recorded a trail");
+
+        // Each trail must stay near its own ball. A shared buffer would put
+        // points from both balls in one list, hundreds of units apart.
+        for (i, ball) in s.balls.iter().enumerate() {
+            for pos in &ball.trail {
+                assert!(
+                    (pos.x - ball.pos.x).abs() < 100.0,
+                    "ball {i} trail point {pos:?} belongs to another ball (ball at {:?})",
+                    ball.pos
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn leaving_play_clears_every_trail() {
+        let mut s = playing();
+        add_ball(&mut s, Vec2::new(800.0, 300.0), Vec2::new(0.0, -150.0));
+        let mut acc = Accumulator::new();
+        for _ in 0..6 {
+            step(&mut s, &mut acc, 1.0 / 60.0);
+        }
+        assert!(s.balls.iter().any(|b| !b.trail.is_empty()));
+
+        s.phase = Phase::Lost;
+        step(&mut s, &mut acc, 1.0 / 60.0);
+        assert!(
+            s.balls.iter().all(|b| b.trail.is_empty()),
+            "no trail may outlive the run that drew it"
+        );
+    }
+
+    // ---- the invariants that must survive multi-ball ----
+
+    /// Invariant 2, per ball. Two balls each straddling their own pair of
+    /// bricks must each resolve their own shallowest collision — never one
+    /// ball's geometry deciding the other's bounce.
+    #[test]
+    fn each_ball_resolves_its_own_collision() {
+        let mut s = playing();
+        // Clear the field, then place two isolated bricks far apart.
+        for b in &mut s.bricks {
+            b.alive = false;
+        }
+        s.bricks[0].alive = true;
+        let left = s.bricks[0].rect;
+        let right_i = s.bricks.len() - 1;
+        s.bricks[right_i].alive = true;
+        let right = s.bricks[right_i].rect;
+
+        s.balls[0].pos = Vec2::new(left.center().x, left.bottom() - 1.0);
+        s.balls[0].vel = Vec2::new(0.0, -200.0);
+        add_ball(&mut s, Vec2::new(right.center().x, right.bottom() - 1.0), Vec2::new(0.0, -200.0));
+
+        step_fixed(&mut s);
+
+        assert!(!s.bricks[0].alive, "ball 0 broke its own brick");
+        assert!(!s.bricks[right_i].alive, "ball 1 broke its own brick");
+        assert!(s.balls[0].vel.y > 0.0, "ball 0 reflected downward");
+        assert!(s.balls[1].vel.y > 0.0, "ball 1 reflected downward");
+    }
+
+    /// The tunnelling guarantee is per ball and must hold for all of them.
+    #[test]
+    fn no_ball_tunnels_through_a_brick() {
+        let mut s = playing();
+        let per_tick = BALL_SPEED * FIXED_DT;
+        assert!(
+            per_tick < BRICK_H,
+            "a tick moves {per_tick} units through a {BRICK_H}-unit brick"
+        );
+
+        // Ten balls, all launched at the field.
+        s.level = LEVEL_CAP_STEP;
+        while s.spawn_ball(Vec2::new(480.0, 500.0), Vec2::new(0.0, -BALL_SPEED)) {}
+        assert_eq!(s.balls.len(), BALL_CAP_HIGH);
+
+        let mut acc = Accumulator::new();
+        for _ in 0..600 {
+            step(&mut s, &mut acc, 1.0 / 60.0);
+            for b in &s.balls {
+                assert!(b.pos.x.is_finite() && b.pos.y.is_finite(), "NaN escaped");
+                assert!(
+                    b.pos.y > -50.0 && b.pos.y < FIELD_H + 100.0,
+                    "ball left the field at {:?}",
+                    b.pos
+                );
+            }
+        }
+    }
+
+    /// Ten balls in play must not stall, NaN, or lose the phase.
+    #[test]
+    fn a_full_field_of_balls_stays_sane() {
+        let mut s = playing();
+        s.level = LEVEL_CAP_STEP;
+        let mut seed = 7u32;
+        while s.balls.len() < BALL_CAP_HIGH {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let ang = (seed >> 8) as f32 / 65535.0;
+            s.spawn_ball(
+                Vec2::new(200.0 + ang * 500.0, 400.0),
+                Vec2::new(ang * 200.0 - 100.0, -BALL_SPEED),
+            );
+        }
+
+        let mut acc = Accumulator::new();
+        for _ in 0..1200 {
+            step(&mut s, &mut acc, 1.0 / 60.0);
+        }
+        assert!(s.balls.len() <= BALL_CAP_HIGH, "the cap held all game");
+        for b in &s.balls {
+            assert!(b.pos.x.is_finite() && b.pos.y.is_finite());
+        }
     }
 }

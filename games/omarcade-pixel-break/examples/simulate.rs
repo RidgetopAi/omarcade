@@ -30,14 +30,14 @@ fn main() {
     for t in 0..ticks {
         // Perfect paddle: always track the ball. Keeps the rally alive
         // so we exercise brick collisions rather than losing instantly.
-        let target = s.ball.pos.x;
+        let target = s.balls[0].pos.x;
         let c = s.paddle.center_x();
         s.paddle.dir = if (target - c).abs() < 4.0 { 0.0 } else if target > c { 1.0 } else { -1.0 };
 
         step_fixed(&mut s);
 
-        let p = s.ball.pos;
-        let v = s.ball.vel;
+        let p = s.balls[0].pos;
+        let v = s.balls[0].vel;
 
         if !p.x.is_finite() || !p.y.is_finite() || !v.x.is_finite() || !v.y.is_finite() {
             nans += 1;

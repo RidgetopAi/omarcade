@@ -98,10 +98,36 @@ fn main() {
         "midgame" => {
             s.launch();
             for _ in 0..40_000 {
-                let t = s.ball.pos.x; let c = s.paddle.center_x();
+                let t = s.balls[0].pos.x; let c = s.paddle.center_x();
                 s.paddle.dir = if (t - c).abs() < 4.0 { 0.0 } else if t > c { 1.0 } else { -1.0 };
                 physics::step_fixed(&mut s);
                 if s.phase == state::Phase::Ready { s.launch(); }
+            }
+            fill_trail(&mut s);
+        }
+        // Several balls in play at once, each with its own trail.
+        // ⚠️ This is the scene that shows the per-ball trail is right: a
+        // shared trail would draw one line whipping between the balls.
+        "multiball" => {
+            s.launch();
+            s.level = 6; // the high cap
+            let mut seed = 11u32;
+            while s.balls.len() < 6 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                // ⚠️ Mask to 16 bits before dividing. Without the mask the
+                // shift keeps every upper bit and `r` runs to millions, so
+                // balls spawn tens of thousands of units off-field and drain
+                // on the first tick.
+                let r = ((seed >> 8) & 0xFFFF) as f32 / 65535.0;
+                s.spawn_ball(
+                    geom::Vec2::new(160.0 + r * 620.0, 300.0 + r * 200.0),
+                    geom::Vec2::new(r * 300.0 - 150.0, -state::BALL_SPEED),
+                );
+            }
+            // Long enough for every ball to build a trail and diverge,
+            // short enough that they are all still in play.
+            for _ in 0..150 {
+                physics::step_fixed(&mut s);
             }
             fill_trail(&mut s);
         }

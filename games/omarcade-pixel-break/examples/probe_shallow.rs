@@ -32,7 +32,7 @@ fn main() {
     for t in 0..300_000u32 {
         // Adversarial paddle: aim so the ball lands on the very edge,
         // maximising horizontal deflection.
-        let edge_target = s.ball.pos.x - (s.paddle.w / 2.0) * 0.97;
+        let edge_target = s.balls[0].pos.x - (s.paddle.w / 2.0) * 0.97;
         let c = s.paddle.center_x();
         s.paddle.dir = if (edge_target - c).abs() < 2.0 { 0.0 }
                        else if edge_target > c { 1.0 } else { -1.0 };
@@ -42,10 +42,10 @@ fn main() {
         // with a moving ball — otherwise we silently measure nothing.
         if s.phase == Phase::Ready { s.launch(); samples_skipped += 1; continue; }
         if s.phase != Phase::Playing { continue; }
-        if s.ball.vel.length() == 0.0 { continue; }
+        if s.balls[0].vel.length() == 0.0 { continue; }
         samples += 1;
 
-        let v = s.ball.vel;
+        let v = s.balls[0].vel;
         let sp = v.length();
         if sp > 0.0 {
             let frac = v.y.abs() / sp;
@@ -53,7 +53,7 @@ fn main() {
             if frac < 0.2 { horizontal_run += 1; worst_run = worst_run.max(horizontal_run); }
             else { horizontal_run = 0; }
         }
-        let p = s.ball.pos;
+        let p = s.balls[0].pos;
         if p.x < -20.0 || p.x > FIELD_W + 20.0 || p.y < -20.0 { escapes += 1; }
         if !p.x.is_finite() || !p.y.is_finite() { println!("NaN at {t}"); break; }
     }
@@ -64,7 +64,7 @@ fn main() {
     println!("  worst at tick {} = {:.4}", worst.0, worst.1);
     println!("longest run below 0.2: {worst_run} ticks");
     println!("escapes: {escapes}");
-    println!("final speed: {:.3} (nominal {BALL_SPEED})", s.ball.vel.length());
+    println!("final speed: {:.3} (nominal {BALL_SPEED})", s.balls[0].vel.length());
     println!();
     if samples == 0 {
         println!("FAIL: harness collected ZERO samples — measured nothing");

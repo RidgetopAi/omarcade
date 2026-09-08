@@ -38,6 +38,17 @@ pub const BRICK_TOP: f32 = 90.0;
 
 pub const STARTING_LIVES: u32 = 3;
 
+/// Most balls in play at once, on levels 1-5 and from level 6 on.
+///
+/// Lives persist across the whole game; balls are what is in play right
+/// now. A life is lost only when the last ball drains, so the cap is a
+/// ceiling on how much rescue a good run can bank, not on how long it
+/// lasts.
+pub const BALL_CAP_LOW: usize = 5;
+pub const BALL_CAP_HIGH: usize = 10;
+/// The level at which the cap goes up.
+pub const LEVEL_CAP_STEP: u32 = 6;
+
 /// How many past ball positions the trail keeps. Long enough to read as
 /// motion, short enough that a slow ball does not smear.
 pub const TRAIL_LEN: usize = 10;
@@ -78,14 +89,44 @@ impl Paddle {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Ball {
     pub pos: Vec2,
     pub vel: Vec2,
     pub radius: f32,
+    /// Recent positions, newest first, for this ball's motion trail.
+    ///
+    /// ⚠️ **Per ball, deliberately.** One shared trail with several balls
+    /// writing into it draws a line that whips between them — which looks
+    /// exactly like a rendering bug and gets reported as one. The trail
+    /// belongs to the thing that made it.
+    ///
+    /// Presentation state living in the world model on purpose: physics is
+    /// the only thing that knows where a ball has actually been, and
+    /// sampling it in `render` would tie the trail to frame rate instead of
+    /// to the fixed timestep.
+    pub trail: Vec<Vec2>,
+    /// Set by physics when this ball passes the bottom edge; the ball is
+    /// removed after the per-ball loop finishes.
+    ///
+    /// ⚠️ A flag rather than an immediate removal. Losing a life the moment
+    /// one ball drains is correct with a single ball and wrong with several
+    /// — see `GameState::retire_drained_balls`.
+    pub drained: bool,
 }
 
 impl Ball {
+    /// A ball at rest. Trail empty, not drained.
+    pub fn new(pos: Vec2, vel: Vec2, radius: f32) -> Self {
+        Ball {
+            pos,
+            vel,
+            radius,
+            trail: Vec::with_capacity(TRAIL_LEN),
+            drained: false,
+        }
+    }
+
     /// The ball as a rect, which is how collision sees it.
     ///
     /// A square standing in for a circle is the standard Breakout
@@ -110,22 +151,25 @@ pub struct Brick {
 #[derive(Debug, Clone)]
 pub struct GameState {
     pub paddle: Paddle,
-    pub ball: Ball,
+    /// Every ball in play. Ordinary play is a one-element vec.
+    ///
+    /// ⚠️ **Order is observable.** Balls are resolved one at a time, so a
+    /// brick killed by the first is already dead for the second in the same
+    /// tick. That is correct and free, but it means the vec must stay
+    /// stable: new balls are pushed to the BACK, and drained ones are
+    /// removed AFTER the per-ball loop, never during it.
+    pub balls: Vec<Ball>,
     pub bricks: Vec<Brick>,
     pub lives: u32,
     pub score: u32,
+    /// Which level is being played, from 1. Only the ball cap reads it
+    /// today; the ten-level progression itself is still to come.
+    pub level: u32,
     pub phase: Phase,
     /// Best score on record, shown on the end screen. Owned by the caller:
     /// the simulation never sets it, so the headless harnesses see 0 and
     /// stay deterministic.
     pub best: u32,
-    /// Recent ball positions, newest first, for the motion trail.
-    ///
-    /// Presentation state living in the world model on purpose: physics
-    /// is the only thing that knows where the ball has actually been, and
-    /// sampling it in `render` would tie the trail to frame rate instead
-    /// of to the fixed timestep.
-    pub trail: Vec<Vec2>,
 }
 
 impl GameState {
@@ -140,46 +184,109 @@ impl GameState {
         };
 
         let mut state = GameState {
-            ball: Ball {
-                pos: Vec2::ZERO,
-                vel: Vec2::ZERO,
-                radius: BALL_RADIUS,
-            },
+            balls: vec![Ball::new(Vec2::ZERO, Vec2::ZERO, BALL_RADIUS)],
             paddle,
             bricks: build_bricks(),
             lives: STARTING_LIVES,
             score: 0,
+            level: 1,
             phase: Phase::Ready,
             best: 0,
-            trail: Vec::with_capacity(TRAIL_LEN),
         };
         state.rest_ball_on_paddle();
         state
     }
 
-    /// Park the ball on the paddle, motionless.
+    /// Collapse to exactly one ball, parked on the paddle, motionless.
     ///
     /// Placed one pixel clear of the paddle rather than touching it: at
     /// launch the ball must not already be overlapping, or the first
     /// collision check would immediately bounce it back down.
+    ///
+    /// ⚠️ **`Phase::Ready` holds exactly one ball.** Multi-ball exists only
+    /// during `Playing`, so every path back to `Ready` — a lost life, a new
+    /// level, a restart — comes through here and discards the rest.
     pub fn rest_ball_on_paddle(&mut self) {
-        self.ball.pos = Vec2::new(
-            self.paddle.center_x(),
-            self.paddle.y - self.ball.radius - 1.0,
-        );
-        self.ball.vel = Vec2::ZERO;
+        let radius = self.balls.first().map_or(BALL_RADIUS, |b| b.radius);
+        self.balls.clear();
+        self.balls.push(Ball::new(
+            Vec2::new(self.paddle.center_x(), self.paddle.y - radius - 1.0),
+            Vec2::ZERO,
+            radius,
+        ));
     }
 
     /// Send the ball on its way, upward and slightly angled.
     ///
     /// Never straight up: a perfectly vertical ball in a brick corridor
     /// bounces forever on the same column and the game stalls.
+    ///
+    /// Written as "every ball" even though `Ready` holds exactly one: it
+    /// cannot then become wrong if a later phase ever launches several.
     pub fn launch(&mut self) {
         if self.phase != Phase::Ready {
             return;
         }
-        self.ball.vel = Vec2::new(0.35, -1.0).with_length(BALL_SPEED);
+        let vel = Vec2::new(0.35, -1.0).with_length(BALL_SPEED);
+        for ball in &mut self.balls {
+            ball.vel = vel;
+        }
         self.phase = Phase::Playing;
+    }
+
+    /// How many balls may be in play at once on the current level.
+    ///
+    /// Five through level five, ten from level six. The jump is what makes
+    /// the back half of the game feel different rather than merely faster.
+    pub fn ball_cap(&self) -> usize {
+        if self.level >= LEVEL_CAP_STEP {
+            BALL_CAP_HIGH
+        } else {
+            BALL_CAP_LOW
+        }
+    }
+
+    /// Add a ball travelling `vel` from `pos`, if the cap allows it.
+    ///
+    /// Returns whether one was actually added, so a caller can decline to
+    /// play the pickup sound for a ball that never appeared.
+    ///
+    /// ⚠️ Pushed to the BACK. Balls are resolved in order and that order is
+    /// observable through same-tick brick kills; appending keeps every
+    /// existing ball's position in the vec stable.
+    pub fn spawn_ball(&mut self, pos: Vec2, vel: Vec2) -> bool {
+        if self.balls.len() >= self.ball_cap() {
+            return false;
+        }
+        let radius = self.balls.first().map_or(BALL_RADIUS, |b| b.radius);
+        self.balls.push(Ball::new(pos, vel, radius));
+        true
+    }
+
+    /// Remove every ball that drained this tick, and lose a life only if
+    /// that leaves none in play.
+    ///
+    /// ⚠️ **This is the rule multi-ball is most likely to get wrong.** With
+    /// one ball, "ball past the bottom" and "life lost" are the same event,
+    /// and the single-ball code fired `lose_life` inline the moment it
+    /// happened. With several, that costs a life for the first ball to
+    /// drain while the others are still in play. Draining is per ball;
+    /// losing a life is per empty field.
+    ///
+    /// Removal walks backwards so each index stays valid as earlier ones
+    /// are removed.
+    pub fn retire_drained_balls(&mut self) {
+        if !self.balls.iter().any(|b| b.drained) {
+            return;
+        }
+        for i in (0..self.balls.len()).rev() {
+            if self.balls[i].drained {
+                self.balls.remove(i);
+            }
+        }
+        if self.balls.is_empty() {
+            self.lose_life();
+        }
     }
 
     pub fn bricks_remaining(&self) -> usize {
@@ -288,8 +395,8 @@ mod tests {
     #[test]
     fn resting_ball_does_not_overlap_the_paddle() {
         let s = GameState::new();
-        assert!(!s.ball.rect().overlaps(&s.paddle.rect()));
-        assert_eq!(s.ball.vel, Vec2::ZERO);
+        assert!(!s.balls[0].rect().overlaps(&s.paddle.rect()));
+        assert_eq!(s.balls[0].vel, Vec2::ZERO);
     }
 
     #[test]
@@ -297,8 +404,8 @@ mod tests {
         let mut s = GameState::new();
         s.launch();
         assert_eq!(s.phase, Phase::Playing);
-        assert!(s.ball.vel.y < 0.0, "must travel up (y grows downward)");
-        assert!((s.ball.vel.length() - BALL_SPEED).abs() < 0.01);
+        assert!(s.balls[0].vel.y < 0.0, "must travel up (y grows downward)");
+        assert!((s.balls[0].vel.length() - BALL_SPEED).abs() < 0.01);
     }
 
     /// A perfectly vertical launch stalls the game in a brick corridor.
@@ -306,16 +413,16 @@ mod tests {
     fn launch_is_never_perfectly_vertical() {
         let mut s = GameState::new();
         s.launch();
-        assert!(s.ball.vel.x.abs() > 1.0, "vx = {} is too vertical", s.ball.vel.x);
+        assert!(s.balls[0].vel.x.abs() > 1.0, "vx = {} is too vertical", s.balls[0].vel.x);
     }
 
     #[test]
     fn launch_does_nothing_unless_ready() {
         let mut s = GameState::new();
         s.phase = Phase::Playing;
-        let before = s.ball.vel;
+        let before = s.balls[0].vel;
         s.launch();
-        assert_eq!(s.ball.vel, before);
+        assert_eq!(s.balls[0].vel, before);
     }
 
     #[test]
@@ -325,7 +432,7 @@ mod tests {
         s.lose_life();
         assert_eq!(s.lives, STARTING_LIVES - 1);
         assert_eq!(s.phase, Phase::Ready);
-        assert!(!s.ball.rect().overlaps(&s.paddle.rect()));
+        assert!(!s.balls[0].rect().overlaps(&s.paddle.rect()));
     }
 
     #[test]
@@ -347,5 +454,105 @@ mod tests {
         assert_eq!(s.score, 0);
         assert_eq!(s.lives, STARTING_LIVES);
         assert_eq!(s.bricks_remaining(), BRICK_COLS * BRICK_ROWS);
+    }
+}
+
+#[cfg(test)]
+mod multiball_state_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_game_has_exactly_one_ball_resting_on_the_paddle() {
+        let s = GameState::new();
+        assert_eq!(s.balls.len(), 1);
+        assert_eq!(s.balls[0].vel, Vec2::ZERO);
+        assert!(s.balls[0].trail.is_empty());
+        assert!(!s.balls[0].drained);
+        assert_eq!(s.level, 1);
+    }
+
+    #[test]
+    fn launch_sends_every_ball_out() {
+        let mut s = GameState::new();
+        s.launch();
+        assert_eq!(s.phase, Phase::Playing);
+        for b in &s.balls {
+            assert!(b.vel.y < 0.0);
+            assert!((b.vel.length() - BALL_SPEED).abs() < 0.01);
+        }
+    }
+
+    /// Every route back to Ready discards the extra balls: a lost life, a
+    /// new level, a restart. Multi-ball exists only during Playing.
+    #[test]
+    fn losing_a_life_collapses_back_to_one_ball() {
+        let mut s = GameState::new();
+        s.launch();
+        s.spawn_ball(Vec2::new(300.0, 300.0), Vec2::new(0.0, -100.0));
+        s.spawn_ball(Vec2::new(500.0, 300.0), Vec2::new(0.0, -100.0));
+        assert_eq!(s.balls.len(), 3);
+
+        s.lose_life();
+        assert_eq!(s.phase, Phase::Ready);
+        assert_eq!(s.balls.len(), 1, "Ready holds exactly one ball");
+        assert_eq!(s.balls[0].vel, Vec2::ZERO, "and it is at rest on the paddle");
+    }
+
+    #[test]
+    fn a_spawned_ball_inherits_the_radius_and_starts_clean() {
+        let mut s = GameState::new();
+        s.launch();
+        assert!(s.spawn_ball(Vec2::new(400.0, 300.0), Vec2::new(10.0, -10.0)));
+        let b = &s.balls[1];
+        assert_eq!(b.radius, BALL_RADIUS);
+        assert!(b.trail.is_empty());
+        assert!(!b.drained);
+    }
+
+    /// Retiring is a no-op when nothing drained — it must not cost a life
+    /// or disturb the vec just for being called every tick.
+    #[test]
+    fn retiring_with_nothing_drained_changes_nothing() {
+        let mut s = GameState::new();
+        s.launch();
+        s.spawn_ball(Vec2::new(300.0, 300.0), Vec2::ZERO);
+        let lives = s.lives;
+        let n = s.balls.len();
+
+        s.retire_drained_balls();
+
+        assert_eq!(s.lives, lives);
+        assert_eq!(s.balls.len(), n);
+    }
+
+    /// Removal walks backwards so earlier indices stay valid. With the
+    /// middle ball drained, the two survivors must be the outer two — a
+    /// forward-walking removal would shift and drop the wrong one.
+    #[test]
+    fn retiring_removes_exactly_the_drained_balls() {
+        let mut s = GameState::new();
+        s.launch();
+        s.balls[0].pos = Vec2::new(100.0, 300.0);
+        s.spawn_ball(Vec2::new(200.0, 300.0), Vec2::ZERO);
+        s.spawn_ball(Vec2::new(300.0, 300.0), Vec2::ZERO);
+
+        s.balls[1].drained = true;
+        s.retire_drained_balls();
+
+        assert_eq!(s.balls.len(), 2);
+        assert_eq!(s.balls[0].pos.x, 100.0);
+        assert_eq!(s.balls[1].pos.x, 300.0, "the survivor after the gap must be the last one");
+    }
+
+    #[test]
+    fn restart_returns_to_one_ball_and_level_one() {
+        let mut s = GameState::new();
+        s.launch();
+        s.level = 7;
+        s.spawn_ball(Vec2::new(300.0, 300.0), Vec2::ZERO);
+        s.restart();
+        assert_eq!(s.balls.len(), 1);
+        assert_eq!(s.level, 1);
+        assert_eq!(s.lives, STARTING_LIVES);
     }
 }

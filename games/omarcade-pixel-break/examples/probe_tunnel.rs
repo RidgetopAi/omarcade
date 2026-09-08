@@ -22,8 +22,8 @@ fn main() {
             let mut s = GameState::new();
             s.phase = Phase::Playing;
             let target = s.bricks[25].rect;
-            s.ball.pos = Vec2::new(target.center().x, 400.0);
-            s.ball.vel = Vec2::new(0.0, -speed);
+            s.balls[0].pos = Vec2::new(target.center().x, 400.0);
+            s.balls[0].vel = Vec2::new(0.0, -speed);
             let before = s.bricks_remaining();
 
             let mut acc = Accumulator::new();
@@ -33,8 +33,8 @@ fn main() {
             // that is the instant tunnelling would have happened.
             for _ in 0..600 {
                 step(&mut s, &mut acc, frame_dt);
-                min_y = min_y.min(s.ball.pos.y);
-                if s.ball.pos.y < 85.0 {
+                min_y = min_y.min(s.balls[0].pos.y);
+                if s.balls[0].pos.y < 85.0 {
                     killed_at_apex = before - s.bricks_remaining();
                     break;
                 }
@@ -44,7 +44,7 @@ fn main() {
 
             let after = s.bricks_remaining();
             let killed = before - after;
-            let y = s.ball.pos.y;
+            let y = s.balls[0].pos.y;
             // The failure we care about: ball got past the brick field
             // (y above the top row) having destroyed nothing.
             // Tunnelling = reached above the brick field having broken nothing.

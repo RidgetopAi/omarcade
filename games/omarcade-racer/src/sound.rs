@@ -892,23 +892,31 @@ impl Voice for Crash {
 /// silence: it trains the ear to stop listening to the channel, which
 /// costs the sounds that do matter. Brian's call was close passes only.
 ///
-/// # What "close" turned out to mean
+/// # Distance is the volume, not a gate
 ///
-/// Much closer than it sounds. The road is 2.0 half-widths across and a
-/// car is 0.629 of that, so nearly every overtake is already within a
-/// car's width — measured over three laps of `Pacer::EXACT`, a
-/// threshold at the touching distance still fired on 72% of passes,
-/// nearly eight a lap.
+/// The first version was a hard threshold at 0.33 half-widths, sized
+/// from the passes `Pacer::EXACT` produces. Brian drove it and heard
+/// nothing at all, and the reason is that the pacer is not a player:
+/// it holds the racing line and brushes past cars, while a human
+/// STEERS AROUND them — which is the entire point of driving. Measured,
+/// the closest pass a dodging driver ever makes is 0.77 to 1.00, so a
+/// gate at 0.33 was unreachable for most ways of playing.
 ///
-/// The measured distribution (probe_traffic) is:
+/// Widening the gate alone does not work either: at 1.0 it fires on 97%
+/// of the pacer's passes, which is the wallpaper the whole rule exists
+/// to avoid. The two driving styles simply produce different
+/// distributions, and no single cut-off is both rare and reachable:
 ///
 /// ```text
-///   closest 0.140 · 25th 0.323 · median 0.470 · 75th 0.684 · widest 1.023
+///   closest pass by style:  racing line 0.143 · barely reacts 0.227
+///                           dodges a little 0.921 · dodges clearly 0.995
 /// ```
 ///
-/// So [`CLOSE_ENOUGH`] sits near the 25th percentile: the closest
-/// quarter of passes, about two or three a lap. Rare enough to be a
-/// moment rather than a texture.
+/// So closeness sets the LEVEL rather than deciding whether there is a
+/// sound at all. The falloff is cubic, so a near miss is some
+/// twenty-five times louder than a wide berth: always there if you
+/// passed someone, only loud if you nearly touched. That is reachable
+/// however you drive and still a moment rather than a texture.
 pub struct Pass {
     t: f32,
     /// 0 at the threshold, 1 for a pass that nearly touched.
@@ -919,22 +927,25 @@ pub struct Pass {
     noise: u32,
 }
 
-/// How close a pass must be to make a sound, in half-widths between
-/// centres.
+/// Beyond this many half-widths a pass is silent.
 ///
-/// ⚠️ NOT the car's width, which would fire on three passes in four.
-/// See the type docs: this is the 25th percentile of the measured
-/// distribution, chosen so a whoosh stays rare enough to mean something.
-pub const CLOSE_ENOUGH: f32 = 0.33;
+/// Deliberately WIDE — about the width of the road's usable line — so
+/// the sound is reachable whatever line the player takes. It is the
+/// cubic falloff below, not this number, that keeps a whoosh meaning
+/// something. See the type docs for why a narrow gate did not work.
+pub const CLOSE_ENOUGH: f32 = 1.05;
 
 const PASS_LEN: f32 = 0.42;
 /// The whoosh sweeps DOWN as the car goes by — the Doppler shift of
 /// something that was coming towards you and is now going away.
 const PASS_HZ_START: f32 = 900.0;
 const PASS_HZ_END: f32 = 260.0;
-const PASS_LEVEL: f32 = 0.26;
+const PASS_LEVEL: f32 = 0.30;
 
 impl Pass {
+    /// For probes: the threshold, readable without importing it.
+    pub const CLOSE_ENOUGH_DEBUG: f32 = CLOSE_ENOUGH;
+
     pub fn new() -> Pass {
         Pass {
             t: 0.0,
@@ -948,14 +959,17 @@ impl Pass {
 
     /// How loud a pass at this gap should be, or `None` if it is too
     /// far away to make a sound at all.
+    ///
+    /// CUBIC, and that is the whole design: a linear falloff leaves a
+    /// distant pass nearly as loud as a near miss, which is how a sound
+    /// meant for moments becomes a texture. Cubed, a pass at the median
+    /// separation is a fifth the level of one that nearly touched.
     pub fn intensity_for(gap: f32) -> Option<f32> {
         if gap >= CLOSE_ENOUGH {
             return None;
         }
-        // Nearly touching is 1.0, right on the threshold is 0.0, so a
-        // genuine near miss stands out from a merely close pass rather
-        // than every qualifying pass sounding identical.
-        Some((1.0 - gap / CLOSE_ENOUGH).clamp(0.0, 1.0))
+        let t = (1.0 - gap / CLOSE_ENOUGH).clamp(0.0, 1.0);
+        Some(t * t * t)
     }
 
     fn white(&mut self) -> f32 {
@@ -1001,7 +1015,10 @@ impl Voice for Pass {
             // edge as it goes by rather than being a pure rumble.
             let air = self.air.tick(n, hz * 3.0, sample_rate) * (1.0 - phase) * 0.4;
 
-            let level = PASS_LEVEL * (0.4 + 0.6 * self.intensity);
+            // No floor: the intensity IS the volume. A floor would put
+            // a wide pass within half the level of a near miss, and the
+            // cubic falloff above exists precisely so it is not.
+            let level = PASS_LEVEL * self.intensity;
             *sample = ((body + air) * env * level).clamp(-1.0, 1.0);
         }
 
@@ -1400,33 +1417,46 @@ mod tests {
     }
 
     #[test]
-    fn only_genuinely_close_passes_make_a_sound() {
-        // ⚠️ THE THRESHOLD IS NOT THE CAR'S WIDTH. The road is 2.0
-        // half-widths across and a car is 0.629, so nearly every
-        // overtake is already within a car's width — measured over three
-        // laps, a threshold at the touching distance fired on 72% of
-        // passes, almost eight a lap. That is wallpaper, which is what
-        // Brian's "close ones only" was avoiding.
-        assert!(
-            CLOSE_ENOUGH < crate::drive::CAR_WIDTH_HALF_WIDTHS,
-            "a threshold at or above the car's width fires on most passes",
-        );
-
-        // The measured distribution: closest 0.140, 25th 0.323,
-        // median 0.470, widest 1.023.
-        assert!(Pass::intensity_for(0.140).is_some(), "a near miss must be heard");
-        assert!(Pass::intensity_for(0.470).is_none(), "a median pass must be silent");
-        assert!(Pass::intensity_for(1.023).is_none(), "a wide pass must be silent");
+    fn the_whoosh_is_reachable_however_the_player_drives() {
+        // ⚠️ THE BUG BRIAN FOUND. The first threshold was 0.33, sized on
+        // the passes Pacer::EXACT makes — but the pacer holds the racing
+        // line and brushes past cars, while a player STEERS AROUND them.
+        // The closest pass a dodging driver ever made was 0.77, so the
+        // sound could never fire for most ways of playing.
+        //
+        // Measured closest pass by style: racing line 0.143, barely
+        // reacts 0.227, dodges a little 0.921, dodges clearly 0.995.
+        for (style, closest) in [
+            ("racing line", 0.143f32),
+            ("barely reacts", 0.227),
+            ("dodges a little", 0.921),
+            ("dodges clearly", 0.995),
+        ] {
+            assert!(
+                Pass::intensity_for(closest).is_some(),
+                "a driver who {style} can never trigger the whoosh at all",
+            );
+        }
     }
 
     #[test]
-    fn a_nearer_miss_is_a_louder_whoosh() {
-        // Every qualifying pass sounding identical would waste the one
-        // thing this sound is for.
-        let near = Pass::intensity_for(0.05).expect("a near miss qualifies");
-        let edge = Pass::intensity_for(CLOSE_ENOUGH * 0.95).expect("just inside qualifies");
-        assert!(near > edge * 2.0, "near {near} should clearly beat edge {edge}");
-        assert!(near <= 1.0 && edge >= 0.0);
+    fn a_near_miss_is_far_louder_than_a_wide_pass() {
+        // What stops a reachable sound becoming wallpaper is the
+        // FALLOFF, not the gate. A linear one would leave a wide pass
+        // nearly as loud as a near miss.
+        let near = Pass::intensity_for(0.14).expect("a near miss sounds");
+        let median = Pass::intensity_for(0.50).expect("a median pass sounds");
+        let wide = Pass::intensity_for(0.95).expect("a wide pass still sounds");
+
+        assert!(
+            near > median * 3.0,
+            "a near miss ({near}) should dwarf a median pass ({median})",
+        );
+        assert!(
+            median > wide * 3.0,
+            "a median pass ({median}) should dwarf a wide one ({wide})",
+        );
+        assert!(Pass::intensity_for(CLOSE_ENOUGH + 0.01).is_none(), "past the gate is silent");
     }
 
     #[test]

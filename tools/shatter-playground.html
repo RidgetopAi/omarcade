@@ -98,6 +98,7 @@
     <button id="reinf">Reinforced hit</button>
     <button id="armour">Armoured break</button>
     <button id="wave">Level clear</button>
+    <button id="lost">Lost ball</button>
     <button id="auto">Auto-repeat: on</button>
   </div>
 </header>
@@ -106,7 +107,7 @@
   <div class="col">
     <div class="panel">
       <h2>The field &mdash; click a brick to break it</h2>
-      <canvas id="stage" width="960" height="720"></canvas>
+      <canvas id="stage" width="1000" height="760"></canvas>
       <p class="hint" style="margin:9px 0 0">
         Real geometry: 960&times;720 field, 84&times;28 bricks, 240&nbsp;Hz fixed step,
         additive blending, linear alpha fade &mdash; all matched to
@@ -168,6 +169,11 @@
       <h2>Screen shake</h2>
       <div class="slider" data-k="shake"     data-min="0"   data-max="10"  data-step="0.5"></div>
       <div class="slider" data-k="shakedecay" data-min="1"  data-max="30"  data-step="0.5"></div>
+      <p class="hint">
+        Shake fires on an <b>armoured break</b> and on a <b>lost ball</b> &mdash; never on an
+        ordinary break, or the whole game would wobble. Dragging either slider below shakes
+        immediately whatever mode you are in, so the control is always live.
+      </p>
       <p class="hint warn">
         &#9888; The plan caps this at <b>~4 units, decayed fast</b>. Shake is the effect most
         likely to be too much, and it makes people motion-sick before they can say why.
@@ -209,6 +215,14 @@
 // Geometry, matched to games/omarcade-pixel-break/src/state.rs.
 // ---------------------------------------------------------------------------
 const FIELD_W = 960, FIELD_H = 720;
+/// ⚠️ The canvas is deliberately LARGER than the field, so the field is
+/// letterboxed inside it. Without that margin the field fills the canvas
+/// edge to edge, every element shakes together against a background that
+/// shakes with them, and the shake is mathematically perfect and
+/// completely invisible — there is nothing standing still to see it
+/// against. The real game is always letterboxed inside its window, so
+/// this margin is not a cheat, it is the honest case.
+const MARGIN = 20;
 const BRICK_COLS = 10, BRICK_ROWS = 6;
 const BRICK_W = 84, BRICK_H = 28, BRICK_GAP = 6, BRICK_TOP = 90;
 const FIXED_DT = 1 / 240;          // physics::FIXED_DT
@@ -410,6 +424,12 @@ function breakBrick(i, kind) {
     burst(cx, cy, dx / len, dy / len, color, 1);
     addShake(P.shake);
     b.alive = false;
+  } else if (kind === 'lost') {
+    // Losing a ball: shake with no chips. The plan asks for shake here
+    // too, and it is the case where shake is ALONE — nothing else is
+    // happening to distract from it, so it is the honest test of whether
+    // the amount is right.
+    addShake(P.shake);
   } else if (kind === 'wave') {
     // The level-clear cascade: everything left resolves in a wave.
     let n = 0;
@@ -431,6 +451,7 @@ function breakBrick(i, kind) {
 
 function fireCurrentMode() {
   if (mode === 'wave') { breakBrick(0, 'wave'); return; }
+  if (mode === 'lost') { addShake(P.shake); return; }
   // Keep hitting the same brick so a slider drag shows the same burst.
   let i = lastBreak;
   if (i == null || !bricks[i] || (!bricks[i].alive && mode !== 'reinf')) {
@@ -453,10 +474,16 @@ const ctx = stage.getContext('2d');
 function draw() {
   const [sx, sy] = shakeOffset();
 
+  // The letterbox: painted at a FIXED origin, so it is the still thing the
+  // shake is seen against. Everything after this moves.
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = theme.darker_background;
-  ctx.fillRect(0, 0, FIELD_W, FIELD_H);
-  ctx.setTransform(1, 0, 0, 1, sx, sy);
+  ctx.fillRect(0, 0, stage.width, stage.height);
+
+  // ⚠️ Shake offsets the VIEWPORT, exactly as it will in render.rs — the
+  // field's own coordinates never change, so nothing can collide with
+  // something it does not visually touch.
+  ctx.setTransform(1, 0, 0, 1, MARGIN + sx, MARGIN + sy);
 
   // Play area.
   ctx.fillStyle = theme.background;
@@ -536,6 +563,11 @@ function buildSliders() {
     input.addEventListener('input', () => {
       P[k] = Number(input.value);
       show(); emit();
+      // ⚠️ A shake slider must SHAKE. Only the armoured break and a lost
+      // ball raise it, so dragging the slider in any other mode changed a
+      // number and showed nothing — which reads exactly like a broken
+      // control. Poke it directly instead.
+      if (k === 'shake' || k === 'shakedecay') { addShake(P.shake); return; }
       // Re-throw the same burst so the change is visible immediately
       // instead of waiting for the next auto-repeat.
       pool.length = 0;
@@ -610,11 +642,12 @@ pub const SHAKE_DECAY: f32 = ${f(P.shakedecay, 1)};
 
 function setMode(m) {
   mode = m;
-  for (const id of ['plain', 'reinf', 'armour', 'wave']) {
+  for (const id of ['plain', 'reinf', 'armour', 'wave', 'lost']) {
     document.getElementById(id).classList.toggle('on', id === m);
   }
   pool.length = 0;
   if (m === 'wave') { buildField(); }
+  if (m === 'lost') { buildField(); }
   fireCurrentMode();
 }
 
@@ -622,6 +655,7 @@ document.getElementById('plain').onclick  = () => setMode('plain');
 document.getElementById('reinf').onclick  = () => setMode('reinf');
 document.getElementById('armour').onclick = () => setMode('armour');
 document.getElementById('wave').onclick   = () => setMode('wave');
+document.getElementById('lost').onclick   = () => setMode('lost');
 document.getElementById('auto').onclick = (e) => {
   autoRepeat = !autoRepeat;
   e.target.textContent = 'Auto-repeat: ' + (autoRepeat ? 'on' : 'off');
@@ -704,12 +738,13 @@ addEventListener('keydown', (e) => {
   if (e.key === '2') setMode('reinf');
   if (e.key === '3') setMode('armour');
   if (e.key === '4') setMode('wave');
+  if (e.key === '5') setMode('lost');
 });
 
 stage.addEventListener('click', (e) => {
   const r = stage.getBoundingClientRect();
-  const x = (e.clientX - r.left) / r.width * FIELD_W;
-  const y = (e.clientY - r.top) / r.height * FIELD_H;
+  const x = (e.clientX - r.left) / r.width * stage.width - MARGIN;
+  const y = (e.clientY - r.top) / r.height * stage.height - MARGIN;
   for (let i = 0; i < bricks.length; i++) {
     const b = bricks[i];
     if (!b.alive) continue;

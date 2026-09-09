@@ -23,6 +23,7 @@ mod effects;
 mod items;
 mod physics;
 mod render;
+mod sound;
 mod state;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
@@ -57,10 +58,20 @@ struct PixelBreak {
     /// the phase alone would rewrite the file sixty times a second;
     /// this makes it an edge, not a level.
     recorded: bool,
+    /// Every registered voice, and whose turn it is.
+    ///
+    /// ⚠️ Built before the stream starts and carried here, because
+    /// registration is startup-only: `AudioSystem` drops the pending list
+    /// when `start` opens the device, and a voice registered after that
+    /// would hand a boxed trait object to a thread that may not allocate.
+    sound: sound::Bank,
 }
 
 impl PixelBreak {
-    fn new(theme: Theme) -> Self {
+    /// ⚠️ Takes the `AudioSystem` so voices can be registered while it is
+    /// still accepting them. The alternative — registering inside `main`
+    /// and passing the `Bank` in — splits one decision across two files.
+    fn new(theme: Theme, audio: &mut AudioSystem) -> Self {
         let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
         let mut state = GameState::new();
         // Effects can fire before the first frame renders; without this
@@ -76,6 +87,7 @@ impl PixelBreak {
             right_held: false,
             scores,
             recorded: false,
+            sound: sound::Bank::register(audio),
         }
     }
 
@@ -146,8 +158,18 @@ impl Game for PixelBreak {
         true
     }
 
-    fn update(&mut self, dt: f32, _audio: &mut Audio<'_>) {
+    fn update(&mut self, dt: f32, audio: &mut Audio<'_>) {
         physics::step(&mut self.state, &mut self.accumulator, dt);
+
+        // Everything the simulation thought was worth hearing, played once
+        // per frame rather than once per fixed tick.
+        //
+        // ⚠️ `physics::step` runs up to `MAX_STEPS_PER_FRAME` ticks, so a
+        // frame can hold several ticks' worth of cues. Draining here — after
+        // the whole step, not inside it — is what keeps a slow frame from
+        // playing the same brick twice.
+        let bank = &mut self.sound;
+        self.state.drain_cues(|cue| bank.play(audio, cue));
 
         if matches!(self.state.phase, Phase::Won | Phase::Lost) {
             self.bank_score();
@@ -162,12 +184,17 @@ impl Game for PixelBreak {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let theme = Theme::load();
 
+    // Registration is startup-only, so the system is built here and the
+    // voices go in before `run` opens the device.
+    let mut audio = AudioSystem::new();
+    let game = PixelBreak::new(theme, &mut audio);
+
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         // Session 1 shipped Idle::Wait, which costs nothing but never
         // redraws on its own. There is a ball to move now, so the loop
         // paces itself with WaitUntil — still never Poll.
         .idle(Idle::Animate { fps: 60 })
-        .run(PixelBreak::new(theme), AudioSystem::new())?;
+        .run(game, audio)?;
 
     Ok(())
 }

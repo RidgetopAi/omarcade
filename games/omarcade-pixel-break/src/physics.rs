@@ -21,7 +21,7 @@ use crate::items::MAGNET_HOLD_SECONDS;
 // `state` cannot depend on `physics`, because two probes pull `state.rs`
 // via `#[path]` without it. One copy, in the module both sides can reach.
 use crate::state::{
-    clamp_angle, Ball, GameState, Paddle, Phase, BRICK_COLS, BRICK_ROWS,
+    clamp_angle, Ball, Cue, GameState, Paddle, Phase, BRICK_COLS, BRICK_ROWS,
 };
 
 /// Simulation rate. High enough that per-tick movement (~1.75 units at
@@ -183,7 +183,17 @@ pub fn step_fixed(state: &mut GameState) {
                 }
                 move_ball(&mut state.balls[i]);
                 collide_walls(&mut state.balls[i], &field);
-                collide_paddle(&mut state.balls[i], &paddle, ball_speed, magnet);
+                match collide_paddle(&mut state.balls[i], &paddle, ball_speed, magnet) {
+                    PaddleTouch::Bounced => {
+                        // The rally is what makes the pitch climb, so it
+                        // counts hits and not time.
+                        state.rally = state.rally.saturating_add(1);
+                        let rally = state.rally;
+                        state.cue(Cue::PaddleHit { rally });
+                    }
+                    PaddleTouch::Caught => state.cue(Cue::MagnetCatch),
+                    PaddleTouch::Missed => {}
+                }
                 // Bricks need the whole state: a kill scores, and it must
                 // be visible to every later ball in this same tick.
                 collide_bricks(state, i);
@@ -321,18 +331,36 @@ fn collide_walls(b: &mut Ball, field: &Rect) {
     }
 }
 
+/// What a ball did when it met the paddle, so the caller can record a cue.
+///
+/// ⚠️ Returned rather than pushed, because `collide_paddle` takes a single
+/// `&mut Ball` and not the whole state — deliberately, since it is a pure
+/// function of one ball and the paddle. Handing it `&mut GameState` just to
+/// let it push a cue would widen its reach for the sake of a side effect.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PaddleTouch {
+    Missed,
+    Bounced,
+    Caught,
+}
+
 /// Bounce the ball off the paddle — or stick it there, if the magnet is
 /// armed.
-fn collide_paddle(ball: &mut Ball, paddle: &Paddle, speed: f32, magnet: bool) {
+fn collide_paddle(
+    ball: &mut Ball,
+    paddle: &Paddle,
+    speed: f32,
+    magnet: bool,
+) -> PaddleTouch {
     // Only when moving downward. A ball on its way up that clips the
     // paddle from below should pass, not get batted back down.
     if ball.vel.y <= 0.0 {
-        return;
+        return PaddleTouch::Missed;
     }
 
     let rect = paddle.rect();
     if !ball.rect().overlaps(&rect) {
-        return;
+        return PaddleTouch::Missed;
     }
 
     // Sit the ball on top of the paddle so it cannot re-collide.
@@ -343,10 +371,11 @@ fn collide_paddle(ball: &mut Ball, paddle: &Paddle, speed: f32, magnet: bool) {
         // runs out, whichever comes first.
         ball.held_for = Some(MAGNET_HOLD_SECONDS);
         ball.vel = Vec2::ZERO;
-        return;
+        return PaddleTouch::Caught;
     }
 
     bounce_off_paddle(ball, paddle, speed);
+    PaddleTouch::Bounced
 }
 
 /// Where the ball strikes the paddle sets the outgoing angle.
@@ -446,6 +475,20 @@ fn collide_bricks(state: &mut GameState, index: usize) {
     // That is what makes the reinforced feedback cheap, and it is what
     // answers S4's note that the damage shrink reads too subtly.
     let tier = state.bricks[hit].tier;
+
+    // ⚠️ Four brick sounds, not two. §7 asks for a reinforced brick to be
+    // audibly different when it CHIPS and when it BREAKS — a player who
+    // cannot hear that difference cannot hear the difference between
+    // damaging a brick and destroying it, which is the whole point of the
+    // tier. A surviving hit is a chip whatever the tier; a break is named
+    // by the tier that broke.
+    state.cue(match (destroyed, tier) {
+        (false, _) => Cue::ReinforcedChip,
+        (true, crate::state::Tier::Plain) => Cue::PlainBreak,
+        (true, crate::state::Tier::Reinforced) => Cue::ReinforcedBreak,
+        (true, crate::state::Tier::Armoured) => Cue::ArmouredBreak,
+    });
+
     let idx = state.bricks[hit].color_index % state.palette.len();
     let chip_color = state.palette[idx];
     let share = if destroyed { 1.0 } else { crate::effects::PARTIAL_SHARE };
@@ -2813,5 +2856,148 @@ mod cascade_tests {
             sample(LEVELS) > sample(1),
             "level {LEVELS} trail was not longer than level 1's"
         );
+    }
+}
+
+#[cfg(test)]
+mod cue_tests {
+    use super::*;
+    use crate::state::{Tier, BALL_RADIUS, MAX_CUES};
+
+    fn playing() -> GameState {
+        let mut s = GameState::new();
+        s.launch();
+        s
+    }
+
+    /// Put the ball just under a brick, travelling up into it.
+    fn aim_at_brick(s: &mut GameState, brick: usize) {
+        let rect = s.bricks[brick].rect;
+        s.balls[0].pos = Vec2::new(rect.center().x, rect.bottom() + BALL_RADIUS - 2.0);
+        s.balls[0].vel = Vec2::new(0.0, -s.ball_speed());
+    }
+
+    /// ⚠️ The four brick sounds are the point of the tier system being
+    /// audible at all: a player who cannot hear chip-versus-break cannot
+    /// hear the difference between damaging a brick and destroying it.
+    #[test]
+    fn a_plain_brick_cues_a_plain_break() {
+        let mut s = playing();
+        s.bricks[0].tier = Tier::Plain;
+        s.bricks[0].hits = Tier::Plain.hits();
+        aim_at_brick(&mut s, 0);
+        s.cues.clear();
+        collide_bricks(&mut s, 0);
+        assert_eq!(s.cues, vec![Cue::PlainBreak]);
+    }
+
+    #[test]
+    fn a_surviving_brick_cues_a_chip_and_the_breaking_hit_cues_a_break() {
+        let mut s = playing();
+        s.bricks[0].tier = Tier::Reinforced;
+        s.bricks[0].hits = Tier::Reinforced.hits();
+
+        aim_at_brick(&mut s, 0);
+        s.cues.clear();
+        collide_bricks(&mut s, 0);
+        assert_eq!(s.cues, vec![Cue::ReinforcedChip], "the first hit only chips");
+        assert!(s.bricks[0].alive(), "and the brick survives it");
+
+        aim_at_brick(&mut s, 0);
+        s.cues.clear();
+        collide_bricks(&mut s, 0);
+        assert_eq!(s.cues, vec![Cue::ReinforcedBreak], "the second hit breaks it");
+        assert!(!s.bricks[0].alive());
+    }
+
+    #[test]
+    fn an_armoured_brick_cues_the_heavy_break() {
+        let mut s = playing();
+        s.bricks[0].tier = Tier::Armoured;
+        s.bricks[0].hits = 1; // one hit from breaking
+        aim_at_brick(&mut s, 0);
+        s.cues.clear();
+        collide_bricks(&mut s, 0);
+        assert_eq!(s.cues, vec![Cue::ArmouredBreak]);
+    }
+
+    /// The rally is what makes the pitch climb, so it must actually count.
+    #[test]
+    fn the_rally_counts_paddle_hits_and_resets_on_launch() {
+        let mut s = playing();
+        assert_eq!(s.rally, 0, "a fresh launch starts at zero");
+
+        for expected in 1..=3 {
+            let paddle = s.paddle.rect();
+            s.balls[0].pos = Vec2::new(paddle.center().x, paddle.top() - BALL_RADIUS + 2.0);
+            s.balls[0].vel = Vec2::new(0.0, s.ball_speed());
+            s.cues.clear();
+            let (speed, paddle_copy) = (s.ball_speed(), s.paddle);
+            let touch = collide_paddle(&mut s.balls[0], &paddle_copy, speed, false);
+            assert_eq!(touch, PaddleTouch::Bounced);
+            s.rally += 1;
+            s.cue(Cue::PaddleHit { rally: s.rally });
+            assert_eq!(s.cues, vec![Cue::PaddleHit { rally: expected }]);
+        }
+
+        // ⚠️ Every path back into play goes through Ready and launches
+        // again, so launch is the only place the rally may reset.
+        s.phase = Phase::Ready;
+        s.launch();
+        assert_eq!(s.rally, 0, "a new launch is a new rally");
+    }
+
+    /// A ball that misses must not cue anything at all — silence is the
+    /// correct sound for nothing happening.
+    #[test]
+    fn a_missed_paddle_cues_nothing() {
+        let mut s = playing();
+        s.balls[0].pos = Vec2::new(10.0, 10.0);
+        s.balls[0].vel = Vec2::new(0.0, s.ball_speed());
+        s.cues.clear();
+        let (speed, paddle_copy) = (s.ball_speed(), s.paddle);
+        let touch = collide_paddle(&mut s.balls[0], &paddle_copy, speed, false);
+        assert_eq!(touch, PaddleTouch::Missed);
+        assert!(s.cues.is_empty());
+    }
+
+    /// The magnet catches rather than bounces, and says so.
+    #[test]
+    fn the_magnet_cues_a_catch_not_a_paddle_hit() {
+        let mut s = playing();
+        let paddle = s.paddle.rect();
+        s.balls[0].pos = Vec2::new(paddle.center().x, paddle.top() - BALL_RADIUS + 2.0);
+        s.balls[0].vel = Vec2::new(0.0, s.ball_speed());
+        let (speed, paddle_copy) = (s.ball_speed(), s.paddle);
+        let touch = collide_paddle(&mut s.balls[0], &paddle_copy, speed, true);
+        assert_eq!(touch, PaddleTouch::Caught);
+        assert!(s.balls[0].is_held());
+    }
+
+    /// ⚠️ The cap must hold, or a stalled frame turns into unbounded
+    /// memory. Verified by overflowing it rather than by reading the code.
+    #[test]
+    fn the_cue_queue_is_bounded() {
+        let mut s = GameState::new();
+        for _ in 0..(MAX_CUES * 3) {
+            s.cue(Cue::PlainBreak);
+        }
+        assert_eq!(s.cues.len(), MAX_CUES, "the queue must stop growing");
+    }
+
+    /// Draining must empty the queue, or the next frame replays this one.
+    #[test]
+    fn draining_takes_every_cue_exactly_once() {
+        let mut s = GameState::new();
+        s.cue(Cue::PlainBreak);
+        s.cue(Cue::BombCaught);
+        let mut seen = Vec::new();
+        s.drain_cues(|c| seen.push(c));
+        assert_eq!(seen, vec![Cue::PlainBreak, Cue::BombCaught]);
+        assert!(s.cues.is_empty(), "a drained frame must be empty");
+
+        let mut again = Vec::new();
+        s.drain_cues(|c| again.push(c));
+        assert!(again.is_empty(), "a frame must not play twice");
     }
 }

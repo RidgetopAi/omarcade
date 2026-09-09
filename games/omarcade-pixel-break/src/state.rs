@@ -544,7 +544,80 @@ pub struct GameState {
     /// reported from real play, not caught by a test: every test asserted
     /// `level` had incremented, which it always had.
     pub just_advanced: bool,
+    /// Paddle hits since the last launch.
+    ///
+    /// ⚠️ Presentation state in the world model, like `Ball::trail` and
+    /// `chips`, and for the same reason: physics is the only thing that
+    /// knows the ball just came off the paddle. It drives the pitch climb
+    /// §7 asks for and nothing else — no scoring, no difficulty.
+    ///
+    /// Counts hits and not balls: with several in play a rally is how long
+    /// the player has kept the volley alive, which is what the rising
+    /// pitch is reporting.
+    pub rally: u32,
+    /// What happened this frame that something ought to be heard for.
+    ///
+    /// ⚠️ **Physics does not know what anything sounds like, and must not.**
+    /// This is the same seam as `chips` and `shake`: the simulation is the
+    /// only thing that knows a brick broke, so it records the *event*, and
+    /// the caller decides what to do about it. `state.rs` therefore names
+    /// `Cue::ReinforcedChip` and never `CHIP_HZ` — exactly the rule S8 set
+    /// for `crate::art`, which `state` is likewise forbidden to reference.
+    ///
+    /// What it buys, beyond tidiness: every example still constructs a
+    /// `GameState` with no audio device in sight, and the ten-ball mix can
+    /// be tested by counting cues rather than by listening to a mixer.
+    ///
+    /// Drained once per frame by `main`. Bounded, because `physics::step`
+    /// runs up to `MAX_STEPS_PER_FRAME` fixed ticks per frame and a stalled
+    /// frame must not grow this without limit.
+    pub cues: Vec<Cue>,
 }
+
+/// Something worth hearing, as the simulation understands it.
+///
+/// Deliberately phrased in the game's own vocabulary — a chip, a break, a
+/// life lost — rather than in sounds. `sound.rs` owns the translation, so
+/// re-tuning what a bomb sounds like never touches physics.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cue {
+    /// The ball came off the paddle. `rally` counts hits since the last
+    /// launch, which is what makes the pitch climb.
+    PaddleHit { rally: u32 },
+    /// A one-hit brick broke.
+    PlainBreak,
+    /// A tiered brick was damaged and survived.
+    ReinforcedChip,
+    /// A reinforced brick broke.
+    ReinforcedBreak,
+    /// An armoured brick broke — the heavy one.
+    ArmouredBreak,
+    /// A good item was caught.
+    ItemCaught,
+    /// ⚠️ A bomb was caught. The bomb does not glow, so this cue is the
+    /// only warning the player gets — see §7.
+    BombCaught,
+    /// The magnet caught a ball.
+    MagnetCatch,
+    /// A held ball was released, by the player or by the 3 s timer.
+    MagnetRelease,
+    /// The last ball drained and a life went with it.
+    BallLost,
+    /// A field was cleared.
+    LevelClear,
+    /// The last life went.
+    GameOver,
+}
+
+/// The most cues one frame may hold.
+///
+/// Sized against the worst honest frame rather than a round number: eight
+/// fixed ticks, ten balls, and at most one brick collision per ball per
+/// tick is 80, and the paddle and item cues ride on top of that. A frame
+/// that would exceed this is already a frame where the player cannot pick
+/// out individual sounds, so dropping the surplus costs nothing audible —
+/// and it makes a stalled frame impossible to turn into unbounded memory.
+pub const MAX_CUES: usize = 96;
 
 impl GameState {
     /// A fresh game: full lives, zero score, ball on the paddle.
@@ -578,9 +651,39 @@ impl GameState {
             clear: None,
             palette: [Color::rgb(160, 160, 160); 6],
             just_advanced: false,
+            rally: 0,
+            cues: Vec::with_capacity(MAX_CUES),
         };
         state.rest_ball_on_paddle();
         state
+    }
+
+    /// Record that something happened worth hearing.
+    ///
+    /// Silently drops past `MAX_CUES`. That is the right failure: the cap is
+    /// only reachable in a frame already too dense to pick sounds out of, and
+    /// the alternative — growing without limit while the frame stalls — trades
+    /// an inaudible loss for a real one.
+    pub fn cue(&mut self, c: Cue) {
+        if self.cues.len() < MAX_CUES {
+            self.cues.push(c);
+        }
+    }
+
+    /// Hand this frame's cues to `f`, then clear them.
+    ///
+    /// ⚠️ Drains in place rather than returning a `Vec`: this runs every
+    /// frame, and handing back an owned vec would allocate 60 times a second
+    /// to say "nothing happened" most of the time. The closure form also
+    /// makes double-playing a frame impossible — the queue is empty before
+    /// the borrow ends.
+    ///
+    /// `Audio` is a separate object from `GameState`, so a caller can hold
+    /// `&mut Audio` inside `f` without troubling the borrow checker.
+    pub fn drain_cues(&mut self, mut f: impl FnMut(Cue)) {
+        for c in self.cues.drain(..) {
+            f(c);
+        }
     }
 
     /// Collapse to exactly one ball, parked on the paddle, motionless.
@@ -622,6 +725,13 @@ impl GameState {
         }
         self.phase = Phase::Playing;
         self.just_advanced = false;
+        // ⚠️ The rally resets HERE and nowhere else, because "since the
+        // last launch" is exactly what a rally is. Every path back into
+        // play — a lost life, a cleared level, a restart — passes through
+        // `Ready` and must launch again, so this one line covers all of
+        // them. Resetting in `lose_life` and `advance_level` as well would
+        // be three places to keep in step for no added coverage.
+        self.rally = 0;
     }
 
     /// How many balls may be in play at once on the current level.
@@ -705,6 +815,13 @@ impl GameState {
     /// never multiplies, or two lucky catches would make the paddle absurd
     /// and a third would fill the field.
     pub fn apply_item(&mut self, kind: ItemKind) {
+        // ⚠️ The bomb gets its own cue and everything else shares one.
+        // That asymmetry is deliberate and it is §7's: the bomb does not
+        // glow, so its sound is the only warning the player gets, while a
+        // grow, a magnet and an Omarchy are all simply good and do not
+        // need to be told apart by ear.
+        self.cue(if kind.is_bad() { Cue::BombCaught } else { Cue::ItemCaught });
+
         match kind {
             ItemKind::Grow(strength) => {
                 let already_grown = self.paddle_scale > 1.0;
@@ -798,6 +915,10 @@ impl GameState {
 
         let speed = self.ball_speed();
         let paddle = self.paddle;
+        // Counted inside the loop and cued after it: `self.balls` is
+        // borrowed mutably here, so `self.cue` cannot be called until it
+        // is released.
+        let mut auto_released = 0;
         for ball in &mut self.balls {
             let Some(left) = ball.held_for else { continue };
             let left = left - dt;
@@ -809,7 +930,14 @@ impl GameState {
                 ball.vel = Vec2::ZERO;
             } else {
                 release_held(ball, &paddle, speed);
+                auto_released += 1;
             }
+        }
+        // ⚠️ ONE cue however many balls the timer let go. Two balls whose
+        // holds expire in the same tick is one event to a listener, and
+        // playing it twice would double the level rather than say more.
+        if auto_released > 0 {
+            self.cue(Cue::MagnetRelease);
         }
     }
 
@@ -831,6 +959,9 @@ impl GameState {
                 release_held(ball, &paddle, speed);
                 fired = true;
             }
+        }
+        if fired {
+            self.cue(Cue::MagnetRelease);
         }
         fired
     }
@@ -894,6 +1025,10 @@ impl GameState {
     /// one on the paddle and the next field is built. Clearing the last
     /// level is the only way to reach `Phase::Won`.
     pub fn advance_level(&mut self) {
+        // ⚠️ Cued on BOTH paths. Clearing the last level wins the game, and
+        // a win that arrived in silence would be the one moment the game
+        // most owes the player a sound.
+        self.cue(Cue::LevelClear);
         if self.level >= LEVELS {
             self.phase = Phase::Won;
             return;
@@ -1020,8 +1155,14 @@ impl GameState {
         self.shake.add(crate::effects::SHAKE_UNITS);
         self.lives = self.lives.saturating_sub(1);
         if self.lives == 0 {
+            // ⚠️ The last life gets ONE sound, not two. Playing the lost
+            // ball and then the game over would step on the ending with a
+            // sound the player has already heard twice — and the game-over
+            // sound already says everything the lost-ball one would.
+            self.cue(Cue::GameOver);
             self.phase = Phase::Lost;
         } else {
+            self.cue(Cue::BallLost);
             self.phase = Phase::Ready;
             // A lost ball is not a level change, even if the last thing
             // that happened was one.

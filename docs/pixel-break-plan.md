@@ -313,18 +313,31 @@ appearing. Builds are cheap and they make ten levels feel like a journey.
 **Theme.** Everything above draws from `Theme`. The suite's whole visual argument is that it
 looks like *your* desktop. A hardcoded colour anywhere in this section is a bug.
 
-### The Omarchy logo item
+### The Omarchy logo item — ✅ DONE (S8, 636155f)
 
-⚠️ **The 5x7 font cannot draw "Omarchy" in logo script.** It has `A-Z0-9 -` and nothing else.
-This is authored pixel art, a `Sprite`, drawn in `tools/sprite-playground.html` — the tool
-that already exists for exactly this. Budget a real session for it; it is the most-seen
-single asset in the game.
+⚠️ **Both warnings below were resolved, and the first one was simply wrong.**
 
-⚠️ **Check the licensing on the Omarchy wordmark before shipping it as a game item.** Using
-a distro's logo as a collectible in a plugin distributed to that distro's community is
-almost certainly welcome, but "almost certainly" is not the standard for a trademark. Ask in
-the community first — and the answer is likely a friendly yes, which is worth having said out
-loud.
+The premise was that the 5x7 font cannot draw "Omarchy" in logo script, so the mark would
+need authoring as pixel art in `tools/sprite-playground.html` — a real session's work. The
+logo Brian supplied made that unnecessary: `docs/omarchy-logo-hackerman.svg` is a 1200-unit
+square whose every path coordinate is a multiple of 80, i.e. **a native 15x15 grid**. At
+15x15 its alpha is only 0 or 255; at 600px all 225 cells are uniformly full or empty. The
+art is *read off* the source, never redrawn. See `games/omarcade-pixel-break/src/art.rs`.
+
+⚠️ **Licensing: asked and cleared.** Brian confirmed the community was asked before the mark
+shipped as a game item.
+
+⚠️ **What only rendering caught:** the mark's ink is its walls, one cell wide, which on a
+16-unit-tall item lands on ~1 screen pixel. Drawn as-is the glyph collapsed into faint
+scratches around a large body-coloured middle — a picture frame, not a logo. It is drawn
+**inverted** (`art::inverted_rows`): same grid, same silhouette, but the glyph's mass carries
+it rather than its linework. The 15x15 art is the source of truth; the inverse is derived.
+
+⚠️ **The limit, stated honestly:** at 16 pixels the mark reads as a distinctive solid badge —
+the only square among wide bars — not as a legible Omarchy wordmark. The one-row notch in the
+left wall does not survive the 15-into-16 rounding. Enlarging the item box would fix it but
+would move `Rect::from_center` and change the hitbox, which is a gameplay edit; that was
+considered and declined.
 
 ---
 

@@ -1,0 +1,935 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Pixel Break sound playground</title>
+<style>
+  :root{
+    --bg:#0d1013; --panel:#151a1f; --line:#232b33; --ink:#c8d3dc;
+    --dim:#7b8794; --hot:#ffb454; --trace:#4ade80; --go:#22c55e; --red:#ef4444;
+    --cool:#60a5fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:13px/1.5 ui-monospace,"JetBrains Mono",Menlo,monospace}
+  header{padding:10px 16px;border-bottom:1px solid var(--line);
+         display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  h1{font-size:14px;margin:0;font-weight:600;letter-spacing:.02em}
+  .sub{color:var(--dim);font-size:11px}
+  #wrap{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;padding:12px}
+  @media(max-width:900px){#wrap{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px}
+  .card h2{font-size:11px;margin:0 0 8px;color:var(--dim);font-weight:600;
+           text-transform:uppercase;letter-spacing:.08em}
+  canvas{width:100%;display:block;background:#0a0d10;border-radius:4px}
+  .row{display:flex;align-items:center;gap:8px;margin:5px 0}
+  .row label{flex:0 0 122px;font-size:11px;color:var(--dim)}
+  .row input[type=range]{flex:1;min-width:0;accent-color:var(--hot)}
+  .row .val{flex:0 0 62px;text-align:right;font-size:11px;color:var(--hot)}
+  button{background:#1e262e;color:var(--ink);border:1px solid var(--line);
+         border-radius:4px;padding:7px 13px;cursor:pointer;font:inherit;font-size:12px}
+  button:hover{border-color:var(--hot);color:var(--hot)}
+  button.on{background:var(--hot);color:#0d1013;border-color:var(--hot);font-weight:600}
+  button.big{width:100%;padding:12px;font-size:13px;font-weight:600;
+             background:#14532d;border-color:var(--go);color:#bbf7d0}
+  button.big:hover{background:#166534;color:#fff}
+  button.danger{background:#3f1d1d;border-color:var(--red);color:#fecaca}
+  button.danger:hover{background:#5b2525;color:#fff}
+  .grp{border-top:1px solid var(--line);margin-top:10px;padding-top:8px}
+  .grp h3{font-size:11px;margin:0 0 4px;color:var(--cool);font-weight:600;
+          text-transform:uppercase;letter-spacing:.06em}
+  .note{color:var(--dim);font-size:10.5px;margin:2px 0 7px;line-height:1.45}
+  .warn{color:var(--hot)}
+  #dump{width:100%;height:190px;background:#0a0d10;color:var(--trace);
+        border:1px solid var(--line);border-radius:4px;font:11px/1.5 ui-monospace,monospace;
+        padding:8px;resize:vertical}
+  .fires{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+  .fires button{padding:8px 6px;font-size:11.5px}
+  #meter{height:22px;background:#0a0d10;border:1px solid var(--line);border-radius:4px;
+         position:relative;overflow:hidden;margin-top:6px}
+  #meterbar{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--go);
+            transition:width .08s linear}
+  #meterbar.hot{background:var(--hot)}
+  #meterbar.clip{background:var(--red)}
+  #meterlab{position:absolute;inset:0;display:flex;align-items:center;
+            justify-content:center;font-size:11px;letter-spacing:.04em;
+            text-shadow:0 0 4px #000}
+  .tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px}
+  .tabs button{padding:5px 9px;font-size:11px}
+  .pane{display:none}
+  .pane.on{display:block}
+</style>
+
+<header>
+  <h1>PIXEL BREAK — sound playground</h1>
+  <span class="sub">clean-synth arcade · S9 · every number ports verbatim to sound.rs</span>
+</header>
+
+<div id="wrap">
+  <div>
+    <div class="card">
+      <h2>Spectrum</h2>
+      <canvas id="spec" width="900" height="200"></canvas>
+      <div class="note" style="margin-top:8px">
+        The trace is the live mix. What matters here is not one sound's shape but whether
+        each sound still has a band of its own when several land together.
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Fire one</h2>
+      <div class="note">
+        Each of these is exactly what the game will play. Tune with the panel on the right.
+      </div>
+      <div class="fires">
+        <button data-fire="paddle">paddle hit</button>
+        <button data-fire="brick">plain brick</button>
+        <button data-fire="chip">reinforced chip</button>
+        <button data-fire="rbreak">reinforced break</button>
+        <button data-fire="abreak">armoured break</button>
+        <button data-fire="item">power-up catch</button>
+        <button data-fire="bomb">BOMB catch</button>
+        <button data-fire="magnet">magnet catch</button>
+        <button data-fire="release">magnet release</button>
+        <button data-fire="lost">ball lost</button>
+        <button data-fire="clear">level clear</button>
+        <button data-fire="over">game over</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>The rally — does the pitch climb read?</h2>
+      <div class="note">
+        §7 asks for the paddle hit to rise with rally length. This plays a whole rally so the
+        <b>climb</b> can be judged, which a single hit cannot show. The rise is
+        <code>PITCH_STEP</code> per hit, capped at <code>PITCH_CAP</code>.
+      </div>
+      <button class="big" id="rally">▶ play a 12-hit rally</button>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2 class="warn">★ Ten balls — the test the plan names</h2>
+      <div class="note">
+        <span class="warn">A one-shot must be sized against the mix, not against silence.</span>
+        This fires a realistic ten-ball burst — many brick hits, paddle hits, an item catch —
+        summed into <b>one buffer</b>, so you hear the real constructive interference and the
+        real clipping. If a sound vanishes here, it is too quiet, however good it sounds alone.
+      </div>
+      <button class="big" id="chaos">▶ ten-ball pile-up</button>
+      <div id="meter"><div id="meterbar"></div><div id="meterlab">peak —</div></div>
+      <div class="note" id="peaknote" style="margin-top:6px">
+        Headroom readout. The ear misses clipping on a quiet system; this does not.
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Master</h2>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <button id="power">▶ start audio</button>
+        <button id="reset">reset all</button>
+      </div>
+      <div class="row"><label>preview volume</label>
+        <input type="range" id="master" min="0" max="1" step="0.01" value="0.7">
+        <span class="val" id="masterv"></span></div>
+      <div class="note">
+        Preview volume is <b>not</b> a tuned value and is never exported — it exists so you can
+        listen comfortably. Judge levels with the peak meter, not the knob.
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Tuning</h2>
+      <div class="tabs">
+        <button data-tab="t-hit" class="on">hits</button>
+        <button data-tab="t-break">breaks</button>
+        <button data-tab="t-item">items</button>
+        <button data-tab="t-event">events</button>
+      </div>
+
+      <div class="pane on" id="t-hit">
+        <div class="grp" style="border-top:none;margin-top:0;padding-top:0">
+          <h3>Paddle hit</h3>
+          <div class="note">The most-heard sound in the game. Short and clean, or it becomes
+            a nag by level three.</div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="phz" min="200" max="1200" step="5" value="420">
+            <span class="val" id="phzv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="plen" min="0.02" max="0.30" step="0.005" value="0.075">
+            <span class="val" id="plenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="plevel" min="0" max="1" step="0.01" value="0.34">
+            <span class="val" id="plevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="ptone" min="0" max="1" step="0.02" value="0.22">
+            <span class="val" id="ptonev"></span></div>
+          <div class="row"><label>rally step</label>
+            <input type="range" id="pstep" min="0" max="0.12" step="0.002" value="0.035">
+            <span class="val" id="pstepv"></span></div>
+          <div class="row"><label>rally cap</label>
+            <input type="range" id="pcap" min="1.0" max="3.0" step="0.05" value="1.80">
+            <span class="val" id="pcapv"></span></div>
+        </div>
+        <div class="grp">
+          <h3>Plain brick</h3>
+          <div class="note">Heard more than anything except the paddle. At ten balls these
+            stack — keep it short.</div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="bhz" min="300" max="2000" step="10" value="880">
+            <span class="val" id="bhzv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="blen" min="0.02" max="0.30" step="0.005" value="0.070">
+            <span class="val" id="blenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="blevel" min="0" max="1" step="0.01" value="0.30">
+            <span class="val" id="blevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="btone" min="0" max="1" step="0.02" value="0.30">
+            <span class="val" id="btonev"></span></div>
+        </div>
+        <div class="grp">
+          <h3>Reinforced chip <span class="sub">(survived a hit)</span></h3>
+          <div class="note">Must read as <b>"not yet"</b> — duller and lower than a break, or
+            the player cannot hear the difference between damage and destruction.</div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="chz" min="200" max="1200" step="10" value="500">
+            <span class="val" id="chzv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="clen" min="0.02" max="0.25" step="0.005" value="0.055">
+            <span class="val" id="clenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="clevel" min="0" max="1" step="0.01" value="0.24">
+            <span class="val" id="clevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="ctone" min="0" max="1" step="0.02" value="0.46">
+            <span class="val" id="ctonev"></span></div>
+        </div>
+      </div>
+
+      <div class="pane" id="t-break">
+        <div class="grp" style="border-top:none;margin-top:0;padding-top:0">
+          <h3>Reinforced break</h3>
+          <div class="note">The reward for the second hit. Two notes: the chip's pitch, then
+            a fifth above it — the same "that, resolved" shape the racer's checkpoint uses.</div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="rhz" min="200" max="1400" step="10" value="620">
+            <span class="val" id="rhzv"></span></div>
+          <div class="row"><label>interval</label>
+            <input type="range" id="rint" min="1.0" max="2.5" step="0.01" value="1.50">
+            <span class="val" id="rintv"></span></div>
+          <div class="row"><label>gap</label>
+            <input type="range" id="rgap" min="0" max="0.20" step="0.005" value="0.045">
+            <span class="val" id="rgapv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="rlen" min="0.03" max="0.40" step="0.005" value="0.115">
+            <span class="val" id="rlenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="rlevel" min="0" max="1" step="0.01" value="0.32">
+            <span class="val" id="rlevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="rtone" min="0" max="1" step="0.02" value="0.34">
+            <span class="val" id="rtonev"></span></div>
+        </div>
+        <div class="grp">
+          <h3>Armoured break <span class="sub">(the heavy one)</span></h3>
+          <div class="note">§7 calls this "the heavy one". Weight in a clean-synth palette
+            comes from a <b>low fundamental</b> and a longer tail, not from noise.</div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="ahz" min="80" max="600" step="5" value="196">
+            <span class="val" id="ahzv"></span></div>
+          <div class="row"><label>upper note</label>
+            <input type="range" id="aint" min="1.0" max="4.0" step="0.05" value="2.00">
+            <span class="val" id="aintv"></span></div>
+          <div class="row"><label>gap</label>
+            <input type="range" id="agap" min="0" max="0.20" step="0.005" value="0.030">
+            <span class="val" id="agapv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="alen" min="0.05" max="0.80" step="0.01" value="0.300">
+            <span class="val" id="alenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="alevel" min="0" max="1" step="0.01" value="0.40">
+            <span class="val" id="alevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="atone" min="0" max="1" step="0.02" value="0.52">
+            <span class="val" id="atonev"></span></div>
+        </div>
+      </div>
+
+      <div class="pane" id="t-item">
+        <div class="grp" style="border-top:none;margin-top:0;padding-top:0">
+          <h3>Power-up catch</h3>
+          <div class="note">Rising, because catching something good should sound like it.</div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="ihz" min="300" max="1400" step="10" value="660">
+            <span class="val" id="ihzv"></span></div>
+          <div class="row"><label>interval</label>
+            <input type="range" id="iint" min="1.0" max="2.5" step="0.01" value="1.50">
+            <span class="val" id="iintv"></span></div>
+          <div class="row"><label>gap</label>
+            <input type="range" id="igap" min="0" max="0.20" step="0.005" value="0.070">
+            <span class="val" id="igapv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="ilen" min="0.05" max="0.50" step="0.01" value="0.180">
+            <span class="val" id="ilenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="ilevel" min="0" max="1" step="0.01" value="0.34">
+            <span class="val" id="ilevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="itone" min="0" max="1" step="0.02" value="0.30">
+            <span class="val" id="itonev"></span></div>
+        </div>
+        <div class="grp">
+          <h3 style="color:var(--red)">★ BOMB catch — must sound BAD</h3>
+          <div class="note warn">
+            §7: "the one place the sound has to carry meaning the visual might miss."
+            The bomb does not glow, so <b>the sound is the only warning</b>. It falls instead
+            of rising, and the upper note is deliberately <b>dissonant</b> — a tritone at 1.41
+            is the classic wrong-sounding interval.
+          </div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="mhz" min="80" max="800" step="5" value="330">
+            <span class="val" id="mhzv"></span></div>
+          <div class="row"><label>fall to</label>
+            <input type="range" id="mint" min="0.3" max="1.0" step="0.01" value="0.67">
+            <span class="val" id="mintv"></span></div>
+          <div class="row"><label>dissonance</label>
+            <input type="range" id="mdis" min="1.0" max="2.0" step="0.01" value="1.41">
+            <span class="val" id="mdisv"></span></div>
+          <div class="row"><label>gap</label>
+            <input type="range" id="mgap" min="0" max="0.20" step="0.005" value="0.055">
+            <span class="val" id="mgapv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="mlen" min="0.05" max="0.60" step="0.01" value="0.260">
+            <span class="val" id="mlenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="mlevel" min="0" max="1" step="0.01" value="0.42">
+            <span class="val" id="mlevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="mtone" min="0" max="1" step="0.02" value="0.62">
+            <span class="val" id="mtonev"></span></div>
+        </div>
+        <div class="grp">
+          <h3>Magnet catch &amp; release</h3>
+          <div class="note">Two halves of one gesture: the catch <b>holds</b> (a single
+            sustained note), the release <b>lets go</b> (the same note, up and short). The
+            release also fires on the 3s auto-release, so it must not sound like a mistake.</div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="ghz" min="200" max="1000" step="10" value="440">
+            <span class="val" id="ghzv"></span></div>
+          <div class="row"><label>catch length</label>
+            <input type="range" id="glen" min="0.05" max="0.60" step="0.01" value="0.220">
+            <span class="val" id="glenv"></span></div>
+          <div class="row"><label>release lift</label>
+            <input type="range" id="glift" min="1.0" max="2.5" step="0.01" value="1.50">
+            <span class="val" id="gliftv"></span></div>
+          <div class="row"><label>release length</label>
+            <input type="range" id="grlen" min="0.03" max="0.30" step="0.005" value="0.090">
+            <span class="val" id="grlenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="glevel" min="0" max="1" step="0.01" value="0.30">
+            <span class="val" id="glevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="gtone" min="0" max="1" step="0.02" value="0.26">
+            <span class="val" id="gtonev"></span></div>
+        </div>
+      </div>
+
+      <div class="pane" id="t-event">
+        <div class="grp" style="border-top:none;margin-top:0;padding-top:0">
+          <h3>Ball lost</h3>
+          <div class="note">Falls. Should read as a loss without being punishing — it happens
+            three times a game at minimum.</div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="lhz" min="100" max="800" step="5" value="392">
+            <span class="val" id="lhzv"></span></div>
+          <div class="row"><label>fall to</label>
+            <input type="range" id="lint" min="0.3" max="1.0" step="0.01" value="0.67">
+            <span class="val" id="lintv"></span></div>
+          <div class="row"><label>gap</label>
+            <input type="range" id="lgap" min="0" max="0.25" step="0.005" value="0.080">
+            <span class="val" id="lgapv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="llen" min="0.05" max="0.60" step="0.01" value="0.240">
+            <span class="val" id="llenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="llevel" min="0" max="1" step="0.01" value="0.34">
+            <span class="val" id="llevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="ltone" min="0" max="1" step="0.02" value="0.34">
+            <span class="val" id="ltonev"></span></div>
+        </div>
+        <div class="grp">
+          <h3>Level clear</h3>
+          <div class="note">Rises and <b>resolves to the octave</b> — the racer's finish
+            proved that is what makes an ending sound finished rather than cut off. It plays
+            under the cascade, so it can afford to be the longest sound in the game.</div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="vhz" min="200" max="900" step="10" value="523">
+            <span class="val" id="vhzv"></span></div>
+          <div class="row"><label>step</label>
+            <input type="range" id="vint" min="1.0" max="2.0" step="0.01" value="1.26">
+            <span class="val" id="vintv"></span></div>
+          <div class="row"><label>gap</label>
+            <input type="range" id="vgap" min="0.02" max="0.30" step="0.005" value="0.105">
+            <span class="val" id="vgapv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="vlen" min="0.10" max="1.20" step="0.02" value="0.540">
+            <span class="val" id="vlenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="vlevel" min="0" max="1" step="0.01" value="0.34">
+            <span class="val" id="vlevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="vtone" min="0" max="1" step="0.02" value="0.34">
+            <span class="val" id="vtonev"></span></div>
+        </div>
+        <div class="grp">
+          <h3>Game over</h3>
+          <div class="note">The mirror of level clear: the same shape <b>descending</b>, and
+            it must not resolve. Ending on the unresolved note is what makes it feel like a
+            stop rather than a finish.</div>
+          <div class="row"><label>pitch</label>
+            <input type="range" id="ohz" min="100" max="700" step="5" value="330">
+            <span class="val" id="ohzv"></span></div>
+          <div class="row"><label>step down</label>
+            <input type="range" id="oint" min="0.5" max="1.0" step="0.01" value="0.79">
+            <span class="val" id="ointv"></span></div>
+          <div class="row"><label>gap</label>
+            <input type="range" id="ogap" min="0.02" max="0.35" step="0.005" value="0.150">
+            <span class="val" id="ogapv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="olen" min="0.10" max="1.50" step="0.02" value="0.720">
+            <span class="val" id="olenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="olevel" min="0" max="1" step="0.01" value="0.36">
+            <span class="val" id="olevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="otone" min="0" max="1" step="0.02" value="0.44">
+            <span class="val" id="otonev"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>Settings → sound.rs</h2>
+      <div style="display:flex;gap:8px;margin-bottom:6px">
+        <button id="copy">copy settings</button>
+      </div>
+      <div class="note">
+        These paste straight into <code>games/omarcade-pixel-break/src/sound.rs</code>. The
+        synthesis below is a sample-accurate port of the Rust <code>strike()</code>, so a
+        level of 0.30 here <b>is</b> a level of 0.30 there.
+      </div>
+      <textarea id="dump" readonly></textarea>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ═══════════════════════════════════════════════════════════════════
+// THE SYNTHESIS — a sample-accurate port of Rust `strike()`.
+//
+// Ported line for line from games/omarcade-racer/src/sound.rs:1176.
+// This is NOT a WebAudio node graph, and that is deliberate: the racer's
+// chimes.html builds notes from an oscillator + PeriodicWave + an
+// exponential gain ramp, which is a DIFFERENT FUNCTION from the Rust —
+// different harmonic series, an exponential attack where the Rust is
+// linear, and a decay that reaches 0.0001 where the Rust reaches ~0.057.
+// That mismatch never bit the racer because chimes play alone. It would
+// bite here, because §7 requires every sound to survive a ten-ball mix,
+// and that is a claim about RELATIVE LEVELS between sounds.
+//
+// ⚠️ If the Rust `strike()` ever changes, THIS CHANGES WITH IT. The two
+// are one function that happens to be written twice.
+// ═══════════════════════════════════════════════════════════════════
+
+const TAU = Math.PI * 2;
+
+/// One struck note, summed into `out` starting at `note.start` seconds.
+/// `out` is a Float32Array of mono samples beginning at time `t0`.
+function strike(out, sampleRate, t0, note) {
+  const { start, hz, len, level, tone } = note;
+  const dt = 1 / sampleRate;
+  for (let i = 0; i < out.length; i++) {
+    const t = t0 + i * dt - start;
+    if (t < 0 || t >= len) continue;
+
+    // A short attack so the note is struck rather than clicked on.
+    // LINEAR, matching the Rust — not an exponential ramp.
+    const attack = Math.min(t / 0.008, 1);
+    const env = attack * Math.exp(-t / (len * 0.35));
+
+    // A small harmonic stack: `tone` decides how reedy it is.
+    // k runs 2..6 exclusive, i.e. four harmonics above the fundamental.
+    let v = Math.sin(TAU * hz * t);
+    let amp = tone;
+    for (let k = 2; k < 6; k++) {
+      if (hz * k > sampleRate * 0.5) break;
+      v += amp * Math.sin(TAU * hz * k * t) / k;
+      amp *= tone;
+    }
+
+    out[i] += v * env * level;
+  }
+}
+
+const $ = id => document.getElementById(id);
+const val = id => parseFloat($(id).value);
+
+let ctx = null, running = false, ana = null, master = null;
+
+function start() {
+  if (running) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  master = ctx.createGain();
+  master.gain.value = val("master");
+  ana = ctx.createAnalyser();
+  ana.fftSize = 8192; ana.smoothingTimeConstant = 0.25;
+  master.connect(ana); ana.connect(ctx.destination);
+  running = true;
+  $("power").textContent = "■ stop";
+  $("power").classList.add("on");
+  draw();
+}
+
+function stop() {
+  if (!running) return;
+  ctx.close(); ctx = null; running = false;
+  $("power").textContent = "▶ start audio";
+  $("power").classList.remove("on");
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// THE SOUNDS — each is a composition of struck notes, exactly as the
+// Rust voice will compose them. Every one returns its notes as data, so
+// the same list drives both playback and the ten-ball mix.
+// ═══════════════════════════════════════════════════════════════════
+
+/// `pitch` is the play_with() pitch trim: it multiplies every frequency,
+/// which is how the paddle hit rises with the rally.
+const SOUNDS = {
+  paddle: () => [
+    { start: 0, hz: val("phz"), len: val("plen"), level: val("plevel"), tone: val("ptone") },
+  ],
+  brick: () => [
+    { start: 0, hz: val("bhz"), len: val("blen"), level: val("blevel"), tone: val("btone") },
+  ],
+  chip: () => [
+    { start: 0, hz: val("chz"), len: val("clen"), level: val("clevel"), tone: val("ctone") },
+  ],
+  rbreak: () => {
+    const hz = val("rhz"), len = val("rlen"), lv = val("rlevel"), tone = val("rtone");
+    return [
+      { start: 0, hz, len, level: lv, tone },
+      { start: val("rgap"), hz: hz * val("rint"), len, level: lv, tone },
+    ];
+  },
+  abreak: () => {
+    const hz = val("ahz"), len = val("alen"), lv = val("alevel"), tone = val("atone");
+    return [
+      { start: 0, hz, len, level: lv, tone },
+      // The upper note is shorter, so the LOW one is what rings on. That
+      // is where the weight comes from in a palette with no noise.
+      { start: val("agap"), hz: hz * val("aint"), len: len * 0.55, level: lv * 0.7, tone },
+    ];
+  },
+  item: () => {
+    const hz = val("ihz"), len = val("ilen"), lv = val("ilevel"), tone = val("itone");
+    return [
+      { start: 0, hz, len: len * 0.6, level: lv, tone },
+      { start: val("igap"), hz: hz * val("iint"), len, level: lv, tone },
+    ];
+  },
+  bomb: () => {
+    const hz = val("mhz"), len = val("mlen"), lv = val("mlevel"), tone = val("mtone");
+    const gap = val("mgap");
+    return [
+      // Falling, and sounded WITH a dissonant partner rather than after
+      // it — simultaneous dissonance is what the ear reads as "wrong",
+      // where a sequence would just read as a tune.
+      { start: 0, hz, len, level: lv, tone },
+      { start: 0, hz: hz * val("mdis"), len: len * 0.8, level: lv * 0.75, tone },
+      { start: gap, hz: hz * val("mint"), len, level: lv, tone },
+      { start: gap, hz: hz * val("mint") * val("mdis"), len: len * 0.8, level: lv * 0.75, tone },
+    ];
+  },
+  magnet: () => [
+    { start: 0, hz: val("ghz"), len: val("glen"), level: val("glevel"), tone: val("gtone") },
+  ],
+  release: () => [
+    { start: 0, hz: val("ghz") * val("glift"), len: val("grlen"),
+      level: val("glevel"), tone: val("gtone") },
+  ],
+  lost: () => {
+    const hz = val("lhz"), len = val("llen"), lv = val("llevel"), tone = val("ltone");
+    return [
+      { start: 0, hz, len: len * 0.5, level: lv, tone },
+      { start: val("lgap"), hz: hz * val("lint"), len, level: lv, tone },
+    ];
+  },
+  clear: () => {
+    const hz = val("vhz"), gap = val("vgap"), len = val("vlen");
+    const lv = val("vlevel"), tone = val("vtone"), step = val("vint");
+    return [
+      { start: 0, hz, len: len * 0.4, level: lv, tone },
+      { start: gap, hz: hz * step, len: len * 0.4, level: lv, tone },
+      { start: gap * 2, hz: hz * step * step, len: len * 0.4, level: lv, tone },
+      // Resolving to the octave is what makes it sound finished.
+      { start: gap * 3, hz: hz * 2, len, level: lv, tone },
+      { start: gap * 3, hz: hz * 3, len: len * 0.8, level: lv * 0.5, tone },
+    ];
+  },
+  over: () => {
+    const hz = val("ohz"), gap = val("ogap"), len = val("olen");
+    const lv = val("olevel"), tone = val("otone"), step = val("oint");
+    return [
+      { start: 0, hz, len: len * 0.45, level: lv, tone },
+      { start: gap, hz: hz * step, len: len * 0.45, level: lv, tone },
+      // No octave, no resolution: it stops rather than finishes.
+      { start: gap * 2, hz: hz * step * step, len, level: lv, tone },
+    ];
+  },
+};
+
+/// How long a sound runs, so a buffer can be sized without guessing.
+function soundLength(notes) {
+  return notes.reduce((m, n) => Math.max(m, n.start + n.len), 0);
+}
+
+/// Render a list of notes into a fresh mono AudioBuffer.
+/// `pitch` multiplies every frequency (the play_with pitch trim).
+/// `gain` scales every level (the play_with gain).
+function renderNotes(notes, pitch = 1, gain = 1, pad = 0.05) {
+  const sr = ctx.sampleRate;
+  const seconds = soundLength(notes) + pad;
+  const buf = ctx.createBuffer(1, Math.ceil(seconds * sr), sr);
+  const out = buf.getChannelData(0);
+  for (const n of notes) {
+    strike(out, sr, 0, {
+      start: n.start, hz: n.hz * pitch, len: n.len,
+      level: n.level * gain, tone: n.tone,
+    });
+  }
+  // The mixer clamps to full scale; so does this, or the preview would
+  // sound cleaner than the game.
+  for (let i = 0; i < out.length; i++) out[i] = Math.max(-1, Math.min(1, out[i]));
+  return buf;
+}
+
+function playBuffer(buf, at = 0) {
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(master);
+  src.start(at || ctx.currentTime + 0.01);
+  return src;
+}
+
+function fire(name, pitch = 1, gain = 1) {
+  if (!running) start();
+  playBuffer(renderNotes(SOUNDS[name](), pitch, gain));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// THE RALLY — the pitch climb, which one hit cannot show.
+// ═══════════════════════════════════════════════════════════════════
+
+/// The pitch trim for the nth paddle hit of a rally. This is the exact
+/// formula the Rust will use, so the climb heard here is the climb that
+/// ships.
+function rallyPitch(n) {
+  return Math.min(1 + n * val("pstep"), val("pcap"));
+}
+
+function playRally() {
+  if (!running) start();
+  const t0 = ctx.currentTime + 0.05;
+  for (let n = 0; n < 12; n++) {
+    // A rally speeds up as it goes; spacing this evenly would make the
+    // climb sound like a scale rather than a rally.
+    const at = t0 + n * 0.30 - n * n * 0.006;
+    playBuffer(renderNotes(SOUNDS.paddle(), rallyPitch(n)), at);
+    // Every paddle hit in a real rally is bracketed by a brick hit.
+    if (n > 0) playBuffer(renderNotes(SOUNDS.brick()), at - 0.14);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ★ THE TEN-BALL PILE-UP — the test §7 names.
+//
+// Summed into ONE buffer rather than played as independent sources,
+// because the thing being judged is constructive interference and
+// clipping. Ten separate players would each stay inside full scale and
+// the browser would mix them for you — which is exactly the reassuring
+// lie that made this worth building.
+// ═══════════════════════════════════════════════════════════════════
+
+/// A plausible two seconds of ten-ball play, as (time, sound, pitch).
+function chaosScript() {
+  const ev = [];
+  // Ten balls loose in a dense field: brick hits arrive in a shower,
+  // clustered rather than evenly spread.
+  let t = 0.05;
+  for (let i = 0; i < 26; i++) {
+    ev.push([t, "brick", 1]);
+    // Clusters, then a breath — the real rhythm of a dense field.
+    t += (i % 5 === 4) ? 0.16 : 0.035 + Math.random() * 0.03;
+  }
+  // Paddle hits underneath, at a rally pitch that has climbed a while.
+  for (let i = 0; i < 5; i++) ev.push([0.12 + i * 0.34, "paddle", rallyPitch(6 + i)]);
+  // Reinforced bricks in the mix.
+  ev.push([0.30, "chip", 1]);
+  ev.push([0.62, "rbreak", 1]);
+  ev.push([1.05, "chip", 1]);
+  ev.push([1.38, "rbreak", 1]);
+  // The armoured brick that has to cut through all of it.
+  ev.push([0.88, "abreak", 1]);
+  // ★ The two that MUST be heard: a power-up caught in the chaos, and
+  // the bomb, whose sound is the only warning the player gets.
+  ev.push([0.50, "item", 1]);
+  ev.push([1.60, "bomb", 1]);
+  return ev;
+}
+
+function playChaos() {
+  if (!running) start();
+  const sr = ctx.sampleRate;
+  const ev = chaosScript();
+  const end = ev.reduce((m, [at, name]) =>
+    Math.max(m, at + soundLength(SOUNDS[name]())), 0) + 0.15;
+
+  const buf = ctx.createBuffer(1, Math.ceil(end * sr), sr);
+  const out = buf.getChannelData(0);
+  for (const [at, name, pitch] of ev) {
+    for (const n of SOUNDS[name]()) {
+      strike(out, sr, -at, {
+        start: n.start, hz: n.hz * (pitch || 1), len: n.len,
+        level: n.level, tone: n.tone,
+      });
+    }
+  }
+
+  // Measure BEFORE clamping — that is the whole point of the readout.
+  let peak = 0;
+  for (let i = 0; i < out.length; i++) peak = Math.max(peak, Math.abs(out[i]));
+  for (let i = 0; i < out.length; i++) out[i] = Math.max(-1, Math.min(1, out[i]));
+
+  showPeak(peak);
+  playBuffer(buf);
+}
+
+function showPeak(peak) {
+  const bar = $("meterbar"), lab = $("meterlab");
+  bar.style.width = Math.min(peak / 1.5, 1) * 100 + "%";
+  bar.className = peak > 1 ? "clip" : peak > 0.85 ? "hot" : "";
+  lab.textContent = "peak " + peak.toFixed(2) + (peak > 1 ? "  ✖ CLIPPING" : "");
+  $("peaknote").innerHTML = peak > 1
+    ? '<span class="warn">Clipping. The mixer clamps, so the loudest moment of the game is '
+      + 'distorting. Bring levels down until this reads under 1.00 — every sound quietens '
+      + 'together, so the balance you tuned is preserved.</span>'
+    : peak > 0.85
+    ? 'Loud but clean. This is a good place to be: using the range without clipping.'
+    : 'Clean, with headroom to spare. If the game feels quiet, raise levels together '
+      + 'rather than one at a time.';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// The spectrum trace.
+// ═══════════════════════════════════════════════════════════════════
+
+function draw() {
+  const c = $("spec"), g = c.getContext("2d");
+  const W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = "#0a0d10"; g.fillRect(0, 0, W, H);
+
+  if (running && ana) {
+    const bins = new Uint8Array(ana.frequencyBinCount);
+    ana.getByteFrequencyData(bins);
+    // Log frequency axis: a linear one wastes four fifths of the width
+    // on content none of these sounds have.
+    const nyq = ctx.sampleRate / 2;
+    const lo = 60, hi = 12000;
+    g.beginPath();
+    for (let x = 0; x < W; x++) {
+      const hz = lo * Math.pow(hi / lo, x / W);
+      const bin = Math.round(hz / nyq * bins.length);
+      const v = (bins[Math.min(bin, bins.length - 1)] || 0) / 255;
+      const y = H - v * H;
+      x === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+    }
+    g.strokeStyle = "#4ade80"; g.lineWidth = 1.5; g.stroke();
+
+    // Octave gridlines, so a shifted pitch can be read and not guessed.
+    g.strokeStyle = "#1b222a"; g.lineWidth = 1;
+    g.fillStyle = "#4b5563"; g.font = "10px ui-monospace,monospace";
+    for (let hz = 125; hz < hi; hz *= 2) {
+      const x = Math.log(hz / lo) / Math.log(hi / lo) * W;
+      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+      g.fillText(hz >= 1000 ? (hz / 1000) + "k" : hz, x + 3, H - 4);
+    }
+  }
+  requestAnimationFrame(draw);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Wiring.
+// ═══════════════════════════════════════════════════════════════════
+
+const FMT = {
+  master: v => v.toFixed(2),
+  phz: hz, plen: ms, plevel: n2, ptone: n2, pstep: v => "+" + v.toFixed(3), pcap: x,
+  bhz: hz, blen: ms, blevel: n2, btone: n2,
+  chz: hz, clen: ms, clevel: n2, ctone: n2,
+  rhz: hz, rint: x, rgap: ms, rlen: ms, rlevel: n2, rtone: n2,
+  ahz: hz, aint: x, agap: ms, alen: ms, alevel: n2, atone: n2,
+  ihz: hz, iint: x, igap: ms, ilen: ms, ilevel: n2, itone: n2,
+  mhz: hz, mint: x, mdis: x, mgap: ms, mlen: ms, mlevel: n2, mtone: n2,
+  ghz: hz, glen: ms, glift: x, grlen: ms, glevel: n2, gtone: n2,
+  lhz: hz, lint: x, lgap: ms, llen: ms, llevel: n2, ltone: n2,
+  vhz: hz, vint: x, vgap: ms, vlen: ms, vlevel: n2, vtone: n2,
+  ohz: hz, oint: x, ogap: ms, olen: ms, olevel: n2, otone: n2,
+};
+function hz(v) { return v.toFixed(0) + " Hz"; }
+function ms(v) { return (v * 1000).toFixed(0) + " ms"; }
+function n2(v) { return v.toFixed(2); }
+function x(v) { return "×" + v.toFixed(2); }
+
+const DEFAULTS = {};
+
+function sync() {
+  for (const id in FMT) {
+    const el = $(id + "v");
+    if (el) el.textContent = FMT[id](val(id));
+  }
+  if (running && master) master.gain.value = val("master");
+  dump();
+}
+
+function dump() {
+  const v = id => val(id);
+  $("dump").value =
+`// Brian's tuning from tools/sfx/pixel-break.html, ${new Date().toISOString().slice(0, 10)}.
+// Clean-synth arcade. Ported verbatim: the playground runs the same
+// strike() as this file, so these numbers are the sound.
+
+// ── paddle hit ─────────────────────────────────────────────
+const PADDLE_HZ: f32 = ${v("phz").toFixed(1)};
+const PADDLE_LEN: f32 = ${v("plen").toFixed(3)};
+const PADDLE_LEVEL: f32 = ${v("plevel").toFixed(2)};
+const PADDLE_TONE: f32 = ${v("ptone").toFixed(2)};
+/// Pitch added per hit of a rally, and the ceiling it climbs to.
+const RALLY_STEP: f32 = ${v("pstep").toFixed(3)};
+const RALLY_CAP: f32 = ${v("pcap").toFixed(2)};
+
+// ── plain brick ────────────────────────────────────────────
+const BRICK_HZ: f32 = ${v("bhz").toFixed(1)};
+const BRICK_LEN: f32 = ${v("blen").toFixed(3)};
+const BRICK_LEVEL: f32 = ${v("blevel").toFixed(2)};
+const BRICK_TONE: f32 = ${v("btone").toFixed(2)};
+
+// ── reinforced chip (survived a hit) ───────────────────────
+const CHIP_HZ: f32 = ${v("chz").toFixed(1)};
+const CHIP_LEN: f32 = ${v("clen").toFixed(3)};
+const CHIP_LEVEL: f32 = ${v("clevel").toFixed(2)};
+const CHIP_TONE: f32 = ${v("ctone").toFixed(2)};
+
+// ── reinforced break ───────────────────────────────────────
+const RBREAK_HZ: f32 = ${v("rhz").toFixed(1)};
+const RBREAK_INTERVAL: f32 = ${v("rint").toFixed(2)};
+const RBREAK_GAP: f32 = ${v("rgap").toFixed(3)};
+const RBREAK_LEN: f32 = ${v("rlen").toFixed(3)};
+const RBREAK_LEVEL: f32 = ${v("rlevel").toFixed(2)};
+const RBREAK_TONE: f32 = ${v("rtone").toFixed(2)};
+
+// ── armoured break (the heavy one) ─────────────────────────
+const ARMOUR_HZ: f32 = ${v("ahz").toFixed(1)};
+const ARMOUR_INTERVAL: f32 = ${v("aint").toFixed(2)};
+const ARMOUR_GAP: f32 = ${v("agap").toFixed(3)};
+const ARMOUR_LEN: f32 = ${v("alen").toFixed(3)};
+const ARMOUR_LEVEL: f32 = ${v("alevel").toFixed(2)};
+const ARMOUR_TONE: f32 = ${v("atone").toFixed(2)};
+
+// ── power-up catch ─────────────────────────────────────────
+const ITEM_HZ: f32 = ${v("ihz").toFixed(1)};
+const ITEM_INTERVAL: f32 = ${v("iint").toFixed(2)};
+const ITEM_GAP: f32 = ${v("igap").toFixed(3)};
+const ITEM_LEN: f32 = ${v("ilen").toFixed(3)};
+const ITEM_LEVEL: f32 = ${v("ilevel").toFixed(2)};
+const ITEM_TONE: f32 = ${v("itone").toFixed(2)};
+
+// ── BOMB catch — the only warning the player gets ──────────
+const BOMB_HZ: f32 = ${v("mhz").toFixed(1)};
+const BOMB_FALL: f32 = ${v("mint").toFixed(2)};
+const BOMB_DISSONANCE: f32 = ${v("mdis").toFixed(2)};
+const BOMB_GAP: f32 = ${v("mgap").toFixed(3)};
+const BOMB_LEN: f32 = ${v("mlen").toFixed(3)};
+const BOMB_LEVEL: f32 = ${v("mlevel").toFixed(2)};
+const BOMB_TONE: f32 = ${v("mtone").toFixed(2)};
+
+// ── magnet catch and release ───────────────────────────────
+const MAGNET_HZ: f32 = ${v("ghz").toFixed(1)};
+const MAGNET_LEN: f32 = ${v("glen").toFixed(3)};
+const MAGNET_LIFT: f32 = ${v("glift").toFixed(2)};
+const MAGNET_RELEASE_LEN: f32 = ${v("grlen").toFixed(3)};
+const MAGNET_LEVEL: f32 = ${v("glevel").toFixed(2)};
+const MAGNET_TONE: f32 = ${v("gtone").toFixed(2)};
+
+// ── ball lost ──────────────────────────────────────────────
+const LOST_HZ: f32 = ${v("lhz").toFixed(1)};
+const LOST_FALL: f32 = ${v("lint").toFixed(2)};
+const LOST_GAP: f32 = ${v("lgap").toFixed(3)};
+const LOST_LEN: f32 = ${v("llen").toFixed(3)};
+const LOST_LEVEL: f32 = ${v("llevel").toFixed(2)};
+const LOST_TONE: f32 = ${v("ltone").toFixed(2)};
+
+// ── level clear ────────────────────────────────────────────
+const CLEAR_HZ: f32 = ${v("vhz").toFixed(1)};
+const CLEAR_STEP: f32 = ${v("vint").toFixed(2)};
+const CLEAR_GAP: f32 = ${v("vgap").toFixed(3)};
+const CLEAR_LEN: f32 = ${v("vlen").toFixed(3)};
+const CLEAR_LEVEL: f32 = ${v("vlevel").toFixed(2)};
+const CLEAR_TONE: f32 = ${v("vtone").toFixed(2)};
+
+// ── game over ──────────────────────────────────────────────
+const OVER_HZ: f32 = ${v("ohz").toFixed(1)};
+const OVER_STEP: f32 = ${v("oint").toFixed(2)};
+const OVER_GAP: f32 = ${v("ogap").toFixed(3)};
+const OVER_LEN: f32 = ${v("olen").toFixed(3)};
+const OVER_LEVEL: f32 = ${v("olevel").toFixed(2)};
+const OVER_TONE: f32 = ${v("otone").toFixed(2)};
+`;
+}
+
+// Remember every slider's starting value so "reset all" means something.
+for (const id in FMT) DEFAULTS[id] = $(id).value;
+
+for (const id in FMT) $(id).addEventListener("input", sync);
+
+document.querySelectorAll("[data-fire]").forEach(b => {
+  b.addEventListener("click", () => fire(b.dataset.fire));
+});
+
+document.querySelectorAll("[data-tab]").forEach(b => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll("[data-tab]").forEach(o => o.classList.remove("on"));
+    document.querySelectorAll(".pane").forEach(p => p.classList.remove("on"));
+    b.classList.add("on");
+    $(b.dataset.tab).classList.add("on");
+  });
+});
+
+$("power").addEventListener("click", () => running ? stop() : start());
+$("rally").addEventListener("click", playRally);
+$("chaos").addEventListener("click", playChaos);
+$("copy").addEventListener("click", () => {
+  $("dump").select(); document.execCommand("copy");
+});
+$("reset").addEventListener("click", () => {
+  for (const id in DEFAULTS) $(id).value = DEFAULTS[id];
+  sync();
+});
+
+sync();
+draw();
+</script>

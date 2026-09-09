@@ -55,6 +55,20 @@ struct Pixel {
     tread: bool,
 }
 
+/// A horizontal run of identically-coloured cells, ready to draw as one
+/// rect. See [`Sprite::runs`] for why runs rather than cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Run {
+    x: u16,
+    y: u16,
+    /// How many cells wide, at least 1.
+    len: u16,
+    /// How many cells tall, at least 1. Rows merge only when they align
+    /// exactly, so a run is always a clean rectangle.
+    rows: u16,
+    color: Color,
+}
+
 /// A grid of pixels, drawable at any scale.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sprite {
@@ -306,6 +320,85 @@ impl Sprite {
         self.draw(canvas, cx - w / 2.0, ground_y - h, scale);
     }
 
+    /// Walk the sprite as horizontal RUNS of same-coloured cells.
+    ///
+    /// ⚠️ **This exists because `fill_rect_f` antialiases by coverage.** A
+    /// pixel that a rect only partly covers gets proportional alpha, so two
+    /// adjacent cells drawn as separate rects each write partial coverage
+    /// to the pixel on their shared boundary — and two partial writes
+    /// composite to LESS than one full one. At alpha 200 the shared pixel
+    /// lands about 20% short, which paints a faint grid of seams across any
+    /// translucent sprite at a fractional scale.
+    ///
+    /// Merging removes the internal boundaries, so there is nothing left to
+    /// under-cover. Every draw path goes through here, so they cannot
+    /// disagree about it.
+    ///
+    /// `pixels` is stored row-major, so a run is a straight walk.
+    fn runs(&self, tint: Option<(Color, f32)>, merge_rows: bool) -> Vec<Run> {
+        let resolve = |p: &Pixel| match tint {
+            Some((t, amount)) => p.color.lerp(t, amount),
+            None => p.color,
+        };
+
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.pixels.len() {
+            let p = self.pixels[i];
+            let color = resolve(&p);
+
+            let mut len = 1u16;
+            while let Some(q) = self.pixels.get(i + len as usize) {
+                // Contiguous on the same row, and the same colour once the
+                // tint has been applied — two differently-coloured cells
+                // that tint to the same value may safely merge.
+                if q.y != p.y || q.x != p.x + len || resolve(q) != color {
+                    break;
+                }
+                len += 1;
+            }
+
+            out.push(Run { x: p.x, y: p.y, len, rows: 1, color });
+            i += len as usize;
+        }
+
+        // ⚠️ **Then merge VERTICALLY — but only when the caller says it is
+        // safe.** A POSED sprite shears and squashes each row by its own
+        // height, so a block spanning several rows would draw as one
+        // un-sheared rectangle and flatten the lean out of the car. The
+        // pose path therefore keeps its rows separate and wears the
+        // horizontal seams, which no opaque sprite shows anyway.
+        //
+        // Horizontal runs alone leave the
+        // seams BETWEEN rows, for exactly the same coverage reason — which
+        // is visible as a set of horizontal bands once the vertical ones
+        // are gone. A run may absorb the identical run directly below it,
+        // growing into a rectangle `rows` tall.
+        //
+        // Only runs that align exactly — same x, same length, same colour,
+        // on the very next row — merge, so an irregular silhouette is never
+        // distorted. That is enough for the large flat areas where seams
+        // actually show.
+        if !merge_rows {
+            return out;
+        }
+
+        let mut merged: Vec<Run> = Vec::with_capacity(out.len());
+        for run in out {
+            if let Some(prev) = merged
+                .iter_mut()
+                .rev()
+                .take_while(|r| r.y + r.rows >= run.y)
+                .find(|r| r.x == run.x && r.len == run.len && r.color == run.color && r.y + r.rows == run.y)
+            {
+                prev.rows += 1;
+            } else {
+                merged.push(run);
+            }
+        }
+        merged
+    }
+
     /// Draw, optionally mixing every pixel toward `tint`.
     ///
     /// One call rather than a second sprite per lighting state: distance
@@ -326,17 +419,26 @@ impl Sprite {
             return;
         }
 
-        for p in &self.pixels {
-            let color = match tint {
-                Some((t, amount)) => p.color.lerp(t, amount),
-                None => p.color,
-            };
+        // ⚠️ **Adjacent cells are merged into RUNS before drawing, and a
+        // translucent sprite is why.** `fill_rect_f` antialiases by
+        // coverage: a pixel straddling a rect's edge receives alpha in
+        // proportion to how much of it is covered. Two neighbouring cells
+        // drawn separately each write partial coverage to the pixel they
+        // share, and two partial writes do not compose to one full one — at
+        // alpha 200 the shared pixel lands about 20% short. The result is a
+        // faint GRID of seams over any sprite drawn at a fractional scale
+        // with a translucent tint, which is exactly what appeared on the
+        // Omarchy item once it was large enough to see.
+        //
+        // An opaque sprite never showed this — full coverage composites to
+        // the same colour either way — which is why it survived the racer.
+        for run in self.runs(tint, true) {
             canvas.fill_rect_f(
-                x + p.x as f32 * scale,
-                y + p.y as f32 * scale,
-                scale,
-                scale,
-                color,
+                x + run.x as f32 * scale,
+                y + run.y as f32 * scale,
+                scale * run.len as f32,
+                scale * run.rows as f32,
+                run.color,
             );
         }
     }
@@ -393,7 +495,13 @@ impl Sprite {
         // Squat compresses height about the contact patch.
         let squish = 1.0 - pose.squat * MAX_SQUAT;
 
-        for p in &self.pixels {
+        // ⚠️ Runs, for the same reason as `draw_tinted` — and because the
+        // two must agree: an UPRIGHT pose is asserted to be pixel-identical
+        // to plain drawing, so if one path merges and the other does not,
+        // that invariant breaks. Within a single row `up`, `shear` and
+        // `squish` are all constant, so a run shares them.
+        for run in self.runs(tint, false) {
+            let p = run;
             // Height above the sprite's own base, measured to the cell's
             // TOP edge — the same cell-not-point reasoning as the
             // horizontal axis below.
@@ -426,14 +534,16 @@ impl Sprite {
             let px = cx + (from_centre * squash + shear) * scale;
             let py = ground_y - up * squish * scale;
 
-            let color = match tint {
-                Some((t, amount)) => p.color.lerp(t, amount),
-                None => p.color,
-            };
             // Cells are widened by the same factors they are spaced by,
             // or a squashed sprite draws as a comb of gaps instead of a
-            // solid body.
-            canvas.fill_rect_f(px, py, scale * squash, scale * squish, color);
+            // solid body. A run is `len` cells wide before squashing.
+            canvas.fill_rect_f(
+                px,
+                py,
+                scale * squash * p.len as f32,
+                scale * squish * p.rows as f32,
+                p.color,
+            );
         }
     }
 
@@ -895,6 +1005,44 @@ mod tests {
             buf
         };
         assert_eq!(render(true), render(false), "UPRIGHT must be a no-op");
+    }
+
+    /// A translucent sprite must not show seams where its cells meet.
+    ///
+    /// ⚠️ This is the regression test for the grid that appeared on the
+    /// Omarchy item. `fill_rect_f` antialiases by coverage, so cells drawn
+    /// individually each write partial alpha to the pixel they share and
+    /// the two writes composite to less than one full one. Drawn as a run,
+    /// the interior is uniform.
+    ///
+    /// A solid block at a FRACTIONAL scale is the case that shows it: at an
+    /// integer scale every boundary lands on a pixel edge and there is
+    /// nothing to under-cover.
+    #[test]
+    fn a_translucent_sprite_has_no_seams_between_its_cells() {
+        let s = Sprite::new(&["####", "####"], &[('#', Color::rgb(255, 255, 255))]);
+
+        let mut buf = vec![0u32; 64 * 64];
+        {
+            let mut c = Canvas::new(&mut buf, 64, 64);
+            // Fractional scale, and a tint well below opaque.
+            s.draw_tinted(&mut c, 8.0, 8.0, 2.93, Some((Color::rgb(255, 255, 255).with_alpha(200), 1.0)));
+        }
+
+        // Sample the interior only — the outer edges are legitimately
+        // partial. Both axes: horizontal runs fix the vertical seams, and
+        // merging those runs downward fixes the horizontal ones.
+        let row: Vec<u32> = (10..17).map(|x| buf[10 * 64 + x]).collect();
+        assert!(
+            row.iter().all(|&v| v == row[0]),
+            "vertical seams between cells: {row:?}"
+        );
+
+        let col: Vec<u32> = (10..13).map(|y| buf[y * 64 + 12]).collect();
+        assert!(
+            col.iter().all(|&v| v == col[0]),
+            "horizontal seams between rows: {col:?}"
+        );
     }
 
     #[test]

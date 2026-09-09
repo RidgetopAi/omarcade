@@ -303,8 +303,16 @@ say why.
 **Speed-reactive trail.** The trail exists and is good. Make its length and brightness track
 ball speed, so L10 looks fast. With additive blending it becomes a streak of light.
 
-**Power-up glow.** Falling items pulse. The Omarchy logo item is the one that should look
-genuinely special — it is the reward, and it carries the distro's name.
+**Power-up glow.** ✅ DONE. Falling items pulse — a raised-cosine breath at 1.5 Hz, drawn as
+two rings under the item so it reads as light coming off it rather than a frame around it.
+
+⚠️ **A bomb does not glow.** A pulse is an invitation; putting one on the only bad drop would
+advertise the trap. Added after seeing the first render give the bomb a red halo.
+
+⚠️ **The Omarchy item's halo scales with the ITEM, not in flat units.** A fixed depth looks
+proportionally smaller on a bigger item: measured, the 44-wide item's halo came out 0.17 of its
+height against a bar's 0.19, so the "special" multiplier was being cancelled by the very size
+that makes it special.
 
 **Level-clear cascade.** On the last brick, everything left on screen resolves into a wave.
 Brief — under a second — then the next level builds itself in, row by row, rather than
@@ -333,11 +341,16 @@ scratches around a large body-coloured middle — a picture frame, not a logo. I
 **inverted** (`art::inverted_rows`): same grid, same silhouette, but the glyph's mass carries
 it rather than its linework. The 15x15 art is the source of truth; the inverse is derived.
 
-⚠️ **The limit, stated honestly:** at 16 pixels the mark reads as a distinctive solid badge —
-the only square among wide bars — not as a legible Omarchy wordmark. The one-row notch in the
-left wall does not survive the 15-into-16 rounding. Enlarging the item box would fix it but
-would move `Rect::from_center` and change the hitbox, which is a gameplay edit; that was
-considered and declined.
+⚠️ **The 16-pixel limit was real, and was then lifted.** At the shared 34x16 the mark read as a
+distinctive badge but not as a legible wordmark — Brian's verdict in play was "too small to even
+tell what it is". The item is now a 44x44 square (`items::OMARCHY_SIZE`), sized per KIND, so the
+mark gets ~2.9 screen pixels per logo cell and the notch survives.
+
+⚠️ **That IS a gameplay change and it was made deliberately.** The catch box is 2.75x taller, so
+the rarest drop is also the easiest to catch. `probe_balance` moved and the shape is right: the
+endgame tail fell 8.4% (1423s → 1304s) against the dense phase's 1.8% (3039s → 2983s), taking
+the tail's share to a new low of 30%. More balls searching at once is exactly what S6 established
+shortens the tail.
 
 ---
 

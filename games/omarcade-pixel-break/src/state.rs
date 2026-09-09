@@ -7,7 +7,7 @@
 //! until that situation happens.
 
 use crate::geom::{Rect, Vec2};
-use crate::effects::{Rng, Shake};
+use crate::effects::{Pulse, Rng, Shake};
 use crate::items::{Dropper, Item, ItemKind, BOMB_SCALE};
 use omarcade_core::particles::ParticlePool;
 use omarcade_core::Color;
@@ -509,6 +509,13 @@ pub struct GameState {
     pub chips: ParticlePool,
     /// The screen shake, which offsets the VIEWPORT and nothing else.
     pub shake: Shake,
+    /// The free-running clock that makes falling items pulse.
+    ///
+    /// ⚠️ Never reset — not on a new level, not on a lost life. A pulse
+    /// that restarted at a stage seam would make every item on screen jump
+    /// in step, which is exactly the tell that it is a global effect rather
+    /// than the item itself breathing.
+    pub pulse: Pulse,
     /// The effects' random source. Seeded, so a probe run is reproducible.
     pub effect_rng: Rng,
     /// The brick palette, refreshed from the theme every frame.
@@ -566,6 +573,7 @@ impl GameState {
             magnet_left: 0.0,
             chips: crate::effects::new_pool(),
             shake: Shake::default(),
+            pulse: Pulse::default(),
             effect_rng: Rng::default(),
             clear: None,
             palette: [Color::rgb(160, 160, 160); 6],

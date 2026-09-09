@@ -270,6 +270,33 @@ fn main() {
         }
         // Items falling beside balls, which is the comparison that matters:
         // ⚠️ an uncaught item must never be mistaken for a ball.
+        // ⚠️ A CONTROLLED PAIR for the pulse (L044). The `items` scene runs
+        // a fixed number of steps and lands wherever the pulse happens to
+        // be, which is useless for judging a glow. These two pin it to the
+        // extremes of its swing so the depth can be seen rather than
+        // guessed at: `glow-dim` at the trough, `glow-bright` at the peak.
+        "glow-dim" | "glow-bright" => {
+            s.launch();
+            s.level = 6;
+            let kinds = [
+                items::ItemKind::Grow(items::Strength::Small),
+                items::ItemKind::Bomb,
+                items::ItemKind::Magnet,
+                items::ItemKind::Omarchy,
+            ];
+            for (i, kind) in kinds.into_iter().enumerate() {
+                s.items.push(items::Item::new(
+                    geom::Vec2::new(180.0 + i as f32 * 200.0, 360.0),
+                    kind,
+                ));
+            }
+            // depth() peaks at half a period and troughs at zero.
+            s.pulse.t = if scene == "glow-bright" {
+                0.5 / effects::GLOW_HZ
+            } else {
+                0.0
+            };
+        }
         "items" => {
             s.launch();
             s.level = 6;

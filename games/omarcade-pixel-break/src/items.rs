@@ -87,6 +87,26 @@ impl ItemKind {
         }
     }
 
+    /// How wide this item is, in field units.
+    ///
+    /// Size is a property of the KIND, like `seconds` and `is_bad` above,
+    /// so catching, culling and drawing cannot disagree about it — they
+    /// all go through `Item::rect`.
+    pub fn width(self) -> f32 {
+        match self {
+            ItemKind::Omarchy => OMARCHY_SIZE,
+            _ => ITEM_W,
+        }
+    }
+
+    /// How tall this item is, in field units.
+    pub fn height(self) -> f32 {
+        match self {
+            ItemKind::Omarchy => OMARCHY_SIZE,
+            _ => ITEM_H,
+        }
+    }
+
     /// Whether this item resizes the paddle.
     ///
     /// The grow/bomb axis is one scale and one timer (see `GameState`);
@@ -127,6 +147,21 @@ pub const FALL_SPEED: f32 = 190.0;
 
 pub const ITEM_W: f32 = 34.0;
 pub const ITEM_H: f32 = 16.0;
+
+/// The Omarchy item is drawn — and caught — as a large square.
+///
+/// ⚠️ **This is a deliberate gameplay change, not just art.** The mark is
+/// a 15x15 grid, and in the default 34x16 box it scaled to 16 units: about
+/// one screen pixel per logo cell, which turned the whole glyph into a
+/// smudge. Brian's verdict on seeing it in play was that you cannot tell
+/// what it is. At 44 each cell gets nearly three pixels and the mark
+/// actually reads.
+///
+/// The cost is honest: this item's catch box is 2.75x taller and 1.3x
+/// wider than the bars', so the rarest and most wanted drop is also the
+/// easiest to catch. That is a reasonable thing for a reward to be, but it
+/// IS a change — `probe_balance` moves because of it, and it should.
+pub const OMARCHY_SIZE: f32 = 44.0;
 
 /// Chance that a brick's final hit drops something, at level 1 and at the
 /// last level. Linear between.
@@ -180,8 +215,13 @@ impl Item {
     }
 
     /// The item as a rect, which is how catching sees it.
+    ///
+    /// ⚠️ Sized from the KIND, so the Omarchy item's larger box applies to
+    /// catching and culling too — not just to how it is drawn. A rect that
+    /// disagreed with the art would mean catching thin air, or missing
+    /// something the player clearly touched.
     pub fn rect(&self) -> crate::geom::Rect {
-        crate::geom::Rect::from_center(self.pos, ITEM_W / 2.0, ITEM_H / 2.0)
+        crate::geom::Rect::from_center(self.pos, self.kind.width() / 2.0, self.kind.height() / 2.0)
     }
 }
 
@@ -579,6 +619,69 @@ mod tests {
         assert!(
             FALL_SPEED < crate::state::BALL_SPEED * 0.75,
             "items at {FALL_SPEED} are too close to ball pace"
+        );
+    }
+
+    /// The Omarchy item is bigger than the bars, and SQUARE.
+    ///
+    /// Both halves matter: square is what lets the 15x15 mark scale without
+    /// distortion, and bigger is what makes it legible at all.
+    #[test]
+    fn the_omarchy_item_is_a_larger_square() {
+        assert_eq!(ItemKind::Omarchy.width(), ItemKind::Omarchy.height());
+        assert!(
+            ItemKind::Omarchy.height() > ITEM_H * 2.0,
+            "the mark needs real pixels: {} is not much better than {ITEM_H}",
+            ItemKind::Omarchy.height()
+        );
+        for kind in [ItemKind::Bomb, ItemKind::Magnet, ItemKind::Grow(Strength::Small)] {
+            assert_eq!(kind.width(), ITEM_W, "{kind:?} should be a standard bar");
+            assert_eq!(kind.height(), ITEM_H, "{kind:?} should be a standard bar");
+        }
+    }
+
+    /// The catch box follows the KIND, not a shared constant.
+    ///
+    /// ⚠️ This is the assertion that would have caught the bug if `rect()`
+    /// had been left on `ITEM_W`/`ITEM_H`: the art would have grown while
+    /// catching stayed small, so the player would visibly touch the mark
+    /// and not catch it.
+    #[test]
+    fn the_catch_box_matches_what_is_drawn() {
+        let at = Vec2::new(300.0, 300.0);
+        let omarchy = Item::new(at, ItemKind::Omarchy).rect();
+        let bar = Item::new(at, ItemKind::Bomb).rect();
+
+        assert_eq!(omarchy.w, OMARCHY_SIZE);
+        assert_eq!(omarchy.h, OMARCHY_SIZE);
+        assert_eq!(bar.w, ITEM_W);
+        assert_eq!(bar.h, ITEM_H);
+
+        // Same centre, so the bigger box grows in every direction rather
+        // than hanging off one edge.
+        assert_eq!(omarchy.center(), bar.center());
+    }
+
+    /// A bigger item must still fit the field wherever a brick can drop it.
+    ///
+    /// ⚠️ Bricks are laid out centred, so the outermost columns sit closest
+    /// to the walls. If the widest item overhung from there it would be
+    /// drawn clipped, and the glow around it more so.
+    #[test]
+    fn the_widest_item_fits_at_the_outermost_brick() {
+        let total_w = crate::state::BRICK_COLS as f32 * crate::state::BRICK_W
+            + (crate::state::BRICK_COLS - 1) as f32 * crate::state::BRICK_GAP;
+        let x0 = (crate::state::FIELD_W - total_w) / 2.0;
+        let leftmost = x0 + crate::state::BRICK_W / 2.0;
+        let rightmost = x0 + (crate::state::BRICK_COLS - 1) as f32
+            * (crate::state::BRICK_W + crate::state::BRICK_GAP)
+            + crate::state::BRICK_W / 2.0;
+
+        let widest = OMARCHY_SIZE.max(ITEM_W);
+        assert!(leftmost - widest / 2.0 >= 0.0, "an item would overhang the left wall");
+        assert!(
+            rightmost + widest / 2.0 <= crate::state::FIELD_W,
+            "an item would overhang the right wall"
         );
     }
 }

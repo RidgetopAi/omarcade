@@ -57,6 +57,67 @@ pub const CHIP_GRAVITY: f32 = 640.0;
 /// reinforced-brick feedback cheap.
 pub const PARTIAL_SHARE: f32 = 0.35;
 
+/// How many times a second a falling item pulses.
+///
+/// ⚠️ Slow on purpose. The plan asks for items that "pulse", and a fast
+/// blink reads as a warning — the opposite of a reward. At roughly one and
+/// a half cycles a second the item breathes, which draws the eye without
+/// nagging it.
+pub const GLOW_HZ: f32 = 1.5;
+
+/// How far the pulse swings, as a fraction of the item's border.
+///
+/// The glow is drawn as a halo OUTSIDE the item, so this is measured in
+/// field units of extra surround at the peak of the swing.
+pub const GLOW_UNITS: f32 = 3.0;
+
+/// The Omarchy item's share of the swing, against every other item's.
+///
+/// ⚠️ **The plan is explicit that the Omarchy item is the one that should
+/// look "genuinely special".** The others get a gentle breath; this gets a
+/// halo two and a half times deeper, so the rare drop announces itself
+/// across a busy field without any second mechanism.
+pub const GLOW_OMARCHY_SCALE: f32 = 2.5;
+
+/// A free-running clock for effects that pulse rather than decay.
+///
+/// ⚠️ Separate from the cascade's `Clear::elapsed`, which resets at every
+/// stage seam — a pulse driven off that would visibly jump each time a
+/// level cleared. This only ever advances.
+///
+/// ⚠️ Like every other effect it ticks OUTSIDE the phase match, so items
+/// waiting on the Ready screen keep breathing. See the note beside
+/// `chips.update` in `physics.rs`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Pulse {
+    /// Seconds since the game began. Only ever increases.
+    pub t: f32,
+}
+
+impl Pulse {
+    pub fn tick(&mut self, dt: f32) {
+        self.t += dt;
+        // Wrap on the cycle so a long session cannot drift into the range
+        // where an f32 no longer resolves small time steps. One full
+        // period is indistinguishable from any other, so this is invisible.
+        let period = 1.0 / GLOW_HZ;
+        if self.t > period {
+            self.t -= period;
+        }
+    }
+
+    /// The glow's depth in field units, for one item kind, right now.
+    ///
+    /// Returns a value in `0..=GLOW_UNITS * scale`, swinging smoothly. The
+    /// curve is a raised cosine rather than a sine so the item spends
+    /// slightly longer at its dimmest — a breath, not a metronome.
+    pub fn depth(&self, scale: f32) -> f32 {
+        let phase = self.t * GLOW_HZ * std::f32::consts::TAU;
+        let swing = (1.0 - phase.cos()) * 0.5;
+        GLOW_UNITS * scale * swing
+    }
+}
+
 /// Peak screen-shake offset in field units, and how fast it decays.
 ///
 /// ⚠️ Applied to the VIEWPORT only. Shake moves the drawing, never the

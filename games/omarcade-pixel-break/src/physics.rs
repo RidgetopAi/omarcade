@@ -159,6 +159,7 @@ pub fn step_fixed(state: &mut GameState) {
     // the playground is the arc the player sees at any frame rate.
     state.chips.update(FIXED_DT);
     state.shake.tick(FIXED_DT);
+    state.pulse.tick(FIXED_DT);
 
     match state.phase {
         // Ball rides the paddle until launch.
@@ -532,7 +533,10 @@ fn move_items(state: &mut GameState) {
         if state.items[i].rect().overlaps(&paddle) {
             caught.push(state.items[i].kind);
             state.items.remove(i);
-        } else if state.items[i].pos.y - crate::items::ITEM_H > floor {
+        // ⚠️ The item's OWN height, not the shared constant: the Omarchy
+        // item is taller than the bars, and culling it on their height
+        // would retire it while part of it is still on screen.
+        } else if state.items[i].pos.y - state.items[i].kind.height() > floor {
             state.items.remove(i);
         }
     }

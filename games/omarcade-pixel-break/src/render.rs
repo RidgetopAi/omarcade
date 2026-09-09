@@ -15,6 +15,7 @@ use omarcade_core::text::{text, text_width, GLYPH_H};
 use omarcade_core::{Canvas, Color, Sprite, Theme};
 
 use crate::art;
+use crate::effects::{self, Pulse};
 use crate::items::{Item, ItemKind};
 use crate::state::{Ball, Brick, GameState, Phase, Tier, FIELD_H, FIELD_W, LEVELS};
 
@@ -163,7 +164,7 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
     vp.rect(state.paddle.rect(), canvas, theme.foreground);
 
     for item in &state.items {
-        draw_item(item, canvas, theme, &vp);
+        draw_item(item, canvas, theme, &vp, &state.pulse);
     }
 
     draw_chips(state, canvas, &vp);
@@ -205,9 +206,59 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
 /// with a bar across it reading as "wider", a bomb with a gap reading as
 /// "cut". Colour agrees with that but never carries it alone — a player
 /// should not have to learn which colour is bad.
-fn draw_item(item: &Item, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
+fn draw_item(
+    item: &Item,
+    canvas: &mut Canvas<'_>,
+    theme: &Theme,
+    vp: &Viewport,
+    pulse: &Pulse,
+) {
     let r = item.rect();
     let bad = item.kind.is_bad();
+
+    // The pulse: a halo that breathes outward from the item's edge.
+    //
+    // ⚠️ Drawn FIRST, underneath everything else, so it reads as light
+    // coming off the item rather than as a frame drawn around it. It is
+    // deliberately not part of the item's rect — the glow must never look
+    // like something you can catch, because you cannot.
+    //
+    // ⚠️ **A BOMB DOES NOT GLOW.** A pulse is an invitation — it exists to
+    // pull the eye toward something worth catching. Putting one on the only
+    // bad drop would advertise the trap, which is precisely backwards. The
+    // bomb keeps its bitten-bar glyph and stays quiet.
+    //
+    // ⚠️ The Omarchy item's halo is scaled against the ITEM, not in flat
+    // units. A fixed depth looks proportionally SMALLER on a bigger item —
+    // measured, the 44-wide item's halo came out 0.17 of its height against
+    // a bar's 0.19, so the "special" multiplier was being cancelled by the
+    // very size that makes it special. Scaling by the item's own height
+    // makes the multiplier mean what it says.
+    let depth = if bad {
+        0.0
+    } else if matches!(item.kind, ItemKind::Omarchy) {
+        pulse.depth(effects::GLOW_OMARCHY_SCALE) * (r.h / crate::items::ITEM_H)
+    } else {
+        pulse.depth(1.0)
+    };
+    if depth > 0.05 {
+        // Two rings rather than one: the outer is fainter and wider, which
+        // is what makes it read as a falloff instead of as a hard border.
+        // Alpha is low even at the peak — a glow that competes with the
+        // item's own body stops being a glow.
+        // Always the good colour: the only items that reach here are good.
+        let halo = theme.green;
+        for (mult, alpha) in [(1.0_f32, 70_u8), (0.5, 120)] {
+            let d = depth * mult;
+            canvas.fill_rect_f(
+                vp.fx(r.x - d),
+                vp.fy(r.y - d),
+                vp.flen(r.w + d * 2.0),
+                vp.flen(r.h + d * 2.0),
+                halo.with_alpha(alpha),
+            );
+        }
+    }
 
     // ⚠️ **Colour is the weakest cue here and is never trusted alone.** Two
     // attempts at picking theme slots both failed by LOOKING at them (the
@@ -305,12 +356,19 @@ fn draw_item(item: &Item, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport)
         // real logo, not a stand-in. This replaced a deliberate placeholder
         // disc; see `art::OMARCHY_MARK` for why the art needed no authoring.
         //
-        // ⚠️ The mark is SQUARE (15x15) and the item box is WIDE (34x16), so
-        // it is scaled to the box HEIGHT and centred in the width, never
+        // ⚠️ The mark is SQUARE (15x15) and so is its box (OMARCHY_SIZE),
+        // which is the whole reason the box was made square: at the shared
+        // 34x16 the mark scaled to 16 units — about one screen pixel per
+        // logo cell — and came out an unreadable smudge. Brian's verdict in
+        // play was that you cannot tell what it is. At 44 each cell gets
+        // nearly three pixels and the glyph reads.
+        //
+        // ⚠️ Still scaled UNIFORMLY off the height and centred, never
         // stretched to fill. Scaling x and y independently would break the
-        // logo's 1:1 cells into uneven rectangles — a squashed trademark is
-        // the one thing this must not look like. It reads as the only square
-        // among three wide bars, which is its own kind of "this one is rare".
+        // logo's 1:1 cells into uneven rectangles, and a squashed trademark
+        // is the one thing this must not look like. The centring maths is
+        // kept even though the box is now square, because it is the art
+        // being square that makes it a no-op — not the box.
         ItemKind::Omarchy => {
             // ⚠️ Built ONCE. `Sprite::new` allocates and parses the grid;
             // doing that per frame would put an allocation in the render

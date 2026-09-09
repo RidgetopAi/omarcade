@@ -8,10 +8,13 @@
 //! faster horizontally than vertically at the same speed, which players
 //! feel immediately even if they cannot name it.
 
+use std::sync::OnceLock;
+
 use omarcade_core::ease;
 use omarcade_core::text::{text, text_width, GLYPH_H};
-use omarcade_core::{Canvas, Color, Theme};
+use omarcade_core::{Canvas, Color, Sprite, Theme};
 
+use crate::art;
 use crate::items::{Item, ItemKind};
 use crate::state::{Ball, Brick, GameState, Phase, Tier, FIELD_H, FIELD_W, LEVELS};
 
@@ -298,45 +301,42 @@ fn draw_item(item: &Item, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport)
                 mark,
             );
         }
-        // ⚠️ **A PLACEHOLDER, and knowingly so.** The plan wants the
-        // Omarchy wordmark in script here, but the 5x7 font cannot draw it
-        // — that is authored pixel art and it is S8's job
-        // (tools/sprite-playground.html). What ships now is a ROUND glyph:
-        // the only round thing among three rectangular ones, and round
-        // reads as "ball", which is exactly what the item grants. It must
-        // not be mistaken for a bar at a glance, and it is not.
+        // The Omarchy mark itself — the rarest item in the bag wearing the
+        // real logo, not a stand-in. This replaced a deliberate placeholder
+        // disc; see `art::OMARCHY_MARK` for why the art needed no authoring.
+        //
+        // ⚠️ The mark is SQUARE (15x15) and the item box is WIDE (34x16), so
+        // it is scaled to the box HEIGHT and centred in the width, never
+        // stretched to fill. Scaling x and y independently would break the
+        // logo's 1:1 cells into uneven rectangles — a squashed trademark is
+        // the one thing this must not look like. It reads as the only square
+        // among three wide bars, which is its own kind of "this one is rare".
         ItemKind::Omarchy => {
-            let cx = r.x + r.w / 2.0;
-            let cy = r.y + r.h / 2.0;
-            let rad = r.h * 0.32;
-            // A disc, drawn as rows so it stays round at any scale.
-            //
-            // ⚠️ Each row is placed at the TOP of its slice and drawn a
-            // touch taller than the slice, so consecutive rows overlap.
-            // Centring each row on its midpoint instead leaves sub-pixel
-            // gaps between them, and the disc comes out visibly STRIPED —
-            // which looked like a rendering bug in the `items` scene and
-            // was only caught by looking at it.
-            let rows = 9;
-            let slice = rad * 2.0 / rows as f32;
-            for i in 0..rows {
-                // Sample the circle's width at the middle of the slice...
-                let t = (i as f32 + 0.5) / rows as f32 * 2.0 - 1.0;
-                let half = (1.0 - t * t).max(0.0).sqrt() * rad;
-                if half <= 0.25 {
-                    continue;
-                }
-                // ...but draw from the slice's top edge, overlapping into
-                // the next one.
-                let y = cy - rad + i as f32 * slice;
-                canvas.fill_rect_f(
-                    vp.fx(cx - half),
-                    vp.fy(y),
-                    vp.flen(half * 2.0),
-                    vp.flen(slice + 0.75),
-                    mark,
-                );
-            }
+            // ⚠️ Built ONCE. `Sprite::new` allocates and parses the grid;
+            // doing that per frame would put an allocation in the render
+            // loop for every falling item.
+            static MARK_SPRITE: OnceLock<Sprite> = OnceLock::new();
+            let sprite = MARK_SPRITE.get_or_init(art::omarchy_sprite);
+
+            // Fill the item's height exactly, in field units.
+            let scale = r.h / art::MARK_H;
+            // ⚠️ `draw_tinted` anchors TOP-LEFT, unlike the bars above which
+            // are positioned from their own edges. Centring in the wide slot
+            // is the caller's job — get this wrong and the mark sits in the
+            // corner rather than the middle.
+            let x = r.x + (r.w - art::MARK_W * scale) / 2.0;
+
+            // Tinted fully to `mark`, so the glyph carries the meaning and
+            // the theme supplies the colour — the same rule the bars follow.
+            // The source SVG's green gradient is an export artifact, not part
+            // of the mark's identity, so none of it survives here.
+            sprite.draw_tinted(
+                canvas,
+                vp.fx(x),
+                vp.fy(r.y),
+                vp.flen(scale),
+                Some((mark, 1.0)),
+            );
         }
     }
 }

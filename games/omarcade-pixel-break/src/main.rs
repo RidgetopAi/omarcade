@@ -81,7 +81,7 @@ impl PixelBreak {
     /// and passing the `Bank` in — splits one decision across two files.
     fn new(theme: Theme, audio: &mut AudioSystem) -> Self {
         let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
-        let mut state = GameState::new();
+        let mut state = GameState::on_title();
         // Effects can fire before the first frame renders; without this
         // they would throw grey chips until one does.
         state.set_palette(render::palette(&theme));
@@ -145,7 +145,17 @@ impl Game for PixelBreak {
             // returns immediately unless the phase is `Ready`. A held ball
             // only ever exists during `Playing`, so the two cannot overlap.
             // Tested in `magnet_tests`, not merely reasoned about.
-            InputEvent::KeyDown(Key::Space) => self.state.launch(),
+            // ⚠️ Space means two things and the PHASE decides which: on
+            // the title it opens the door, in play it launches the ball.
+            // Two calls rather than one overloaded one — see
+            // `start_from_title`.
+            InputEvent::KeyDown(Key::Space) => {
+                if self.state.phase == Phase::Title {
+                    self.state.start_from_title();
+                } else {
+                    self.state.launch();
+                }
+            }
             // Releasing fires whatever the magnet is holding. A no-op with
             // nothing held, which is every press outside a magnet.
             InputEvent::KeyUp(Key::Space) => {

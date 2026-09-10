@@ -331,6 +331,14 @@ fn main() {
         // What the player sees the moment a level is cleared. The bug this
         // scene exists for: before it, this frame said "PRESS SPACE" and was
         // indistinguishable from losing a ball.
+        // The intro on a level that ESCALATES — armour arriving at 8 is
+        // the one worth seeing, since that is the note doing real work.
+        "intro-armour" => {
+            s.level = 7;
+            for b in &mut s.bricks { b.hits = 0; }
+            s.advance_level();
+            s.skip_clear();
+        }
         "advanced" => {
             s.launch();
             s.score = 1240;
@@ -338,7 +346,40 @@ fn main() {
             s.advance_level();
         }
         "won" => { for b in &mut s.bricks { b.hits = 0; } s.phase = state::Phase::Won; s.score = 600; s.best = 600; }
-        "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.score = 250; s.best = 980; }
+        "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.level = 7; s.score = 18_420; s.best = 24_900; }
+        // The same screen having BEATEN the best — a controlled pair, since
+        // the NEW BEST line replaces the BEST line rather than adding to it.
+        "lost-best" => { s.lives = 0; s.phase = state::Phase::Lost; s.level = 7; s.score = 31_500; s.best = 24_900; }
+        // ★ §8's active-effect readout. A CONTROLLED PAIR: `effects` has
+        // a grow and a magnet both part-spent, `effects-bomb` has the bad
+        // one — the bar must say WHICH effect, not just that there is one.
+        "effects" | "effects-bomb" => {
+            s.launch();
+            s.level = 5;
+            s.score = 12_480;
+            if scene == "effects-bomb" {
+                s.apply_item(items::ItemKind::Bomb);
+                s.paddle_effect_left *= 0.35;
+            } else {
+                s.apply_item(items::ItemKind::Grow(items::Strength::Large));
+                s.paddle_effect_left *= 0.62;
+            }
+            s.apply_item(items::ItemKind::Magnet);
+            s.magnet_left *= 0.4;
+            s.resize_paddle();
+            for _ in 0..40 {
+                physics::step_fixed(&mut s);
+            }
+        }
+        // ★ The title, with and without a best score — a controlled pair,
+        // since the BEST line only draws when there is one and its absence
+        // changes the vertical balance of everything under it.
+        "title" | "title-fresh" => {
+            s.phase = state::Phase::Title;
+            if scene == "title" {
+                s.best = 65_150;
+            }
+        }
         // ★ The victory celebration, at three points in its run. A
         // CONTROLLED SET (L044): the wave early, the wave late, and the
         // tally — you cannot judge a four-second sequence from one frame.

@@ -72,6 +72,11 @@ pub fn glyph(c: char) -> Option<[u8; GLYPH_H as usize]> {
         ',' => [0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100, 0b01000],
         ':' => [0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000],
         '/' => [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+        // ⚠️ Added for the title's key hint, which names the volume-up
+        // key. Without it "= LOUDER" rendered as " LOUDER" — the hint
+        // silently dropped the one character it existed to teach, which
+        // is the exact failure the hint is there to prevent.
+        '=' => [0b00000, 0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000],
         ' ' => [0; GLYPH_H as usize],
         _ => return None,
     })
@@ -128,7 +133,7 @@ mod tests {
         for ch in ('A'..='Z')
             .chain('a'..='z')
             .chain('0'..='9')
-            .chain([' ', '-', '+', '.', ':', '/', ','])
+            .chain([' ', '-', '+', '.', ':', '/', ',', '='])
         {
             assert!(glyph(ch).is_some(), "font is missing {ch:?}");
         }
@@ -138,6 +143,9 @@ mod tests {
         // ⚠️ Was `Some(',')` until S10 added the comma. A grouped score —
         // SCORE 12,480 — is what §8's mockup asks for and what needed it.
         assert_eq!(unrenderable("SCORE 12,480"), None);
+        // ⚠️ The title's key hint. It names three keys and every one of
+        // them must actually draw.
+        assert_eq!(unrenderable("M MUTE  - QUIETER  = LOUDER"), None);
     }
 
     #[test]

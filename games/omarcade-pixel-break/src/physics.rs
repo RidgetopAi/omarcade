@@ -162,6 +162,10 @@ pub fn step_fixed(state: &mut GameState) {
     state.pulse.tick(FIXED_DT);
 
     match state.phase {
+        // ⚠️ Nothing simulates on the title. The ball still rides the
+        // paddle so the screen behind the text is the game at rest rather
+        // than an empty field, but no time passes for it.
+        Phase::Title => state.rest_ball_on_paddle(),
         // Ball rides the paddle until launch.
         Phase::Ready => state.rest_ball_on_paddle(),
         Phase::Playing => {

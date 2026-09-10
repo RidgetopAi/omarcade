@@ -422,6 +422,18 @@ pub fn trail_alpha_for(speed: f32) -> f32 {
 /// asked of one value, so they cannot contradict each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
+    /// ★ The screen the game opens on: the mark, the name, the keys.
+    ///
+    /// ⚠️ A phase rather than a flag, like every other state here. The
+    /// title has no ball, no paddle movement and no physics, and making
+    /// that a phase means every `match` has to say so rather than each
+    /// one remembering to check a bool.
+    ///
+    /// It is also the one screen a player READS instead of playing,
+    /// which is why the volume keys are documented on it — they are
+    /// handled by the backend before any game sees them, so nothing else
+    /// in the suite has ever told anyone they exist.
+    Title,
     /// Ball rests on the paddle; Space launches it.
     Ready,
     Playing,
@@ -659,6 +671,13 @@ pub struct GameState {
     pub paddle_scale: f32,
     /// Seconds left on `paddle_scale` before it returns to 1.0.
     pub paddle_effect_left: f32,
+    /// What `paddle_effect_left` started at, so a bar has a denominator.
+    ///
+    /// ⚠️ Stored rather than derived, because the duration a timer began
+    /// with is genuinely gone by the time anything wants to draw it — a
+    /// grow that stacked twice and a fresh long grow are the same number
+    /// of seconds remaining and a different fraction of a bar.
+    pub paddle_effect_total: f32,
     /// Seconds the magnet stays armed. Zero means off.
     ///
     /// ⚠️ **Deliberately NOT part of the `paddle_scale` axis.** Grow and
@@ -670,6 +689,8 @@ pub struct GameState {
     ///
     /// The ball's own hold lives on `Ball::held_for`, not here.
     pub magnet_left: f32,
+    /// What `magnet_left` started at. See `paddle_effect_total`.
+    pub magnet_total: f32,
     /// Brick chips in flight.
     ///
     /// ⚠️ Presentation state in the world model, like `Ball::trail` and for
@@ -819,7 +840,9 @@ impl GameState {
             dropper: Dropper::default(),
             paddle_scale: 1.0,
             paddle_effect_left: 0.0,
+            paddle_effect_total: 0.0,
             magnet_left: 0.0,
+            magnet_total: 0.0,
             chips: crate::effects::new_pool(),
             shake: Shake::default(),
             pulse: Pulse::default(),
@@ -832,6 +855,19 @@ impl GameState {
             cues: Vec::with_capacity(MAX_CUES),
         };
         state.rest_ball_on_paddle();
+        state
+    }
+
+    /// A game as the player first meets it: on the title screen.
+    ///
+    /// ⚠️ **`new` deliberately still starts in `Ready`.** Putting the
+    /// title into `new` broke thirty-four tests and two probes at once —
+    /// every one of them constructs a state to exercise a rule, not to
+    /// play a session, and none of them wants a front door. Where the
+    /// game OPENS is `main`'s decision, so `main` is what calls this.
+    pub fn on_title() -> Self {
+        let mut state = GameState::new();
+        state.phase = Phase::Title;
         state
     }
 
@@ -1036,10 +1072,18 @@ impl GameState {
                 } else {
                     strength.seconds()
                 };
+                // ⚠️ The total tracks the LONGEST the timer has been, so a
+                // stacked grow shows a bar that refills rather than one
+                // that jumps past full and then appears to stall.
+                self.paddle_effect_total =
+                    self.paddle_effect_total.max(self.paddle_effect_left);
             }
             ItemKind::Bomb => {
                 self.paddle_scale = BOMB_SCALE;
                 self.paddle_effect_left = kind.seconds();
+                // A bomb REPLACES a grow, so its bar starts full rather
+                // than inheriting the grow's longer scale.
+                self.paddle_effect_total = kind.seconds();
             }
             // ⚠️ The magnet REFRESHES rather than extends. Grow stacks its
             // duration because two grows are two of the same good thing;
@@ -1048,6 +1092,7 @@ impl GameState {
             // a 38-second magnet from one lucky catch.
             ItemKind::Magnet => {
                 self.magnet_left = self.magnet_left.max(kind.seconds());
+                self.magnet_total = self.magnet_total.max(self.magnet_left);
             }
             // ⚠️ **`spawn_ball`'s first caller.** The engine has existed
             // since S3 with nothing calling it, which is exactly why
@@ -1111,6 +1156,11 @@ impl GameState {
     pub fn tick_magnet(&mut self, dt: f32) {
         if self.magnet_left > 0.0 {
             self.magnet_left = (self.magnet_left - dt).max(0.0);
+            // The bar's denominator goes with its numerator, or a fresh
+            // magnet would start part-full against the old total.
+            if self.magnet_left == 0.0 {
+                self.magnet_total = 0.0;
+            }
         }
 
         let speed = self.ball_speed();
@@ -1191,6 +1241,7 @@ impl GameState {
         self.paddle_effect_left -= dt;
         if self.paddle_effect_left <= 0.0 {
             self.paddle_effect_left = 0.0;
+            self.paddle_effect_total = 0.0;
             self.paddle_scale = 1.0;
             self.resize_paddle();
         }
@@ -1203,6 +1254,7 @@ impl GameState {
         self.items.clear();
         self.paddle_scale = 1.0;
         self.paddle_effect_left = 0.0;
+        self.paddle_effect_total = 0.0;
         // ⚠️ Chips and shake clear too, for exactly the reason the items
         // do: last level's debris must not still be falling through the
         // next one, and a shake started by the final brick must not carry
@@ -1216,6 +1268,7 @@ impl GameState {
         // leaking into the next level is the same class of bug as S5's
         // bomb following the player across a level boundary.
         self.magnet_left = 0.0;
+        self.magnet_total = 0.0;
         self.resize_paddle();
     }
 
@@ -1367,6 +1420,20 @@ impl GameState {
                 return;
             }
             self.tick_clear(1.0 / 240.0);
+        }
+    }
+
+    /// Leave the title screen for a fresh game.
+    ///
+    /// ⚠️ **Separate from `launch`, deliberately.** Overloading `launch`
+    /// to also mean "start a game" was the first attempt and it broke
+    /// thirty-four tests at once — every one of which called `launch`
+    /// meaning "put the ball in play" and silently got "leave the title"
+    /// instead. Two things that happen on the same keypress are still two
+    /// things; `main` decides which by phase, and each method does one.
+    pub fn start_from_title(&mut self) {
+        if self.phase == Phase::Title {
+            self.phase = Phase::Ready;
         }
     }
 
@@ -1950,5 +2017,52 @@ mod scoring_tests {
             (STARTING_LIVES - 1) * LIFE_BONUS > 6100,
             "finishing untouched should clearly beat finishing on one life"
         );
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn a_game_opens_on_the_title_and_space_opens_the_door() {
+        let mut s = GameState::on_title();
+        assert_eq!(s.phase, Phase::Title);
+        s.start_from_title();
+        assert_eq!(s.phase, Phase::Ready, "space leaves the title");
+    }
+
+    /// ⚠️ `new` must NOT start on the title. Every test and probe builds
+    /// one to exercise a rule, not to play a session — putting the title
+    /// in `new` broke thirty-four of them at once.
+    #[test]
+    fn a_plain_new_state_is_ready_to_play() {
+        assert_eq!(GameState::new().phase, Phase::Ready);
+    }
+
+    /// ⚠️ Two things on one key, and each method does exactly one. The
+    /// first attempt overloaded `launch` to also leave the title, and
+    /// every existing caller silently got the wrong behaviour.
+    #[test]
+    fn launch_does_not_double_as_the_title_key() {
+        let mut s = GameState::on_title();
+        s.launch();
+        assert_eq!(s.phase, Phase::Title, "launch must not leave the title");
+
+        let mut s = GameState::new();
+        s.start_from_title();
+        assert_eq!(s.phase, Phase::Ready, "and must not disturb a ready game");
+    }
+
+    /// Finishing a run and pressing Enter gives another go, not the
+    /// front door — a player who just lost wants to play, not to read.
+    #[test]
+    fn restarting_does_not_return_to_the_title() {
+        let mut s = GameState::on_title();
+        s.start_from_title();
+        s.lives = 0;
+        s.phase = Phase::Lost;
+        s.restart();
+        assert_eq!(s.phase, Phase::Ready, "Enter restarts into a game");
     }
 }

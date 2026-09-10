@@ -151,8 +151,16 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
         Some((false, _)) => Some(0.0),
         None => None,
     };
+    // ⚠️ The title owns the whole screen. Drawing the waiting field
+    // behind it put the Omarchy mark on top of six rows of bricks and
+    // made both unreadable — the mark reads as a smudge over the colour,
+    // which is S8b's lesson (mass survives, fine detail dies) arriving
+    // as a CONTRAST problem rather than a size one.
+    let titling = state.phase == Phase::Title;
+    // The end screens own the screen, the same way the title does.
+    let ended = matches!(state.phase, Phase::Lost);
     for brick in &state.bricks {
-        if !brick.alive() {
+        if !brick.alive() || titling || ended {
             continue;
         }
         if let Some(front) = build_front {
@@ -170,7 +178,7 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
     // starts — the same rule, because they are the same decision: the
     // celebration is still the game, the tally is after it.
     let tallying = state.victory.map_or(false, |v| v.lines > 0);
-    if state.phase != Phase::Won && !tallying {
+    if state.phase != Phase::Won && !tallying && !titling && !ended {
         vp.rect(state.paddle.rect(), canvas, theme.foreground);
     }
 
@@ -181,7 +189,7 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
     draw_chips(state, canvas, &vp);
 
     // Balls are hidden once the game is over — nothing is in play.
-    if state.phase != Phase::Lost && state.phase != Phase::Won {
+    if !matches!(state.phase, Phase::Lost | Phase::Won | Phase::Title) {
         // Every trail first, then every ball, so a ball is never drawn
         // underneath another ball's trail.
         for ball in &state.balls {
@@ -203,8 +211,9 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
     // ⚠️ Kept during the CASCADE — LEVEL 10/10 above a field coming apart
     // is the payoff — and dropped once the tally starts, which says all
     // three numbers better and says 55,150 where the HUD says 55150.
-    if state.phase != Phase::Won && !tallying {
+    if state.phase != Phase::Won && !tallying && !titling && !ended {
         draw_hud(state, canvas, theme, &vp);
+        draw_effects(state, canvas, theme, &vp);
     }
     draw_phase_message(state, canvas, theme, &vp);
 }
@@ -602,12 +611,100 @@ fn draw_hud(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &View
     );
 }
 
+/// §8's active-effect readout: `[====   ] MAGNET`.
+///
+/// ⚠️ Drawn only while something is running, and on the RIGHT under the
+/// lives — the mockup's position. An always-present empty bar would be a
+/// permanent reminder of an absence, which is the opposite of what a
+/// status readout is for.
+fn draw_effects(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
+    // ⚠️ **Both bars must fit between the HUD and the bricks, and the
+    // band is 39 units.** The HUD text ends at 51 and `BRICK_TOP` is 90.
+    // At scale 2 a bar is 14 units, so two of them need a step of 15, not
+    // the 20 the first pass used — that put the second bar at 78-92 and
+    // straight over the top row of the field. Grow-plus-magnet is a
+    // common and good moment, so both being up at once is the case to
+    // design for, not the exception.
+    let scale = (vp.scale * 2.0).max(1.0) as u32;
+    let step = (GLYPH_H * scale) as i32 + (1.0 * vp.scale) as i32;
+    let mut y = vp.y(56.0);
+
+    // ⚠️ The paddle bar names WHICH effect, because grow and bomb share
+    // one timer and one axis — a bar alone would say "something is
+    // happening to your paddle" and leave the player to guess which.
+    // S5's rule: the glyph carries the meaning.
+    let paddle = if state.paddle_scale > 1.0 {
+        Some(("GROW", theme.green))
+    } else if state.paddle_scale < 1.0 {
+        Some(("BOMB", theme.red))
+    } else {
+        None
+    };
+
+    if let Some((label, colour)) = paddle {
+        let frac = if state.paddle_effect_total > 0.0 {
+            state.paddle_effect_left / state.paddle_effect_total
+        } else {
+            0.0
+        };
+        draw_effect_bar(canvas, theme, vp, y, scale, label, colour, frac);
+        y += step;
+    }
+
+    if state.magnet_left > 0.0 {
+        let frac = if state.magnet_total > 0.0 {
+            state.magnet_left / state.magnet_total
+        } else {
+            0.0
+        };
+        draw_effect_bar(canvas, theme, vp, y, scale, "MAGNET", theme.accent, frac);
+    }
+}
+
+/// One `[====   ] LABEL` line, right-aligned under the lives counter.
+#[allow(clippy::too_many_arguments)]
+fn draw_effect_bar(
+    canvas: &mut Canvas<'_>,
+    theme: &Theme,
+    vp: &Viewport,
+    y: i32,
+    scale: u32,
+    label: &str,
+    colour: omarcade_core::Color,
+    frac: f32,
+) {
+    let right = vp.x(FIELD_W - 24.0);
+    let lw = text_width(label, scale) as i32;
+    text(canvas, label, right - lw, y, scale, colour);
+
+    // The bar sits to the LEFT of its label, so the labels stay aligned
+    // with the lives counter above them however long the bar is.
+    let bar_w = (90.0 * vp.scale) as u32;
+    let bar_h = (GLYPH_H * scale).max(4);
+    let bar_x = right - lw - (10.0 * vp.scale) as i32 - bar_w as i32;
+
+    canvas.fill_rect(bar_x, y, bar_w, bar_h, theme.dark_background);
+    let filled = (bar_w as f32 * frac.clamp(0.0, 1.0)) as u32;
+    if filled > 0 {
+        canvas.fill_rect(bar_x, y, filled, bar_h, colour);
+    }
+}
+
 fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
     // ⚠️ `Ready` means two different things to a player: "you lost a ball"
     // and "you cleared the level". Showing one message for both is what
     // made a ten-level game read as one level resetting.
-    let advanced = format!("LEVEL {} - SPACE", state.level);
+    // ⚠️ §8 asks for a "level intro" and this IS it — built in S5 after
+    // real play reported a ten-level game reading as one level resetting.
+    // Strengthened rather than replaced: what it was missing is WHAT IS
+    // NEW about the level the player just reached, which is the only
+    // thing an intro is actually for.
+    let advanced = format!("LEVEL {}/{} - SPACE", state.level, LEVELS);
     let (msg, color): (&str, _) = match state.phase {
+        Phase::Title => {
+            draw_title(state, canvas, theme, vp);
+            return;
+        }
         Phase::Ready if state.just_advanced => (&advanced, theme.accent),
         Phase::Ready => ("PRESS SPACE", theme.light_foreground),
         Phase::Playing => return,
@@ -637,7 +734,13 @@ fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme,
             draw_tally(state, canvas, theme, vp);
             return;
         }
-        Phase::Lost => ("GAME OVER - ENTER", theme.red),
+        // ★ A real ending for a lost run too. It reached "GAME OVER -
+        // ENTER" and a BEST line; a player who got to level 7 deserves to
+        // be told so, and the same tally shape says it.
+        Phase::Lost => {
+            draw_game_over(state, canvas, theme, vp);
+            return;
+        }
     };
 
     let scale = (vp.scale * 4.0).max(1.0) as u32;
@@ -645,6 +748,24 @@ fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme,
     let x = vp.x(FIELD_W / 2.0) - (w / 2.0) as i32;
     let y = vp.y(FIELD_H / 2.0);
     text(canvas, msg, x, y, scale, color);
+
+    // ★ What is new about this level. Only on a fresh arrival, and only
+    // when there IS something new — a level that changes nothing says
+    // nothing rather than padding the screen with a line about itself.
+    if state.phase == Phase::Ready && state.just_advanced {
+        if let Some(note) = level_note(state.level) {
+            let ns = (vp.scale * 2.0).max(1.0) as u32;
+            let nw = text_width(note, ns) as f32;
+            text(
+                canvas,
+                note,
+                vp.x(FIELD_W / 2.0) - (nw / 2.0) as i32,
+                y + (GLYPH_H * scale) as i32 + (18.0 * vp.scale) as i32,
+                ns,
+                theme.muted,
+            );
+        }
+    }
 
     // The best score, under the verdict. Only once a game has ended and
     // only if there is one — a first-ever run has nothing to beat, and an
@@ -669,6 +790,205 @@ fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme,
         y + (scale * GLYPH_H * 2) as i32,
         small,
         if beaten { theme.yellow } else { theme.light_foreground },
+    );
+}
+
+/// The screen the game opens on.
+///
+/// ⚠️ Carries the volume keys, because this is the only screen a player
+/// reads rather than plays — and because the backend swallows M/-/= before
+/// any game sees them, so nothing in the suite has ever said they exist.
+/// Brian hit exactly that: the indicator shipped working and he could not
+/// find it.
+fn draw_title(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
+    // The mark, well above the name. This is the first time the S8 sprite
+    // is drawn at any size other than a falling item's 44 units.
+    //
+    // ⚠️ **It seams once, at the row 7/8 boundary, and that is correct.**
+    // Measured rather than squinted at: one row 23% dark on the centre
+    // column. Rows 3-6 and 8-11 share a run signature and merge into
+    // blocks, but row 7 drops the left tab, so its run SET differs and
+    // the vertical merge stops there — which is the documented rule that
+    // keeps an irregular silhouette from being distorted. One faint line
+    // at 4x zoom is the price of not flattening art that genuinely
+    // changes shape, and it is invisible at 1x. Do not "fix" core for it.
+    static MARK_SPRITE: OnceLock<Sprite> = OnceLock::new();
+    let sprite = MARK_SPRITE.get_or_init(art::omarchy_sprite);
+    let mark_h = 132.0;
+    let scale = mark_h / art::MARK_H;
+    sprite.draw_tinted(
+        canvas,
+        vp.fx(FIELD_W / 2.0 - art::MARK_W * scale / 2.0),
+        vp.fy(96.0),
+        vp.flen(scale),
+        Some((theme.accent, 1.0)),
+    );
+
+    let title = "PIXEL BREAK";
+    let ts = (vp.scale * 7.0).max(1.0) as u32;
+    text(
+        canvas,
+        title,
+        vp.x(FIELD_W / 2.0) - (text_width(title, ts) / 2) as i32,
+        vp.y(276.0),
+        ts,
+        theme.foreground,
+    );
+
+    let sub = "TEN LEVELS";
+    let ss = (vp.scale * 2.0).max(1.0) as u32;
+    text(
+        canvas,
+        sub,
+        vp.x(FIELD_W / 2.0) - (text_width(sub, ss) / 2) as i32,
+        vp.y(346.0),
+        ss,
+        theme.muted,
+    );
+
+    // The best score, if there is one. A first-ever run has nothing to
+    // beat and "BEST 0" would just be noise — the same rule the end
+    // screen already follows.
+    if state.best > 0 {
+        let best = format!("BEST {}", grouped(state.best));
+        let bs = (vp.scale * 2.5).max(1.0) as u32;
+        text(
+            canvas,
+            &best,
+            vp.x(FIELD_W / 2.0) - (text_width(&best, bs) / 2) as i32,
+            vp.y(400.0),
+            bs,
+            theme.yellow,
+        );
+    }
+
+    let go = "PRESS SPACE";
+    let gs = (vp.scale * 3.0).max(1.0) as u32;
+    text(
+        canvas,
+        go,
+        vp.x(FIELD_W / 2.0) - (text_width(go, gs) / 2) as i32,
+        vp.y(470.0),
+        gs,
+        theme.accent,
+    );
+
+    // ★ The keys. Quiet and near the bottom — a player who wants them
+    // finds them, one who does not is not shouted at — but big enough to
+    // actually read, which the first pass at 1.8 was not.
+    //
+    // ⚠️ The volume line needs the `=` glyph, which the font did not have
+    // until this screen asked for it: "= LOUDER" rendered as " LOUDER",
+    // silently dropping the one character the hint exists to teach.
+    let ks = (vp.scale * 2.0).max(1.0) as u32;
+    for (i, line) in ["MOVE   ARROWS OR A D", "SOUND   M MUTE   - QUIETER   = LOUDER"]
+        .iter()
+        .enumerate()
+    {
+        text(
+            canvas,
+            line,
+            vp.x(FIELD_W / 2.0) - (text_width(line, ks) / 2) as i32,
+            vp.y(590.0 + i as f32 * 34.0),
+            ks,
+            theme.muted,
+        );
+    }
+}
+
+/// What changes at a given level, for the intro line.
+///
+/// ⚠️ Reads the same rules the field is built from rather than restating
+/// them — `ARMOUR_FROM_LEVEL` and `LEVEL_CAP_STEP` are the authority, so
+/// retuning either cannot leave this screen lying to the player.
+fn level_note(level: u32) -> Option<&'static str> {
+    if level == crate::state::ARMOUR_FROM_LEVEL {
+        Some("ARMOURED BRICKS - FOUR HITS EACH")
+    } else if level == crate::state::LEVEL_CAP_STEP {
+        Some("MORE BALLS IN PLAY AT ONCE")
+    } else if level == 2 {
+        Some("REINFORCED BRICKS - TWO HITS EACH")
+    } else {
+        None
+    }
+}
+
+/// The end of a lost run: how far, how much, and the best to beat.
+///
+/// ⚠️ Deliberately the same shape as the victory tally — same columns,
+/// same rule, same grouping — because they are the same information and
+/// two different layouts for one idea is how a game starts to feel
+/// assembled rather than designed. It arrives all at once rather than
+/// counting up: a count-up is a celebration, and this is not one.
+fn draw_game_over(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
+    let title = "GAME OVER";
+    let ts = (vp.scale * 4.0).max(1.0) as u32;
+    let top = vp.y(FIELD_H * 0.30);
+    text(
+        canvas,
+        title,
+        vp.x(FIELD_W / 2.0) - (text_width(title, ts) / 2) as i32,
+        top,
+        ts,
+        theme.red,
+    );
+
+    let scale = (vp.scale * 2.0).max(1.0) as u32;
+    let line_h = (GLYPH_H * scale) as i32 + (10.0 * vp.scale) as i32;
+    let left = vp.x(FIELD_W * 0.30);
+    let right = vp.x(FIELD_W * 0.70);
+    let mut y = top + (GLYPH_H * ts) as i32 + (28.0 * vp.scale) as i32;
+
+    let beaten = state.final_score() > state.best;
+    // ⚠️ No life bonus line: a lost run has no lives left, so it would
+    // read "0 LIVES LEFT ... 0" — a row of nothing, on the screen least
+    // in need of one.
+    let rows: [(String, String, omarcade_core::Color); 2] = [
+        (
+            "REACHED".to_string(),
+            format!("LEVEL {}/{}", state.level, LEVELS),
+            theme.light_foreground,
+        ),
+        ("SCORE".to_string(), grouped(state.final_score()), theme.accent),
+    ];
+    for (label, value, colour) in rows {
+        text(canvas, &label, left, y, scale, colour);
+        let vw = text_width(&value, scale) as i32;
+        text(canvas, &value, right - vw, y, scale, colour);
+        y += line_h;
+    }
+
+    if state.best > 0 || beaten {
+        // ⚠️ A real gap, not a nudge. At 6 units the BEST line crowded
+        // the rows above it and the block read as four cramped lines
+        // rather than two facts and a target.
+        y += (20.0 * vp.scale) as i32;
+        let line = if beaten {
+            "NEW BEST".to_string()
+        } else {
+            format!("BEST {}", grouped(state.best))
+        };
+        let lw = text_width(&line, scale) as f32;
+        text(
+            canvas,
+            &line,
+            vp.x(FIELD_W / 2.0) - (lw / 2.0) as i32,
+            y,
+            scale,
+            if beaten { theme.yellow } else { theme.muted },
+        );
+        y += line_h;
+    }
+
+    let prompt = "ENTER";
+    let pw = text_width(prompt, scale) as f32;
+    text(
+        canvas,
+        prompt,
+        vp.x(FIELD_W / 2.0) - (pw / 2.0) as i32,
+        y + (20.0 * vp.scale) as i32,
+        scale,
+        theme.muted,
     );
 }
 
@@ -798,6 +1118,68 @@ fn draw_tally(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Vi
 
 #[cfg(test)]
 mod tests {
+
+    /// ⚠️ The intro line must not lie. Each note claims something about
+    /// the level it fires on, and every claim is checked against the
+    /// rules the field is actually built from.
+    #[test]
+    fn every_level_note_is_true_of_its_level() {
+        use crate::state::{tier_for, Tier, ARMOUR_FROM_LEVEL, BRICK_ROWS, LEVEL_CAP_STEP};
+
+        // Reinforced bricks: claimed at level 2, and absent at level 1.
+        assert!(
+            (0..BRICK_ROWS).any(|r| tier_for(2, r) == Tier::Reinforced),
+            "level 2 must actually have reinforced bricks"
+        );
+        assert!(
+            (0..BRICK_ROWS).all(|r| tier_for(1, r) == Tier::Plain),
+            "level 1 must not, or the note arrives a level late"
+        );
+
+        // Armour: claimed at ARMOUR_FROM_LEVEL, absent the level before.
+        assert!(
+            (0..BRICK_ROWS).any(|r| tier_for(ARMOUR_FROM_LEVEL, r) == Tier::Armoured),
+            "the armour note must fire on the level armour arrives"
+        );
+        assert!(
+            (0..BRICK_ROWS).all(|r| tier_for(ARMOUR_FROM_LEVEL - 1, r) != Tier::Armoured),
+            "and not before"
+        );
+
+        // And every note is attached to a level that has one.
+        assert!(super::level_note(2).is_some());
+        assert!(super::level_note(LEVEL_CAP_STEP).is_some());
+        assert!(super::level_note(ARMOUR_FROM_LEVEL).is_some());
+        assert!(super::level_note(1).is_none(), "level 1 is not an escalation");
+    }
+
+    /// ⚠️ **Both effect bars must fit between the HUD and the field.**
+    /// The first pass stepped them 20 units apart and the second bar
+    /// landed on the top brick row — found by rendering, and the sort of
+    /// thing that only bites when two effects run at once, which is a
+    /// good moment rather than a rare one.
+    #[test]
+    fn the_effect_bars_clear_the_brick_field() {
+        use crate::state::BRICK_TOP;
+        use omarcade_core::text::GLYPH_H;
+        for scale in 1..=6u32 {
+            let bar_scale = (scale as f32 * 2.0).max(1.0) as u32;
+            let bar_h = (GLYPH_H * bar_scale) as f32;
+            let step = bar_h + scale as f32;
+            // Two bars, the worst case: grow and magnet together.
+            let bottom = 56.0 + step + bar_h;
+            let hud_bottom = 30.0 + (GLYPH_H * scale * 3) as f32;
+            assert!(
+                bottom <= BRICK_TOP * scale as f32,
+                "at scale {scale} the bars reach {bottom}, the field starts at {}",
+                BRICK_TOP * scale as f32
+            );
+            assert!(
+                56.0 * scale as f32 >= hud_bottom - 1.0 || scale > 1,
+                "the bars must start below the HUD row"
+            );
+        }
+    }
 
     /// ⚠️ Three labels share the HUD row now. At the largest scale the
     /// viewport can produce they must not overlap, or the level readout

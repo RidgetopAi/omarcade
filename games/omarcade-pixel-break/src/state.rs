@@ -83,18 +83,18 @@ pub const LEVEL_CLEAR_BONUS: u32 = 500;
 /// ⚠️ Paid at the END, not as lives are kept, so it cannot be banked
 /// early by a player who quits while ahead.
 ///
-/// ⚠️ **Measured, and weaker than §5's stated intent.** A full ten-level
-/// run scores about 50,000 before bonuses — bricks 32%, clear bonuses
-/// 52%, items 10% — so three lives at 1000 each is roughly 6% of a run,
-/// less than clearing one mid-game level. §5 says "surviving is worth as
-/// much as scoring"; at this value it is a tiebreaker, not a pillar.
+/// ⚠️ **5000, not §5's 1000 — Brian raised it after seeing the
+/// arithmetic.** A full ten-level run scores about 50,000 before bonuses
+/// (bricks 32%, clear bonuses 52%, items 10%), so three lives at the
+/// plan's 1000 was roughly 6% of a run — less than clearing one mid-game
+/// level. §5 says "surviving is worth as much as scoring", and at 6% it
+/// plainly was not: it was a tiebreaker, not a pillar.
 ///
-/// Kept at the plan's number rather than quietly raised: it only matters
-/// once two players have both finished a 71-minute game, and that is
-/// Brian's call to make with the numbers in front of him. ~5000 would put
-/// three lives at about a fifth of a run, which is what the intent
-/// describes.
-pub const LIFE_BONUS: u32 = 1000;
+/// At 5000 three lives are about 23% of a run, and finishing untouched
+/// beats finishing on your last life by 10,000 — more than the last two
+/// levels' bricks combined. That is the intent the plan described, and
+/// the number it printed did not deliver.
+pub const LIFE_BONUS: u32 = 5000;
 
 /// Points for catching a good item. §5.
 ///
@@ -1732,15 +1732,35 @@ mod scoring_tests {
         assert_eq!(s.final_score(), 5000, "and the final is just the score");
     }
 
-    /// A losing run banks its score with no bonus; surviving is what the
-    /// bonus pays for.
+    /// ⚠️ §5's actual intent: "surviving is worth as much as scoring."
+    ///
+    /// The first version of this test only asserted `LIFE_BONUS > one
+    /// plain field` (1000 > 600) and passed happily while three lives
+    /// were 6% of a run — the test was too weak to notice that the
+    /// number did not deliver what the plan described. It now measures
+    /// the bonus against a WHOLE RUN, which is the claim being made.
     #[test]
-    fn surviving_is_worth_a_levels_worth_of_bricks() {
-        // A field of plain bricks is 60 x 10 = 600 points.
-        let field = (BRICK_COLS * BRICK_ROWS) as u32 * Tier::Plain.points();
+    fn surviving_is_a_pillar_and_not_a_tiebreaker() {
+        // A full run, measured: ~50,000 before the life bonus.
+        const FULL_RUN: u32 = 50_000;
+        let full_lives = STARTING_LIVES * LIFE_BONUS;
+        let share = full_lives as f32 / (FULL_RUN + full_lives) as f32;
         assert!(
-            LIFE_BONUS > field,
-            "one life ({LIFE_BONUS}) should beat clearing a plain field ({field})"
+            share > 0.15,
+            "three lives are {:.0}% of a run — §5 wants surviving to matter",
+            share * 100.0
+        );
+        // And not so large that the run itself stops mattering.
+        assert!(
+            share < 0.40,
+            "three lives are {:.0}% of a run — the game would be about not dying",
+            share * 100.0
+        );
+        // The gap between a flawless finish and a scraped one must beat
+        // the last two levels' bricks (3300 + 2800), or it says nothing.
+        assert!(
+            (STARTING_LIVES - 1) * LIFE_BONUS > 6100,
+            "finishing untouched should clearly beat finishing on one life"
         );
     }
 }

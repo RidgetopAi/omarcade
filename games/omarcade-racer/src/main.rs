@@ -31,7 +31,7 @@ use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::scores::ScoreFile;
 use omarcade_core::{
     Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Roll, SoundId, Theme,
-    VoiceId, VoiceParams,
+    VoiceId, VoiceParams, VolumeIndicator,
 };
 
 use art::Art;
@@ -85,6 +85,8 @@ const WHEEL_TURNS_PER_SECOND: f32 = 3.0;
 
 struct Racer {
     theme: Theme,
+    /// The volume readout, shared with the other two games.
+    volume: VolumeIndicator,
     art: Art,
     road: Road,
     tuning: Tuning,
@@ -220,6 +222,7 @@ impl Racer {
 
         Racer {
             theme,
+            volume: VolumeIndicator::new(),
             art,
             road,
             tuning,
@@ -711,6 +714,10 @@ impl Game for Racer {
         // crash. The countdown returned before the voices were ever
         // started, and they only came up later by accident.
         let dt = dt.min(1.0 / 15.0);
+        // ⚠️ For the same reason the comment above gives: this is not part
+        // of the simulation's control flow, and a countdown or a finished
+        // run must still answer the volume keys.
+        self.volume.update(audio, dt);
         let event = self.simulate(dt);
         self.sound(audio, event);
     }
@@ -757,6 +764,10 @@ impl Game for Racer {
         // thing that ends you.
         let layout = hud::compose(&self.race, self.flash.as_ref(), &self.scoreboard());
         hud::draw(canvas, &self.theme, &layout, WIDTH, HEIGHT);
+
+        // Above even the HUD: it is transient, and it answers a keypress
+        // the player just made.
+        self.volume.draw(canvas, &self.theme);
     }
 }
 

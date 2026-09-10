@@ -339,6 +339,18 @@ fn main() {
         }
         "won" => { for b in &mut s.bricks { b.hits = 0; } s.phase = state::Phase::Won; s.score = 600; s.best = 600; }
         "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.score = 250; s.best = 980; }
+        // The indicator scenes want an ordinary mid-game field behind
+        // them — the point is whether it reads OVER the game, not on an
+        // empty screen.
+        "volume" | "volume-muted" | "volume-full" => {
+            s.launch();
+            s.level = 4;
+            s.score = 1840;
+            for _ in 0..120 {
+                physics::step_fixed(&mut s);
+            }
+            fill_trail(&mut s);
+        }
         other => { eprintln!("unknown scene {other}"); std::process::exit(2); }
     }
 
@@ -346,9 +358,37 @@ fn main() {
     {
         let mut c = Canvas::new(&mut buf, w, h);
         render::draw(&mut s, &mut c, &theme);
+
+        // ⚠️ The volume indicator is drawn by `main`, not by `render` —
+        // it needs the audio handle and `render` deliberately never sees
+        // one. So this example draws it the same way `main` does, or the
+        // scenes below would show a field with nothing on it.
+        //
+        // ⚠️ A CONTROLLED PAIR (L044): `volume` at a mid setting and
+        // `volume-muted` at the same setting muted. Judging whether MUTED
+        // reads differently from a quiet bar needs both in front of you —
+        // a single frame cannot show a difference.
+        if let Some(vol) = volume_scene(&scene) {
+            vol.draw(&mut c, &theme);
+        }
     }
     write_png(&out, w, h, &buf).expect("write png");
     println!("{out}: scene={scene} {w}x{h} phase={:?} bricks={} score={} lives={}",
         s.phase, s.bricks_remaining(), s.score, s.lives);
     let _ = Color::BLACK;
+}
+
+/// The indicator as these scenes want it, or `None` for every other scene.
+///
+/// ⚠️ Built through the public constructor and then shown, rather than by
+/// reaching into private fields: an example that needs private access is
+/// testing something the game cannot actually reach.
+fn volume_scene(scene: &str) -> Option<omarcade_core::VolumeIndicator> {
+    let (volume, muted) = match scene {
+        "volume" => (0.6, false),
+        "volume-muted" => (0.6, true),
+        "volume-full" => (1.0, false),
+        _ => return None,
+    };
+    Some(omarcade_core::VolumeIndicator::shown_at(volume, muted))
 }

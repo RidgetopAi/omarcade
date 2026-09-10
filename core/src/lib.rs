@@ -23,9 +23,11 @@ pub mod particles;
 pub mod scores;
 pub mod sprite;
 pub mod text;
+pub mod volume;
 pub mod theme;
 
 pub use audio::{Audio, AudioSystem, SoundId, Voice, VoiceId, VoiceParams};
+pub use volume::VolumeIndicator;
 pub use backend::{Backend, Canvas, Color, Game, InputEvent, Key};
 pub use geom::{Axis, Rect, Vec2};
 pub use particles::{Particle, ParticlePool};

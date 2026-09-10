@@ -15,7 +15,9 @@ mod state;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::scores::ScoreFile;
-use omarcade_core::{Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Theme};
+use omarcade_core::{
+    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Theme, VolumeIndicator,
+};
 
 use ai::Opponent;
 use physics::Accumulator;
@@ -33,6 +35,10 @@ const GAME_NAME: &str = "Pong";
 
 struct Pong {
     theme: Theme,
+    /// The volume readout. Pong has no sounds of its own yet, which makes
+    /// this MORE useful here rather than less: the volume keys still work,
+    /// and without a readout there is nothing at all to show they did.
+    volume: VolumeIndicator,
     state: GameState,
     accumulator: Accumulator,
     opponent: Opponent,
@@ -60,6 +66,7 @@ impl Pong {
 
         let mut game = Pong {
             theme,
+            volume: VolumeIndicator::new(),
             state,
             accumulator: Accumulator::new(),
             opponent,
@@ -180,7 +187,11 @@ impl Game for Pong {
         true
     }
 
-    fn update(&mut self, dt: f32, _audio: &mut Audio<'_>) {
+    fn update(&mut self, dt: f32, audio: &mut Audio<'_>) {
+        // ⚠️ Outside any phase match — the volume keys answer between
+        // points, not only during them.
+        self.volume.update(audio, dt);
+
         // The opponent decides before time advances, so its choice is
         // acted on by the same physics step the player's input is.
         self.opponent.update(&mut self.state, dt);
@@ -193,6 +204,7 @@ impl Game for Pong {
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
         render::draw(&self.state, canvas, &self.theme);
+        self.volume.draw(canvas, &self.theme);
     }
 }
 

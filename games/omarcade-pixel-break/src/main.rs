@@ -28,7 +28,9 @@ mod state;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::scores::ScoreFile;
-use omarcade_core::{Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Theme};
+use omarcade_core::{
+    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Theme, VolumeIndicator,
+};
 
 use physics::Accumulator;
 use state::{GameState, Phase};
@@ -65,6 +67,12 @@ struct PixelBreak {
     /// when `start` opens the device, and a voice registered after that
     /// would hand a boxed trait object to a thread that may not allocate.
     sound: sound::Bank,
+    /// The volume readout, shown when the volume keys move.
+    ///
+    /// ⚠️ Lives here and not in `render`, because it needs the `Audio`
+    /// handle and `render` deliberately never sees one. The type carries
+    /// its own copy of the volume for exactly that reason.
+    volume: VolumeIndicator,
 }
 
 impl PixelBreak {
@@ -88,6 +96,7 @@ impl PixelBreak {
             scores,
             recorded: false,
             sound: sound::Bank::register(audio),
+            volume: VolumeIndicator::new(),
         }
     }
 
@@ -159,6 +168,12 @@ impl Game for PixelBreak {
     }
 
     fn update(&mut self, dt: f32, audio: &mut Audio<'_>) {
+        // ⚠️ BEFORE the phase-dependent work and outside any match on it.
+        // The volume keys answer on the Ready screen and after a game
+        // over, so this must advance in every phase — the S7 rule that
+        // left a shake stuck at 100% when it ticked inside `Playing`.
+        self.volume.update(audio, dt);
+
         physics::step(&mut self.state, &mut self.accumulator, dt);
 
         // Everything the simulation thought was worth hearing, played once
@@ -178,6 +193,9 @@ impl Game for PixelBreak {
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
         render::draw(&mut self.state, canvas, &self.theme);
+        // Drawn last so it sits above the field, and by `main` rather than
+        // by `render` because it is not part of the game's own picture.
+        self.volume.draw(canvas, &self.theme);
     }
 }
 

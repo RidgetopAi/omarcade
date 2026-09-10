@@ -17,7 +17,9 @@ use omarcade_core::{Canvas, Color, Sprite, Theme};
 use crate::art;
 use crate::effects::{self, Pulse};
 use crate::items::{Item, ItemKind};
-use crate::state::{Ball, Brick, GameState, Phase, Tier, FIELD_H, FIELD_W, LEVELS};
+use crate::state::{
+    Ball, Brick, GameState, Phase, TallyLine, Tier, FIELD_H, FIELD_W, LEVELS,
+};
 
 /// Maps play-field coordinates onto the window.
 #[derive(Debug, Clone, Copy)]
@@ -161,7 +163,16 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
         draw_brick(brick, canvas, theme, &vp, pal[brick.color_index % pal.len()]);
     }
 
-    vp.rect(state.paddle.rect(), canvas, theme.foreground);
+    // ⚠️ No paddle once the run is over. A paddle sitting under a
+    // finished game looks like a game still waiting to be played, and on
+    // the victory screen it is the one thing on screen not celebrating.
+    // ⚠️ Kept through the cascade and dropped with the HUD once the tally
+    // starts — the same rule, because they are the same decision: the
+    // celebration is still the game, the tally is after it.
+    let tallying = state.victory.map_or(false, |v| v.lines > 0);
+    if state.phase != Phase::Won && !tallying {
+        vp.rect(state.paddle.rect(), canvas, theme.foreground);
+    }
 
     for item in &state.items {
         draw_item(item, canvas, theme, &vp, &state.pulse);
@@ -186,7 +197,15 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
         }
     }
 
-    draw_hud(state, canvas, theme, &vp);
+    // ⚠️ The HUD steps aside for the tally, which says all three of its
+    // numbers better — and says 55,150 where the HUD says 55150. Two
+    // spellings of one number on one screen is worse than either.
+    // ⚠️ Kept during the CASCADE — LEVEL 10/10 above a field coming apart
+    // is the payoff — and dropped once the tally starts, which says all
+    // three numbers better and says 55,150 where the HUD says 55150.
+    if state.phase != Phase::Won && !tallying {
+        draw_hud(state, canvas, theme, &vp);
+    }
     draw_phase_message(state, canvas, theme, &vp);
 }
 
@@ -597,7 +616,27 @@ fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme,
         // earned, and the "LEVEL n - SPACE" line arrives a beat later when
         // the field has finished building.
         Phase::Clearing => return,
-        Phase::Won => ("YOU WIN - ENTER", theme.green),
+        // ⚠️ Nothing over the victory CASCADE — the player earned seventy
+        // minutes of celebration and a banner would sit on top of it —
+        // but the TALLY counts up during this same phase, so it must draw
+        // here too.
+        //
+        // ⚠️ It did not, at first: `draw_tally` was reached only from the
+        // `Won` arm, so the whole count-up rendered as an empty screen and
+        // every line appeared at once when the phase flipped. The
+        // count-one-line-at-a-time sequence was silently not happening,
+        // and a mid-sequence frame is the only thing that showed it.
+        Phase::Victory => {
+            draw_tally(state, canvas, theme, vp);
+            return;
+        }
+        // ★ The tally replaces "YOU WIN" entirely — §8 asks for a real
+        // ending, and someone who clears ten levels deserves their
+        // numbers rather than two words.
+        Phase::Won => {
+            draw_tally(state, canvas, theme, vp);
+            return;
+        }
         Phase::Lost => ("GAME OVER - ENTER", theme.red),
     };
 
@@ -631,6 +670,130 @@ fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme,
         small,
         if beaten { theme.yellow } else { theme.light_foreground },
     );
+}
+
+/// Group a number with commas: 12480 becomes "12,480".
+///
+/// ⚠️ The comma glyph landed in core for this — §8's mockup asks for
+/// `SCORE 12,480`, and a six-figure final score is genuinely hard to read
+/// without grouping.
+fn grouped(n: u32) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The end-of-game tally, counting up one line at a time.
+///
+/// ⚠️ **Draws only the lines that have landed**, which `Victory::lines`
+/// counts. The renderer asks "how many?" and never "what time is it?" —
+/// deriving visibility from a clock here would make the tally read
+/// differently at 30 fps than at 60.
+fn draw_tally(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
+    let shown = state.victory.map_or(TallyLine::ALL.len(), |v| v.lines);
+    if shown == 0 {
+        return;
+    }
+
+    let title = "PIXEL BREAK COMPLETE";
+    let title_scale = (vp.scale * 3.0).max(1.0) as u32;
+    let tw = text_width(title, title_scale) as f32;
+    let top = vp.y(FIELD_H * 0.30);
+    text(
+        canvas,
+        title,
+        vp.x(FIELD_W / 2.0) - (tw / 2.0) as i32,
+        top,
+        title_scale,
+        theme.green,
+    );
+
+    let scale = (vp.scale * 2.0).max(1.0) as u32;
+    let line_h = (GLYPH_H * scale) as i32 + (10.0 * vp.scale) as i32;
+    // Right-aligned values against left-aligned labels, so the digits
+    // line up as they land — a tally whose numbers wander is a list.
+    let left = vp.x(FIELD_W * 0.30);
+    let right = vp.x(FIELD_W * 0.70);
+    let mut y = top + (GLYPH_H * title_scale) as i32 + (28.0 * vp.scale) as i32;
+
+    let beaten = state.final_score() > state.best;
+
+    for line in TallyLine::ALL.iter().take(shown) {
+        let (label, value, colour) = match line {
+            TallyLine::Levels => (
+                "LEVELS".to_string(),
+                format!("{}/{}", LEVELS, LEVELS),
+                theme.light_foreground,
+            ),
+            TallyLine::Score => (
+                "SCORE".to_string(),
+                grouped(state.score),
+                theme.foreground,
+            ),
+            TallyLine::LifeBonus => (
+                format!("{} LIVES LEFT", state.lives),
+                grouped(state.life_bonus()),
+                theme.light_foreground,
+            ),
+            TallyLine::Final => (
+                "FINAL".to_string(),
+                grouped(state.final_score()),
+                theme.accent,
+            ),
+            // ⚠️ Drawn only when actually beaten. The line still occupies
+            // its turn in the sequence either way, so the tally does not
+            // speed up on a losing run — it simply has nothing to say.
+            TallyLine::NewBest => {
+                if !beaten {
+                    continue;
+                }
+                ("NEW BEST".to_string(), String::new(), theme.yellow)
+            }
+        };
+
+        // A rule above the total, so FINAL reads as a sum.
+        //
+        // ⚠️ The gap is opened BEFORE the rule is drawn. Drawing it at
+        // `y - 6` put it through the middle of the line above, which the
+        // arithmetic hid and rendering showed immediately.
+        if *line == TallyLine::Final {
+            y += (8.0 * vp.scale) as i32;
+            canvas.fill_rect(
+                left,
+                y - (7.0 * vp.scale) as i32,
+                (right - left) as u32,
+                (vp.scale.max(1.0)) as u32,
+                theme.muted,
+            );
+        }
+
+        text(canvas, &label, left, y, scale, colour);
+        if !value.is_empty() {
+            let vw = text_width(&value, scale) as i32;
+            text(canvas, &value, right - vw, y, scale, colour);
+        }
+        y += line_h;
+    }
+
+    // The prompt, once every line is up.
+    if shown >= TallyLine::ALL.len() {
+        let prompt = "ENTER";
+        let pw = text_width(prompt, scale) as f32;
+        text(
+            canvas,
+            prompt,
+            vp.x(FIELD_W / 2.0) - (pw / 2.0) as i32,
+            y + (14.0 * vp.scale) as i32,
+            scale,
+            theme.muted,
+        );
+    }
 }
 
 #[cfg(test)]

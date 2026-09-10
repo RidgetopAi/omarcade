@@ -339,6 +339,48 @@ fn main() {
         }
         "won" => { for b in &mut s.bricks { b.hits = 0; } s.phase = state::Phase::Won; s.score = 600; s.best = 600; }
         "lost" => { s.lives = 0; s.phase = state::Phase::Lost; s.score = 250; s.best = 980; }
+        // ★ The victory celebration, at three points in its run. A
+        // CONTROLLED SET (L044): the wave early, the wave late, and the
+        // tally — you cannot judge a four-second sequence from one frame.
+        "victory-early" | "victory-late" => {
+            s.level = state::LEVELS;
+            s.launch();
+            s.score = 50_150;
+            s.best = 41_000;
+            for b in &mut s.bricks {
+                b.hits = 0;
+            }
+            physics::step_fixed(&mut s);
+            let want = if scene == "victory-late" {
+                state::VICTORY_WAVE_SECONDS * 0.85
+            } else {
+                state::VICTORY_WAVE_SECONDS * 0.35
+            };
+            while s.victory.map_or(false, |v| v.elapsed < want) {
+                physics::step_fixed(&mut s);
+            }
+        }
+        "tally" | "tally-part" => {
+            s.level = state::LEVELS;
+            s.launch();
+            s.score = 50_150;
+            s.best = 41_000;
+            for b in &mut s.bricks {
+                b.hits = 0;
+            }
+            physics::step_fixed(&mut s);
+            // `tally-part` stops halfway through the count-up, which is
+            // the only way to see that it counts rather than appears.
+            let stop = if scene == "tally-part" { 3 } else { 5 };
+            while s.phase == state::Phase::Victory
+                && s.victory.map_or(false, |v| v.lines < stop)
+            {
+                physics::step_fixed(&mut s);
+            }
+            if stop == 5 {
+                s.skip_victory();
+            }
+        }
         // The indicator scenes want an ordinary mid-game field behind
         // them — the point is whether it reads OVER the game, not on an
         // empty screen.

@@ -208,6 +208,48 @@ const OVER_LEN: f32 = 0.720;
 const OVER_LEVEL: f32 = 0.36;
 const OVER_TONE: f32 = 0.44;
 
+// ── ★ VICTORY FANFARE — level 10 complete ──────────────────
+/// The one piece of actual music in the game: I-IV-V-I, four chords,
+/// the last resolving to the octave and held.
+///
+/// ⚠️ That progression is not a flourish — it is the most resolved
+/// sequence in common practice, which is why every arcade fanfare since
+/// the 70s reaches for it, and it is the same idea the level-clear sound
+/// already ends on, given room to breathe.
+///
+/// ⚠️ Held to about four seconds and no longer. 70s arcade "music" was
+/// fanfares, not songs — Space Invaders was four descending notes — and
+/// a tune long enough to hum is a tune too long to hear twice.
+const VICTORY_HZ: f32 = 262.0;
+const VICTORY_GAP: f32 = 0.62;
+const VICTORY_LEN: f32 = 0.72;
+/// The last chord, held far longer than the three that set it up. This
+/// is what makes the sequence an ENDING rather than a fourth chord.
+const VICTORY_HOLD: f32 = 2.20;
+/// ⚠️ Low because THIRTEEN notes sound nearly together here — a level
+/// that suits one struck note would clip badly across a chord stack.
+const VICTORY_LEVEL: f32 = 0.17;
+const VICTORY_TONE: f32 = 0.38;
+/// Two octaves above the resolution, quieter: the shine on top.
+const VICTORY_SPARKLE: f32 = 0.45;
+
+// ── the end-of-game tally ──────────────────────────────────
+/// One line of the tally landing. Small, bright, and quick — it punctuates
+/// a number rather than announcing one.
+const TALLY_HZ: f32 = 1046.0;
+const TALLY_LEN: f32 = 0.090;
+const TALLY_LEVEL: f32 = 0.26;
+const TALLY_TONE: f32 = 0.20;
+
+/// How long the whole fanfare runs — three chords then the held
+/// resolution. ⚠️ `state::VICTORY_WAVE_SECONDS` is matched to this, so
+/// the cascade and the music finish together.
+pub const VICTORY_SECONDS: f32 = VICTORY_GAP * 3.0 + VICTORY_HOLD;
+
+/// The most notes any one sound uses. The victory fanfare's four triads
+/// plus its sparkle.
+const MAX_NOTES: usize = 13;
+
 // ─────────────────────────────────────────────────────────────────
 // The synthesis.
 // ─────────────────────────────────────────────────────────────────
@@ -290,6 +332,8 @@ enum Shot {
     Lost,
     Clear,
     Over,
+    Victory,
+    Tally,
 }
 
 impl Shot {
@@ -312,6 +356,8 @@ impl Shot {
             Shot::Lost => 10.0,
             Shot::Clear => 11.0,
             Shot::Over => 12.0,
+            Shot::Victory => 13.0,
+            Shot::Tally => 14.0,
         }
     }
 
@@ -328,6 +374,8 @@ impl Shot {
             10 => Shot::Lost,
             11 => Shot::Clear,
             12 => Shot::Over,
+            13 => Shot::Victory,
+            14 => Shot::Tally,
             _ => Shot::Paddle,
         }
     }
@@ -347,6 +395,8 @@ impl Shot {
             Shot::Lost => LOST_GAP + LOST_LEN,
             Shot::Clear => CLEAR_GAP * 3.0 + CLEAR_LEN,
             Shot::Over => OVER_GAP * 2.0 + OVER_LEN,
+            Shot::Victory => VICTORY_SECONDS,
+            Shot::Tally => TALLY_LEN,
         }
     }
 }
@@ -377,10 +427,16 @@ impl Pixel {
     ///
     /// Returned into a fixed-size buffer rather than a `Vec` because this
     /// is called from [`Voice::render`], on the audio thread, where
-    /// allocation is forbidden. Five is the most any sound uses (the
-    /// level clear); the count comes back alongside.
-    fn notes(what: Shot, trim: f32) -> ([Note; 5], usize) {
-        let mut n = [Note { start: 0.0, hz: 0.0, len: 0.0, level: 0.0, tone: 0.0 }; 5];
+    /// allocation is forbidden.
+    ///
+    /// ⚠️ Sized for the VICTORY FANFARE at thirteen — four triads plus a
+    /// sparkle. It was five until S10 (the level clear's ceiling), and
+    /// growing it deliberately with `no_sound_overflows_the_note_buffer`
+    /// updated is the point: a fourteenth note would otherwise be dropped
+    /// silently, which on a chord means one voice quietly missing.
+    fn notes(what: Shot, trim: f32) -> ([Note; MAX_NOTES], usize) {
+        let mut n =
+            [Note { start: 0.0, hz: 0.0, len: 0.0, level: 0.0, tone: 0.0 }; MAX_NOTES];
         let count = match what {
             Shot::Paddle => {
                 n[0] = Note {
@@ -601,6 +657,58 @@ impl Pixel {
                 };
                 3
             }
+            Shot::Victory => {
+                // Equal temperament: a semitone is the twelfth root of two.
+                let st = |semi: f32| VICTORY_HZ * 2.0f32.powf(semi / 12.0);
+                let mut i = 0;
+                // I - IV - V, each a triad, each landing on the beat.
+                for (c, chord) in [[0.0, 4.0, 7.0], [5.0, 9.0, 12.0], [7.0, 11.0, 14.0]]
+                    .iter()
+                    .enumerate()
+                {
+                    for semi in chord {
+                        n[i] = Note {
+                            start: VICTORY_GAP * c as f32,
+                            hz: st(*semi),
+                            len: VICTORY_LEN,
+                            level: VICTORY_LEVEL,
+                            tone: VICTORY_TONE,
+                        };
+                        i += 1;
+                    }
+                }
+                // The resolution: the octave, held.
+                let at = VICTORY_GAP * 3.0;
+                for semi in [12.0, 16.0, 19.0] {
+                    n[i] = Note {
+                        start: at,
+                        hz: st(semi),
+                        len: VICTORY_HOLD,
+                        level: VICTORY_LEVEL,
+                        tone: VICTORY_TONE,
+                    };
+                    i += 1;
+                }
+                n[i] = Note {
+                    start: at,
+                    hz: st(24.0),
+                    len: VICTORY_HOLD * 0.7,
+                    level: VICTORY_LEVEL * VICTORY_SPARKLE,
+                    tone: VICTORY_TONE,
+                };
+                i += 1;
+                i
+            }
+            Shot::Tally => {
+                n[0] = Note {
+                    start: 0.0,
+                    hz: TALLY_HZ,
+                    len: TALLY_LEN,
+                    level: TALLY_LEVEL,
+                    tone: TALLY_TONE,
+                };
+                1
+            }
         };
         (n, count)
     }
@@ -726,6 +834,12 @@ impl Bank {
             Cue::BallLost => (self.events[0], Shot::Lost, 1.0),
             Cue::LevelClear => (self.events[0], Shot::Clear, 1.0),
             Cue::GameOver => (self.events[0], Shot::Over, 1.0),
+            // ⚠️ The fanfare takes the EVENT slot and the tally takes an
+            // ITEM slot, deliberately: the tally chimes land WHILE the
+            // fanfare's last chord is still ringing, and sharing one slot
+            // would have each chime cut the music off.
+            Cue::Victory => (self.events[0], Shot::Victory, 1.0),
+            Cue::TallyLine => (self.next_item_slot(), Shot::Tally, 1.0),
         };
         // The selector is the integer part and the trim the fraction, so
         // one float carries both. `trim - 1.0` because a trim of 1.0 must
@@ -768,7 +882,7 @@ mod tests {
         out.iter().fold(0.0f32, |a, b| a.max(b.abs()))
     }
 
-    const ALL: [Shot; 12] = [
+    const ALL: [Shot; 14] = [
         Shot::Paddle,
         Shot::Brick,
         Shot::Chip,
@@ -781,6 +895,8 @@ mod tests {
         Shot::Lost,
         Shot::Clear,
         Shot::Over,
+        Shot::Victory,
+        Shot::Tally,
     ];
 
     #[test]
@@ -925,7 +1041,10 @@ mod tests {
     fn no_sound_overflows_the_note_buffer() {
         for what in ALL {
             let (_, count) = Pixel::notes(what, 1.0);
-            assert!(count <= 5, "{what:?} needs {count} notes, the buffer holds 5");
+            assert!(
+                count <= MAX_NOTES,
+                "{what:?} needs {count} notes, the buffer holds {MAX_NOTES}"
+            );
             assert!(count >= 1, "{what:?} has no notes at all");
         }
     }

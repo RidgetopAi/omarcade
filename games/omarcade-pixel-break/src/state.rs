@@ -147,6 +147,33 @@ pub const TRAIL_ALPHA_TOP: f32 = 210.0;
 pub const CLEAR_WAVE_SECONDS: f32 = 0.40;
 pub const CLEAR_BUILD_SECONDS: f32 = 0.50;
 
+/// How long the victory cascade runs before the tally arrives.
+///
+/// ⚠️ **Matched to the fanfare, not chosen separately.** The two are one
+/// event — a wave that finishes early leaves music playing over a settled
+/// screen, and one that runs long leaves silence over falling chips.
+/// `sound::VICTORY_SECONDS` is the authority; this tracks it.
+///
+/// ⚠️ **The wave is SLOWER, not PAUSED.** The obvious way to hold a
+/// cascade is to run the normal 0.40 s wave and then wait, which throws
+/// every chip in the first tenth of the sequence and leaves four seconds
+/// of empty screen settling. The wave front must take the whole duration
+/// to cross the field. This is the invisible-cascade trap in a new shape.
+pub const VICTORY_WAVE_SECONDS: f32 = 4.2;
+
+/// A beat between the cascade ending and the first tally line.
+///
+/// Without it the tally starts under the fanfare's final chord and the
+/// two events read as one; with it the music resolves, the screen
+/// settles, and then the numbers begin.
+pub const VICTORY_SETTLE_SECONDS: f32 = 0.7;
+
+/// Seconds between tally lines as they count up.
+///
+/// Slow enough to read each number as it lands, fast enough that the
+/// whole tally is over in about two seconds.
+pub const TALLY_LINE_SECONDS: f32 = 0.42;
+
 /// How far through the level-clear cascade we are.
 ///
 /// Two stages back to back: the field that was just cleared resolves
@@ -181,6 +208,85 @@ impl Clear {
 impl Default for Clear {
     fn default() -> Self {
         Clear::new()
+    }
+}
+
+/// The victory celebration: the held cascade, then the tally.
+///
+/// One struct for both stages because they are one sequence with one
+/// clock — splitting them would mean two timers to keep in step and a
+/// seam where a frame could fall between them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Victory {
+    /// Seconds since the last brick fell.
+    pub elapsed: f32,
+    /// How many tally lines have landed so far.
+    ///
+    /// ⚠️ Counted rather than timed at the draw site, so `render` asks
+    /// "how many lines?" and never "what time is it?". A renderer that
+    /// derives visibility from a clock reads differently at 30 fps than
+    /// at 60; a count is the same picture at any frame rate.
+    pub lines: usize,
+}
+
+/// The tally lines, in the order they land.
+///
+/// ⚠️ An enum rather than an index, so `render` cannot draw line 4 as if
+/// it were line 2, and adding a line is a compile error everywhere it
+/// matters rather than an off-by-one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TallyLine {
+    /// LEVELS 10/10 — you actually finished it.
+    Levels,
+    /// The score as played, before any end-of-game bonus.
+    Score,
+    /// Lives x LIFE_BONUS. The one the player earned by not dying.
+    LifeBonus,
+    /// The sum, under a rule.
+    Final,
+    /// Shown only if this run beat the stored best.
+    NewBest,
+}
+
+impl TallyLine {
+    /// Every line, in landing order.
+    pub const ALL: [TallyLine; 5] = [
+        TallyLine::Levels,
+        TallyLine::Score,
+        TallyLine::LifeBonus,
+        TallyLine::Final,
+        TallyLine::NewBest,
+    ];
+}
+
+impl Victory {
+    pub fn new() -> Self {
+        Victory { elapsed: 0.0, lines: 0 }
+    }
+
+    /// How far through the cascade, in `0.0..=1.0`.
+    pub fn wave(&self) -> f32 {
+        (self.elapsed / VICTORY_WAVE_SECONDS.max(1e-6)).clamp(0.0, 1.0)
+    }
+
+    /// Whether the cascade has finished and the tally may begin.
+    pub fn cascade_done(&self) -> bool {
+        self.elapsed >= VICTORY_WAVE_SECONDS + VICTORY_SETTLE_SECONDS
+    }
+
+    /// How many lines should have landed by now.
+    fn wanted_lines(&self) -> usize {
+        if !self.cascade_done() {
+            return 0;
+        }
+        let since = self.elapsed - VICTORY_WAVE_SECONDS - VICTORY_SETTLE_SECONDS;
+        ((since / TALLY_LINE_SECONDS.max(1e-6)) as usize + 1).min(TallyLine::ALL.len())
+    }
+}
+
+impl Default for Victory {
+    fn default() -> Self {
+        Victory::new()
     }
 }
 
@@ -331,7 +437,17 @@ pub enum Phase {
     Clearing,
     /// Out of lives.
     Lost,
-    /// Field cleared.
+    /// ★ The last level is beaten and the game is celebrating.
+    ///
+    /// ⚠️ **A phase of its own, for the reason `Clearing` is.** The
+    /// victory cascade runs for several seconds under a fanfare, and
+    /// during it the game must ignore input — otherwise a player resting
+    /// a hand on Enter skips the ending they spent seventy minutes
+    /// earning. An explicit phase makes that impossible rather than
+    /// merely unlikely, and it forces every `match` on `Phase` to say
+    /// what it does here.
+    Victory,
+    /// Field cleared, the celebration is over, the tally is showing.
     Won,
 }
 
@@ -589,6 +705,8 @@ pub struct GameState {
     pub palette: [Color; 6],
     /// The level-clear cascade, while one is running.
     pub clear: Option<Clear>,
+    /// The victory celebration, from the last brick to the tally.
+    pub victory: Option<Victory>,
     /// True from clearing a field until the next launch.
     ///
     /// ⚠️ Exists because `Phase::Ready` means two different things to a
@@ -661,6 +779,10 @@ pub enum Cue {
     LevelClear,
     /// The last life went.
     GameOver,
+    /// ★ The tenth level fell — the victory fanfare.
+    Victory,
+    /// One line of the end-of-game tally landing.
+    TallyLine,
 }
 
 /// The most cues one frame may hold.
@@ -703,6 +825,7 @@ impl GameState {
             pulse: Pulse::default(),
             effect_rng: Rng::default(),
             clear: None,
+            victory: None,
             palette: [Color::rgb(160, 160, 160); 6],
             just_advanced: false,
             rally: 0,
@@ -1111,7 +1234,7 @@ impl GameState {
         // would silently make the hardest level the only unpaid one.
         self.score += LEVEL_CLEAR_BONUS * self.level;
         if self.level >= LEVELS {
-            self.phase = Phase::Won;
+            self.begin_victory();
             return;
         }
         self.begin_clearing();
@@ -1129,6 +1252,49 @@ impl GameState {
     /// an empty field during the cascade would be the only thing on screen
     /// not participating in it, and it could drain and cost a life for a
     /// level the player has already beaten.
+    /// The last level is beaten: start the celebration.
+    ///
+    /// ⚠️ The balls and items go for the same reason `begin_clearing`
+    /// removes them — a ball still bouncing through the victory cascade
+    /// would be the only thing on screen not participating in it.
+    fn begin_victory(&mut self) {
+        self.phase = Phase::Victory;
+        self.victory = Some(Victory::new());
+        self.balls.clear();
+        self.items.clear();
+        self.cue(Cue::Victory);
+    }
+
+    /// Advance the celebration; hands off to `Won` once the tally is up.
+    ///
+    /// ⚠️ Ticks OUTSIDE any phase match at the call site, like every other
+    /// decaying effect — S7's rule. A celebration that only advanced while
+    /// its own phase was active would be fine here and wrong the moment
+    /// anything else could interrupt it.
+    pub fn tick_victory(&mut self, dt: f32) {
+        let Some(mut v) = self.victory else { return };
+        v.elapsed += dt;
+
+        // Each line lands with a sound of its own — the arcade tally.
+        let want = v.wanted_lines();
+        while v.lines < want {
+            v.lines += 1;
+            // ⚠️ NEW BEST only sounds if it is actually shown; a silent
+            // line the player never sees must not get a chime.
+            let line = TallyLine::ALL[v.lines - 1];
+            if line != TallyLine::NewBest || self.final_score() > self.best {
+                self.cue(Cue::TallyLine);
+            }
+        }
+
+        self.victory = Some(v);
+
+        // Once every line is up, the run is over and the score banks.
+        if v.lines >= TallyLine::ALL.len() {
+            self.phase = Phase::Won;
+        }
+    }
+
     fn begin_clearing(&mut self) {
         self.phase = Phase::Clearing;
         self.clear = Some(Clear::new());
@@ -1201,6 +1367,25 @@ impl GameState {
                 return;
             }
             self.tick_clear(1.0 / 240.0);
+        }
+    }
+
+    /// Run the victory celebration straight through to the tally.
+    ///
+    /// For tests and probes, the way `skip_clear` is — a run that ends in
+    /// a win otherwise has to sit through four seconds of fanfare at 240
+    /// ticks a second to assert one phase.
+    pub fn skip_victory(&mut self) {
+        // Bounded rather than `while`: a bug that never leaves `Victory`
+        // should fail a test, not hang it.
+        let total = VICTORY_WAVE_SECONDS + VICTORY_SETTLE_SECONDS
+            + TALLY_LINE_SECONDS * TallyLine::ALL.len() as f32;
+        let limit = (total / (1.0 / 240.0)) as u32 + 8;
+        for _ in 0..limit {
+            if self.phase != Phase::Victory {
+                return;
+            }
+            self.tick_victory(1.0 / 240.0);
         }
     }
 
@@ -1628,6 +1813,7 @@ mod level_signal_tests {
         }
         s.advance_level();
         s.skip_clear();
+        s.skip_victory();
         assert_eq!(s.phase, Phase::Won);
         assert!(!s.just_advanced);
         assert_eq!(s.level, LEVELS);
@@ -1713,8 +1899,10 @@ mod scoring_tests {
             b.hits = 0;
         }
         s.advance_level();
-        assert_eq!(s.phase, Phase::Won, "the last level wins");
+        assert_eq!(s.phase, Phase::Victory, "the last level celebrates");
         assert_eq!(s.score, LEVEL_CLEAR_BONUS * LEVELS, "and is paid for");
+        s.skip_victory();
+        assert_eq!(s.phase, Phase::Won, "then it wins");
     }
 
     /// The banked score is the running score plus the life bonus, and the

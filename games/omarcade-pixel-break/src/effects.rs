@@ -159,6 +159,47 @@ pub const CASCADE_LIFE_SCALE: f32 = 1.9;
 /// Starting intensity of a cascade chip, out of 255.
 pub const CASCADE_ALPHA: u8 = 255;
 
+/// The victory wave's own share and lifetime.
+///
+/// ⚠️ **The level cascade's numbers make a drizzle when the wave is held
+/// four seconds, and rendering it is what showed that.** The level wave
+/// crosses in 0.40 s, so all six rows are in the air together and 0.4
+/// share reads as a field coming apart. The victory wave takes 4.2 s —
+/// 0.70 s a row — and a chip living 1.05 s has nearly faded before the
+/// next row throws. Only about two rows are ever up, so the same numbers
+/// that read as a wave read as light rain.
+///
+/// The pool is what stopped the level cascade throwing more (sixty cells
+/// at full chips is 1080 into a pool of 512), but the victory wave is
+/// spread over ten times as long, so its rows never all coexist. That
+/// slack is the budget these spend: 130 chips a row, about three rows up
+/// at once, a peak near 396 against the pool's 512 — 2.3x the density
+/// with headroom left. At 0.9 / 2.8 the peak hits 512 exactly and the
+/// wave starts recycling its own head.
+pub const VICTORY_SHARE: f32 = 0.7;
+pub const VICTORY_LIFE_SCALE: f32 = 2.6;
+
+/// One cell of the victory wave: the cascade burst, with more mass and a
+/// longer life so a held wave still reads as one event.
+pub fn victory_burst(
+    pool: &mut ParticlePool,
+    rng: &mut Rng,
+    cell: Rect,
+    dir: Vec2,
+    color: Color,
+) {
+    burst_with(
+        pool,
+        rng,
+        cell,
+        dir,
+        color,
+        VICTORY_SHARE,
+        CASCADE_SIZE_SCALE,
+        VICTORY_LIFE_SCALE,
+    );
+}
+
 /// How many chips the pool can hold at once.
 ///
 /// Sized for the worst honest case rather than the average: ten balls in
@@ -220,6 +261,26 @@ fn burst(
     share: f32,
     cascade: bool,
 ) {
+    let (size, life) = if cascade {
+        (CASCADE_SIZE_SCALE, CASCADE_LIFE_SCALE)
+    } else {
+        (1.0, 1.0)
+    };
+    burst_with(pool, rng, brick, dir, color, share, size, life);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn burst_with(
+    pool: &mut ParticlePool,
+    rng: &mut Rng,
+    brick: Rect,
+    dir: Vec2,
+    color: Color,
+    share: f32,
+    size_scale: f32,
+    life_scale: f32,
+) {
+    let cascade = life_scale > 1.0;
     let count = ((SHATTER_CHIPS as f32 * share).round() as usize).max(1);
     if share <= 0.0 {
         return;
@@ -239,11 +300,10 @@ fn burst(
         // A little wobble on top of the fan, so it is not a perfect rake.
         let angle = base + t * SHATTER_SPREAD + rng.signed() * SHATTER_SPREAD * 0.15;
         let speed = SHATTER_SPEED * (1.0 + rng.signed() * SHATTER_JITTER);
-        let (size_scale, life_scale) = if cascade {
-            (CASCADE_SIZE_SCALE, CASCADE_LIFE_SCALE)
-        } else {
-            (1.0, 1.0)
-        };
+        // ⚠️ The scales are PARAMETERS now. They used to be looked up
+        // here from `cascade`, which would have silently shadowed the
+        // victory wave's own numbers and left it drizzling exactly as
+        // before — the change would have compiled and done nothing.
         let size = (CHIP_SIZE * size_scale * (1.0 + rng.signed() * CHIP_SIZE_VAR)).max(1.0);
         let life = (CHIP_LIFE * life_scale * (1.0 + rng.signed() * CHIP_LIFE_VAR)).max(0.05);
         let color = if cascade { color.with_alpha(CASCADE_ALPHA) } else { color };

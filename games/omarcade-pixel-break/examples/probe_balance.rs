@@ -109,7 +109,17 @@ fn measure(level: u32) -> Measured {
         // every level and quietly move a number that ten sessions of
         // comparisons depend on. Stop the clock the moment the field is
         // clear.
-        if s.phase == state::Phase::Clearing || s.phase == Phase::Won {
+        // ⚠️ `Victory` belongs in this list for exactly the reason the
+        // comment above gives. S10 gave the ending its own phase, so
+        // level 10 now finishes in `Victory` rather than `Won` — and
+        // without this the probe ticked through four seconds of fanfare
+        // and charged them to level 10, moving the endgame tail from
+        // 1304s to 1311s. The same trap the cascade sprang, in a new
+        // phase, caught the same way: by the number moving.
+        if matches!(
+            s.phase,
+            state::Phase::Clearing | state::Phase::Victory | Phase::Won
+        ) {
             break;
         }
         if s.level != level {
@@ -122,8 +132,11 @@ fn measure(level: u32) -> Measured {
         }
     }
 
-    let cleared =
-        s.level != level || s.phase == Phase::Won || s.phase == state::Phase::Clearing;
+    let cleared = s.level != level
+        || matches!(
+            s.phase,
+            Phase::Won | state::Phase::Clearing | state::Phase::Victory
+        );
 
     // The row shape, in the plan's own notation.
     let rows: String = (0..BRICK_ROWS)

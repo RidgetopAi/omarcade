@@ -222,6 +222,12 @@ pub fn step_fixed(state: &mut GameState) {
             cascade_chips(state);
             state.tick_clear(FIXED_DT);
         }
+        // ★ The victory celebration. Like `Clearing`, nothing else runs:
+        // there are no balls and no items, only the wave and its chips.
+        Phase::Victory => {
+            victory_chips(state);
+            state.tick_victory(FIXED_DT);
+        }
         Phase::Lost | Phase::Won => {}
     }
 }
@@ -278,6 +284,72 @@ fn cascade_chips(state: &mut GameState) {
                 cell.center().y - crate::state::FIELD_H / 2.0,
             );
             crate::effects::cascade_burst(
+                &mut state.chips,
+                &mut state.effect_rng,
+                cell,
+                dir,
+                color,
+            );
+        }
+    }
+}
+
+/// The victory wave: the same field-geometry burst as the level cascade,
+/// swept across a much longer window.
+///
+/// ⚠️ **The wave is SLOWER, not PAUSED.** Running the ordinary 0.40 s wave
+/// and then waiting out the fanfare would throw every chip in the first
+/// tenth of the celebration and leave four seconds of empty screen. The
+/// front has to take the whole duration to cross the field — which is the
+/// same invisible-cascade trap `cascade_chips` documents, in a new shape.
+///
+/// ⚠️ Shares `cascade_chips`'s insight and not its code: the two differ
+/// only in which clock they read, but factoring them together would mean
+/// a function taking a progress value and a previous progress value,
+/// which is harder to read than the twelve lines it saves.
+fn victory_chips(state: &mut GameState) {
+    let Some(v) = state.victory else { return };
+    // Nothing to throw once the front has crossed the field.
+    if v.elapsed > crate::state::VICTORY_WAVE_SECONDS {
+        return;
+    }
+
+    // ⚠️ **Swept from the TOP OF THE BRICKS, not the top of the screen.**
+    // The level cascade measures its span from y=0, so its front spends
+    // the first 35% of its travel crossing the empty band above the field
+    // — 0.14 s of a 0.40 s wave, which nobody was ever going to notice.
+    // Stretched to four seconds that becomes a second and a half of dead
+    // air at the start of the victory lap. Found by a test asserting the
+    // wave had started a quarter of the way in; it had not.
+    let top = crate::state::BRICK_TOP;
+    let span = BRICK_ROWS as f32 * (crate::state::BRICK_H + crate::state::BRICK_GAP);
+    let now = top + v.wave() * span;
+    let prev = top
+        + ((v.elapsed - FIXED_DT).max(0.0)
+            / crate::state::VICTORY_WAVE_SECONDS.max(1e-6))
+            .clamp(0.0, 1.0)
+            * span;
+
+    let span_w = BRICK_COLS as f32 * crate::state::BRICK_W
+        + (BRICK_COLS - 1) as f32 * crate::state::BRICK_GAP;
+    let left = (crate::state::FIELD_W - span_w) / 2.0;
+
+    for row in 0..BRICK_ROWS {
+        let y = crate::state::BRICK_TOP
+            + row as f32 * (crate::state::BRICK_H + crate::state::BRICK_GAP);
+        let mid = y + crate::state::BRICK_H / 2.0;
+        if mid <= prev || mid > now {
+            continue;
+        }
+        let color = state.palette[row % state.palette.len()];
+        for col in 0..BRICK_COLS {
+            let x = left + col as f32 * (crate::state::BRICK_W + crate::state::BRICK_GAP);
+            let cell = Rect::new(x, y, crate::state::BRICK_W, crate::state::BRICK_H);
+            let dir = Vec2::new(
+                cell.center().x - crate::state::FIELD_W / 2.0,
+                cell.center().y - crate::state::FIELD_H / 2.0,
+            );
+            crate::effects::victory_burst(
                 &mut state.chips,
                 &mut state.effect_rng,
                 cell,
@@ -831,6 +903,7 @@ mod tests {
             b.hits = 0;
         }
         check_win(&mut s);
+        s.skip_victory();
         assert_eq!(s.phase, Phase::Won);
         assert_eq!(s.level, crate::state::LEVELS, "the level does not run past the last");
     }
@@ -1465,6 +1538,7 @@ mod level_tests {
         }
         s.advance_level();
         s.skip_clear();
+        s.skip_victory();
         assert_eq!(s.phase, Phase::Won, "clearing the last level wins");
     }
 
@@ -2784,8 +2858,10 @@ mod cascade_tests {
             b.hits = 0;
         }
         check_win(&mut s);
-        assert_eq!(s.phase, Phase::Won, "the last level should win, not cascade");
-        assert!(s.clear.is_none());
+        assert_eq!(s.phase, Phase::Victory, "the last level celebrates first");
+        assert!(s.clear.is_none(), "and must not cascade into a level 11");
+        s.skip_victory();
+        assert_eq!(s.phase, Phase::Won, "then it wins");
     }
 
     /// A full run still reaches the end with the cascade in the way.
@@ -2799,6 +2875,9 @@ mod cascade_tests {
             }
             check_win(&mut s);
             s.skip_clear();
+            // ⚠️ The last level now goes through the victory celebration
+            // before it reaches `Won` — S10 gave the ending a phase.
+            s.skip_victory();
             if s.phase == Phase::Won {
                 break;
             }
@@ -3017,5 +3096,203 @@ mod cue_tests {
         let mut again = Vec::new();
         s.drain_cues(|c| again.push(c));
         assert!(again.is_empty(), "a frame must not play twice");
+    }
+}
+
+#[cfg(test)]
+mod victory_tests {
+    use super::*;
+    use crate::state::{
+        TallyLine, Victory, LEVELS, TALLY_LINE_SECONDS, VICTORY_SETTLE_SECONDS,
+        VICTORY_WAVE_SECONDS,
+    };
+
+    fn won_the_last_level() -> GameState {
+        let mut s = GameState::new();
+        s.level = LEVELS;
+        s.launch();
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+        check_win(&mut s);
+        s
+    }
+
+    #[test]
+    fn beating_the_last_level_celebrates_before_it_wins() {
+        let s = won_the_last_level();
+        assert_eq!(s.phase, Phase::Victory);
+        assert!(s.victory.is_some(), "the celebration must be running");
+        assert!(s.balls.is_empty(), "no ball bounces through the ending");
+        assert!(s.items.is_empty());
+    }
+
+    /// ⚠️ **The trap this whole sequence is built around.** Running the
+    /// ordinary 0.40 s wave and then waiting out the fanfare would throw
+    /// every chip in the first tenth of the celebration and leave four
+    /// seconds of empty screen settling. The front must still be crossing
+    /// the field most of the way through.
+    #[test]
+    fn the_victory_wave_is_slower_not_paused() {
+        let mut s = won_the_last_level();
+        s.set_palette([omarcade_core::Color::rgb(200, 100, 60); 6]);
+
+        // A quarter of the way in, the front should be about a quarter
+        // down the field — not finished.
+        let mut thrown_early = 0usize;
+        let quarter = (VICTORY_WAVE_SECONDS * 0.25 / FIXED_DT) as u32;
+        for _ in 0..quarter {
+            victory_chips(&mut s);
+            s.tick_victory(FIXED_DT);
+            thrown_early = s.chips.len();
+        }
+        assert!(thrown_early > 0, "the wave must have started");
+
+        // And chips must STILL be arriving in the second half — the
+        // measure of a slow wave rather than a fast one plus a wait.
+        let before = s.chips.len();
+        let half = (VICTORY_WAVE_SECONDS * 0.5 / FIXED_DT) as u32;
+        let mut arrived_late = false;
+        for _ in 0..half {
+            let was = s.chips.len();
+            victory_chips(&mut s);
+            s.tick_victory(FIXED_DT);
+            if s.chips.len() > was {
+                arrived_late = true;
+            }
+        }
+        assert!(
+            arrived_late,
+            "chips stopped arriving after {before} — the wave finished early \
+             and the rest of the celebration is an empty screen"
+        );
+    }
+
+    /// Every row throws exactly once, however many ticks the wave takes.
+    #[test]
+    fn the_wave_crosses_the_whole_field_exactly_once() {
+        let mut s = won_the_last_level();
+        s.set_palette([omarcade_core::Color::rgb(200, 100, 60); 6]);
+
+        let mut ticks_with_new_chips = 0;
+        let all = ((VICTORY_WAVE_SECONDS + 0.1) / FIXED_DT) as u32;
+        for _ in 0..all {
+            let was = s.chips.len();
+            victory_chips(&mut s);
+            s.tick_victory(FIXED_DT);
+            if s.chips.len() > was {
+                ticks_with_new_chips += 1;
+            }
+        }
+        // Six rows, so at most six ticks should introduce chips.
+        assert!(
+            ticks_with_new_chips <= BRICK_ROWS,
+            "{ticks_with_new_chips} bursts for {BRICK_ROWS} rows — a row fired twice"
+        );
+        assert!(ticks_with_new_chips >= 1, "no row fired at all");
+    }
+
+    /// The tally must not start until the cascade and its beat are done.
+    #[test]
+    fn the_tally_waits_for_the_cascade() {
+        let mut v = Victory::new();
+        v.elapsed = VICTORY_WAVE_SECONDS * 0.5;
+        assert!(!v.cascade_done(), "still cascading");
+
+        v.elapsed = VICTORY_WAVE_SECONDS + VICTORY_SETTLE_SECONDS * 0.5;
+        assert!(!v.cascade_done(), "still settling");
+
+        v.elapsed = VICTORY_WAVE_SECONDS + VICTORY_SETTLE_SECONDS + 0.01;
+        assert!(v.cascade_done(), "the tally may begin");
+    }
+
+    /// Lines land one at a time, in order, and stop at the last one.
+    #[test]
+    fn the_tally_counts_up_one_line_at_a_time() {
+        let mut s = won_the_last_level();
+        let base = VICTORY_WAVE_SECONDS + VICTORY_SETTLE_SECONDS;
+
+        // Run to just past the cascade: one line.
+        while s.victory.map_or(false, |v| v.elapsed < base + 0.01) {
+            s.tick_victory(FIXED_DT);
+        }
+        assert_eq!(s.victory.unwrap().lines, 1, "the first line lands alone");
+
+        // Each further beat adds exactly one.
+        for expected in 2..=TallyLine::ALL.len() {
+            let target = base + TALLY_LINE_SECONDS * (expected - 1) as f32 + 0.01;
+            while s.phase == Phase::Victory
+                && s.victory.map_or(false, |v| v.elapsed < target)
+            {
+                s.tick_victory(FIXED_DT);
+            }
+            let lines = s.victory.map_or(TallyLine::ALL.len(), |v| v.lines);
+            assert_eq!(lines, expected, "line {expected} should have landed");
+        }
+        assert_eq!(s.phase, Phase::Won, "the tally finishing wins the game");
+    }
+
+    /// ⚠️ Enter must not skip the celebration — the player earned it.
+    /// `main` only accepts Enter in `Won` and `Lost`, so this pins the
+    /// phase list that makes that true.
+    #[test]
+    fn the_celebration_cannot_be_skipped_by_a_keypress() {
+        let s = won_the_last_level();
+        assert!(
+            !matches!(s.phase, Phase::Won | Phase::Lost),
+            "Victory must not be a phase that accepts Enter"
+        );
+    }
+
+    /// ⚠️ **The tally counts up during `Victory`, not during `Won`.**
+    ///
+    /// The first version reached `draw_tally` only from the `Won` arm, so
+    /// every line of the count-up rendered as an empty screen and all
+    /// five appeared at once when the phase flipped — the one-line-at-a-
+    /// time sequence silently not happening. Tests were green throughout;
+    /// a frame rendered mid-count-up is what showed it.
+    ///
+    /// This pins the state the renderer needs: lines land while the phase
+    /// is still `Victory`.
+    #[test]
+    fn lines_land_while_the_phase_is_still_victory() {
+        let mut s = won_the_last_level();
+        let mut saw_partial_in_victory = false;
+        for _ in 0..((VICTORY_WAVE_SECONDS + VICTORY_SETTLE_SECONDS + 2.0) / FIXED_DT)
+            as u32
+        {
+            s.tick_victory(FIXED_DT);
+            if s.phase == Phase::Victory {
+                if let Some(v) = s.victory {
+                    if v.lines > 0 && v.lines < TallyLine::ALL.len() {
+                        saw_partial_in_victory = true;
+                    }
+                }
+            }
+        }
+        assert!(
+            saw_partial_in_victory,
+            "the count-up must be visible mid-sequence, or it is not a count-up"
+        );
+    }
+
+    /// The fanfare fires once, at the start, and the tally chimes follow.
+    #[test]
+    fn the_celebration_cues_its_sounds() {
+        let mut s = won_the_last_level();
+        assert!(
+            s.cues.contains(&Cue::Victory),
+            "the fanfare must fire when the last brick falls"
+        );
+
+        s.cues.clear();
+        s.skip_victory();
+        let chimes = s.cues.iter().filter(|c| **c == Cue::TallyLine).count();
+        assert!(chimes > 0, "each tally line lands with a sound");
+        assert!(
+            chimes <= TallyLine::ALL.len(),
+            "{chimes} chimes for {} lines",
+            TallyLine::ALL.len()
+        );
     }
 }

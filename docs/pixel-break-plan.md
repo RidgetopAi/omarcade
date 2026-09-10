@@ -382,6 +382,16 @@ the other two.
 
 ## 8. HUD and screens
 
+> **S10 SHIPPED THIS.** Scoring (§5's table, with `LIFE_BONUS` raised to 5000 after
+> measurement — see below), the comma and `=` glyphs, the active-effect readout, a title
+> screen, the level-intro note, a real game-over screen, and the level-10 victory
+> celebration: a held cascade under a I-IV-V-I fanfare, then a tally counting up one line
+> at a time. The volume indicator landed early, in S9, and went into all three games.
+>
+> ⚠️ `LIFE_BONUS` is **5000**, not the 1000 printed in §5. Measured: a full run is ~50,000
+> before bonuses, so three lives at 1000 was 6% of it — less than one mid-game level, when
+> §5 says surviving should be worth as much as scoring. Brian raised it.
+
 ```
 SCORE 12,480          LEVEL 4/10          LIVES 3
                                           [====   ] MAGNET

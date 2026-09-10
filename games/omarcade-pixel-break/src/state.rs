@@ -69,6 +69,40 @@ pub const BRICK_TOP: f32 = 90.0;
 
 pub const STARTING_LIVES: u32 = 3;
 
+/// Points for clearing a level, multiplied by the level cleared. §5.
+///
+/// ⚠️ **Scaled by level on purpose.** The marquee shows one number, and
+/// that number should mean "how far did you get", not "how long did you
+/// play". A flat bonus would let a patient player farm level 1 to the top
+/// of the table; 500 x level makes reaching L10 worth more than grinding
+/// L1 could ever be.
+pub const LEVEL_CLEAR_BONUS: u32 = 500;
+
+/// Points per life still held when the game ends. §5.
+///
+/// ⚠️ Paid at the END, not as lives are kept, so it cannot be banked
+/// early by a player who quits while ahead.
+///
+/// ⚠️ **Measured, and weaker than §5's stated intent.** A full ten-level
+/// run scores about 50,000 before bonuses — bricks 32%, clear bonuses
+/// 52%, items 10% — so three lives at 1000 each is roughly 6% of a run,
+/// less than clearing one mid-game level. §5 says "surviving is worth as
+/// much as scoring"; at this value it is a tiebreaker, not a pillar.
+///
+/// Kept at the plan's number rather than quietly raised: it only matters
+/// once two players have both finished a 71-minute game, and that is
+/// Brian's call to make with the numbers in front of him. ~5000 would put
+/// three lives at about a fifth of a run, which is what the intent
+/// describes.
+pub const LIFE_BONUS: u32 = 1000;
+
+/// Points for catching a good item. §5.
+///
+/// ⚠️ Worth five plain bricks, so going for a catch is a real decision
+/// rather than a free extra — and a bomb pays nothing, because paying for
+/// one would reward diving for the item the game teaches you to dodge.
+pub const ITEM_CATCH_BONUS: u32 = 50;
+
 /// Most balls in play at once, on levels 1-5 and from level 6 on.
 ///
 /// Lives persist across the whole game; balls are what is in play right
@@ -412,6 +446,26 @@ impl Tier {
             Tier::Plain => 1,
             Tier::Reinforced => 2,
             Tier::Armoured => 4,
+        }
+    }
+
+    /// Points for **destroying** a brick of this tier. §5's table.
+    ///
+    /// ⚠️ **Paid on destruction only, never per hit**, and the plan is
+    /// explicit about why: paying per hit makes an armoured brick worth
+    /// four times a plain one for four times the hits, which quietly makes
+    /// armour the best value on the board rather than the obstacle it is
+    /// meant to be. Rewarding the hit rewards grinding; rewarding the
+    /// break rewards progress.
+    ///
+    /// The scale is steeper than the hit counts — 4x the hits pays 8x —
+    /// because an armoured brick also costs position and time, not just
+    /// contacts.
+    pub const fn points(self) -> u32 {
+        match self {
+            Tier::Plain => 10,
+            Tier::Reinforced => 30,
+            Tier::Armoured => 80,
         }
     }
 }
@@ -789,6 +843,22 @@ impl GameState {
         }
     }
 
+    /// The score as banked: the running total plus the life bonus.
+    ///
+    /// ⚠️ **This, not `score`, is what gets recorded.** The two differ
+    /// only once the game has ended, which is exactly when the difference
+    /// matters — `score` is what the HUD shows while playing, and the life
+    /// bonus is paid at the end so it cannot be banked early by a player
+    /// who quits while ahead.
+    pub fn final_score(&self) -> u32 {
+        self.score + self.lives * LIFE_BONUS
+    }
+
+    /// The life bonus on its own, for the end-screen tally.
+    pub fn life_bonus(&self) -> u32 {
+        self.lives * LIFE_BONUS
+    }
+
     pub fn bricks_remaining(&self) -> usize {
         self.bricks.iter().filter(|b| b.alive()).count()
     }
@@ -821,6 +891,13 @@ impl GameState {
         // grow, a magnet and an Omarchy are all simply good and do not
         // need to be told apart by ear.
         self.cue(if kind.is_bad() { Cue::BombCaught } else { Cue::ItemCaught });
+
+        // ⚠️ A BOMB PAYS NOTHING. §5 lists "power-up caught: 50" and a bomb
+        // is not a power-up — paying for one would mean diving for the
+        // thing the game spent S5 teaching the player to avoid.
+        if !kind.is_bad() {
+            self.score += ITEM_CATCH_BONUS;
+        }
 
         match kind {
             ItemKind::Grow(strength) => {
@@ -1029,6 +1106,10 @@ impl GameState {
         // a win that arrived in silence would be the one moment the game
         // most owes the player a sound.
         self.cue(Cue::LevelClear);
+        // ⚠️ Awarded BEFORE the win check, so clearing the last level is
+        // paid for like every other. Putting it after the early return
+        // would silently make the hardest level the only unpaid one.
+        self.score += LEVEL_CLEAR_BONUS * self.level;
         if self.level >= LEVELS {
             self.phase = Phase::Won;
             return;
@@ -1553,3 +1634,113 @@ mod level_signal_tests {
     }
 }
 
+
+#[cfg(test)]
+mod scoring_tests {
+    use super::*;
+
+    /// §5's table, pinned. These numbers are a design decision, not an
+    /// implementation detail — changing one changes what a high score
+    /// means, so it should have to change a test too.
+    #[test]
+    fn the_tier_table_matches_the_plan() {
+        assert_eq!(Tier::Plain.points(), 10);
+        assert_eq!(Tier::Reinforced.points(), 30);
+        assert_eq!(Tier::Armoured.points(), 80);
+    }
+
+    /// ⚠️ The rule §5 spends a paragraph on: paying per hit would make an
+    /// armoured brick the best value on the board. It must pay MORE than
+    /// a plain brick but LESS than its hits would earn at plain rates
+    /// times a grinding multiplier — i.e. the reward must scale with
+    /// difficulty without making difficulty profitable to farm.
+    #[test]
+    fn armour_pays_more_than_plain_but_is_not_a_farm() {
+        let plain = Tier::Plain.points();
+        let armour = Tier::Armoured.points();
+        assert!(armour > plain * 4, "armour must beat four plain bricks");
+        // Per HIT, though, it must not dominate: 80/4 = 20 against 10.
+        let per_hit = armour / Tier::Armoured.hits();
+        assert!(
+            per_hit <= plain * 2,
+            "at {per_hit}/hit armour would be worth grinding"
+        );
+    }
+
+    #[test]
+    fn catching_a_good_item_scores_and_a_bomb_does_not() {
+        let mut s = GameState::new();
+        s.apply_item(ItemKind::Grow(crate::items::Strength::Small));
+        assert_eq!(s.score, ITEM_CATCH_BONUS, "a good catch pays");
+
+        let before = s.score;
+        s.apply_item(ItemKind::Bomb);
+        assert_eq!(s.score, before, "⚠️ a bomb must never pay");
+    }
+
+    #[test]
+    fn clearing_a_level_pays_more_the_later_it_is() {
+        let mut early = GameState::new();
+        early.level = 1;
+        for b in &mut early.bricks {
+            b.hits = 0;
+        }
+        early.advance_level();
+
+        let mut late = GameState::new();
+        late.level = 9;
+        for b in &mut late.bricks {
+            b.hits = 0;
+        }
+        late.advance_level();
+
+        assert_eq!(early.score, LEVEL_CLEAR_BONUS);
+        assert_eq!(late.score, LEVEL_CLEAR_BONUS * 9);
+        assert!(
+            late.score > early.score * 5,
+            "reaching L9 must beat grinding L1 many times over"
+        );
+    }
+
+    /// ⚠️ Clearing the LAST level must pay its bonus too. The award sits
+    /// before the win check for exactly this reason; putting it after
+    /// would make the hardest level the only unpaid one.
+    #[test]
+    fn clearing_the_last_level_still_pays_its_bonus() {
+        let mut s = GameState::new();
+        s.level = LEVELS;
+        for b in &mut s.bricks {
+            b.hits = 0;
+        }
+        s.advance_level();
+        assert_eq!(s.phase, Phase::Won, "the last level wins");
+        assert_eq!(s.score, LEVEL_CLEAR_BONUS * LEVELS, "and is paid for");
+    }
+
+    /// The banked score is the running score plus the life bonus, and the
+    /// two differ only at the end — which is the whole point.
+    #[test]
+    fn the_final_score_adds_the_life_bonus() {
+        let mut s = GameState::new();
+        s.score = 5000;
+        s.lives = 3;
+        assert_eq!(s.life_bonus(), 3 * LIFE_BONUS);
+        assert_eq!(s.final_score(), 5000 + 3 * LIFE_BONUS);
+
+        s.lives = 0;
+        assert_eq!(s.life_bonus(), 0, "no lives, no bonus");
+        assert_eq!(s.final_score(), 5000, "and the final is just the score");
+    }
+
+    /// A losing run banks its score with no bonus; surviving is what the
+    /// bonus pays for.
+    #[test]
+    fn surviving_is_worth_a_levels_worth_of_bricks() {
+        // A field of plain bricks is 60 x 10 = 600 points.
+        let field = (BRICK_COLS * BRICK_ROWS) as u32 * Tier::Plain.points();
+        assert!(
+            LIFE_BONUS > field,
+            "one life ({LIFE_BONUS}) should beat clearing a plain field ({field})"
+        );
+    }
+}

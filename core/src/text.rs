@@ -65,6 +65,11 @@ pub fn glyph(c: char) -> Option<[u8; GLYPH_H as usize]> {
         '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
         '+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
         '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100],
+        // ⚠️ The only glyph with a descender, and the grid has no room
+        // below row 7 — so the head sits a row higher than the full stop's
+        // and the tail takes the last row. Without that lift the tail has
+        // nowhere to go and a comma renders as a period.
+        ',' => [0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100, 0b01000],
         ':' => [0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000],
         '/' => [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
         ' ' => [0; GLYPH_H as usize],
@@ -120,13 +125,19 @@ mod tests {
 
     #[test]
     fn the_font_covers_capitals_digits_and_hud_punctuation() {
-        for ch in ('A'..='Z').chain('a'..='z').chain('0'..='9').chain([' ', '-', '+', '.', ':', '/']) {
+        for ch in ('A'..='Z')
+            .chain('a'..='z')
+            .chain('0'..='9')
+            .chain([' ', '-', '+', '.', ':', '/', ','])
+        {
             assert!(glyph(ch).is_some(), "font is missing {ch:?}");
         }
         assert_eq!(unrenderable("SCORE 10-9 BEST"), None);
         assert_eq!(unrenderable("LAP 1/3  TIME 87.5  +12.3"), None);
         assert_eq!(unrenderable("100%"), Some('%'));
-        assert_eq!(unrenderable("a,b"), Some(','));
+        // ⚠️ Was `Some(',')` until S10 added the comma. A grouped score —
+        // SCORE 12,480 — is what §8's mockup asks for and what needed it.
+        assert_eq!(unrenderable("SCORE 12,480"), None);
     }
 
     #[test]

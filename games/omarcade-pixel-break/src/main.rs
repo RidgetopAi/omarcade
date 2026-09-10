@@ -109,7 +109,9 @@ impl PixelBreak {
             return;
         }
         self.recorded = true;
-        self.scores.record(self.state.score);
+        // ⚠️ The FINAL score, not the running one — the life bonus is
+        // part of what the player earned and the marquee should show it.
+        self.scores.record(self.state.final_score());
         self.state.best = self.scores.best().unwrap_or(0);
         let _ = self.scores.save();
     }

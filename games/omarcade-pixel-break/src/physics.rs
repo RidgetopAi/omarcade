@@ -467,7 +467,16 @@ fn collide_bricks(state: &mut GameState, index: usize) {
     // it scores again. Chipping an armoured brick is progress and should
     // feel like it, but the brick that actually breaks is worth more.
     let destroyed = state.bricks[hit].hit();
-    state.score += if destroyed { 10 } else { 5 };
+
+    // ⚠️ **Paid on destruction only.** Until S10 this was `if destroyed
+    // { 10 } else { 5 }` — a per-hit payment that made an armoured brick
+    // worth 5+5+5+10 = 25, which is exactly what §5 warns against: paying
+    // per hit rewards grinding rather than progress, and quietly makes
+    // armour the best value on the board instead of the obstacle it is.
+    // The tier's own table now decides, and a survived hit pays nothing.
+    if destroyed {
+        state.score += state.bricks[hit].tier.points();
+    }
 
     // Chips, in the brick's OWN colour and thrown along the ball's travel.
     // ⚠️ Damage and shatter are ONE system, partial: a brick that survives
@@ -1391,8 +1400,12 @@ mod level_tests {
         s.bricks[0].hits = 4;
         let target = s.bricks[0].rect;
 
+        // ⚠️ THE FIRST THREE HITS PAY NOTHING. Until S10 they paid 5 each
+        // and this test asserted a total of 25 — it pinned the exact bug
+        // §5 warns about, where paying per hit makes armour the best value
+        // on the board. Destruction pays, damage does not.
         let mut score = 0;
-        for expected in [5u32, 5, 5, 10] {
+        for expected in [0u32, 0, 0, Tier::Armoured.points()] {
             let before = s.score;
             s.balls[0].pos = Vec2::new(target.center().x, target.center().y);
             s.balls[0].vel = Vec2::new(0.0, -100.0);
@@ -1401,7 +1414,7 @@ mod level_tests {
             assert_eq!(gained, expected, "hit scoring");
             score += gained;
         }
-        assert_eq!(score, 25, "an armoured brick is worth 25 in total");
+        assert_eq!(score, 80, "an armoured brick pays once, on the break");
         assert!(!s.bricks[0].alive());
     }
 
@@ -1421,7 +1434,12 @@ mod level_tests {
         s.skip_clear();
 
         assert_eq!(s.level, 2);
-        assert_eq!(s.score, 1234, "score carries across levels");
+        // Carried across AND paid the level-1 clear bonus on the way.
+        assert_eq!(
+            s.score,
+            1234 + crate::state::LEVEL_CLEAR_BONUS,
+            "score carries across levels, plus the clear bonus"
+        );
         assert_eq!(s.lives, 2, "and so do lives");
         assert_eq!(s.bricks_remaining(), BRICK_COLS * BRICK_ROWS);
         assert_eq!(s.balls.len(), 1, "the next level starts with one ball");

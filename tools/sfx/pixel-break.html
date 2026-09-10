@@ -93,6 +93,9 @@
         <button data-fire="clear">level clear</button>
         <button data-fire="over">game over</button>
       </div>
+      <div style="margin-top:8px">
+        <button class="big" data-fire="victory">▶ ★ VICTORY FANFARE (level 10 complete)</button>
+      </div>
     </div>
 
     <div class="card" style="margin-top:12px">
@@ -383,6 +386,42 @@
             <span class="val" id="vtonev"></span></div>
         </div>
         <div class="grp">
+          <h3 style="color:var(--go)">★ Victory fanfare — level 10</h3>
+          <div class="note">
+            The one piece of actual <b>music</b> in the game: a
+            <b>I&ndash;IV&ndash;V&ndash;I</b> progression, four chords, the last one
+            resolving to the octave and held. That is the most-resolved progression there
+            is, which is why every arcade fanfare since the 70s uses it.
+            <br><br>
+            It plays under a held cascade at the end of level 10, so it can be the longest
+            thing in the game — but 70s arcade "music" was <b>fanfares, not songs</b>
+            (Space Invaders was four descending notes). Long enough to feel earned, short
+            enough to hear twice.
+          </div>
+          <div class="row"><label>key (root)</label>
+            <input type="range" id="whz" min="180" max="420" step="1" value="262">
+            <span class="val" id="whzv"></span></div>
+          <div class="row"><label>chord gap</label>
+            <input type="range" id="wgap" min="0.15" max="1.20" step="0.01" value="0.62">
+            <span class="val" id="wgapv"></span></div>
+          <div class="row"><label>chord length</label>
+            <input type="range" id="wlen" min="0.20" max="1.50" step="0.02" value="0.72">
+            <span class="val" id="wlenv"></span></div>
+          <div class="row"><label>final hold</label>
+            <input type="range" id="whold" min="0.5" max="4.0" step="0.05" value="2.20">
+            <span class="val" id="wholdv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="wlevel" min="0" max="0.6" step="0.01" value="0.17">
+            <span class="val" id="wlevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="wtone" min="0" max="1" step="0.02" value="0.38">
+            <span class="val" id="wtonev"></span></div>
+          <div class="row"><label>sparkle</label>
+            <input type="range" id="wspark" min="0" max="1" step="0.02" value="0.45">
+            <span class="val" id="wsparkv"></span></div>
+        </div>
+
+        <div class="grp">
           <h3>Game over</h3>
           <div class="note">The mirror of level clear: the same shape <b>descending</b>, and
             it must not resolve. Ending on the unresolved note is what makes it feel like a
@@ -579,6 +618,32 @@ const SOUNDS = {
       { start: gap * 3, hz: hz * 2, len, level: lv, tone },
       { start: gap * 3, hz: hz * 3, len: len * 0.8, level: lv * 0.5, tone },
     ];
+  },
+  victory: () => {
+    const hz = val("whz"), gap = val("wgap"), len = val("wlen");
+    const hold = val("whold"), lv = val("wlevel"), tone = val("wtone");
+    const spark = val("wspark");
+    // Equal temperament: a semitone is the twelfth root of two.
+    const st = n => hz * Math.pow(2, n / 12);
+    const notes = [];
+    // I - IV - V, each a triad, each landing on the beat.
+    const triads = [[0, 4, 7], [5, 9, 12], [7, 11, 14]];
+    triads.forEach((chord, i) => {
+      chord.forEach(semi => {
+        notes.push({ start: gap * i, hz: st(semi), len, level: lv, tone });
+      });
+    });
+    // The resolution: the octave, held far longer than anything before it.
+    // This is what makes it an ENDING rather than a fourth chord.
+    const at = gap * 3;
+    [12, 16, 19].forEach(semi => {
+      notes.push({ start: at, hz: st(semi), len: hold, level: lv, tone });
+    });
+    // Two octaves up, quieter and shorter — the shine on top.
+    if (spark > 0.01) {
+      notes.push({ start: at, hz: st(24), len: hold * 0.7, level: lv * spark, tone });
+    }
+    return notes;
   },
   over: () => {
     const hz = val("ohz"), gap = val("ogap"), len = val("olen");
@@ -789,6 +854,7 @@ const FMT = {
   lhz: hz, lint: x, lgap: ms, llen: ms, llevel: n2, ltone: n2,
   vhz: hz, vint: x, vgap: ms, vlen: ms, vlevel: n2, vtone: n2,
   ohz: hz, oint: x, ogap: ms, olen: ms, olevel: n2, otone: n2,
+  whz: hz, wgap: ms, wlen: ms, whold: ms, wlevel: n2, wtone: n2, wspark: n2,
 };
 function hz(v) { return v.toFixed(0) + " Hz"; }
 function ms(v) { return (v * 1000).toFixed(0) + " ms"; }
@@ -898,6 +964,17 @@ const OVER_GAP: f32 = ${v("ogap").toFixed(3)};
 const OVER_LEN: f32 = ${v("olen").toFixed(3)};
 const OVER_LEVEL: f32 = ${v("olevel").toFixed(2)};
 const OVER_TONE: f32 = ${v("otone").toFixed(2)};
+
+// ── ★ VICTORY FANFARE — level 10 complete ──────────────────
+const VICTORY_HZ: f32 = ${v("whz").toFixed(1)};
+const VICTORY_GAP: f32 = ${v("wgap").toFixed(3)};
+const VICTORY_LEN: f32 = ${v("wlen").toFixed(3)};
+const VICTORY_HOLD: f32 = ${v("whold").toFixed(3)};
+const VICTORY_LEVEL: f32 = ${v("wlevel").toFixed(2)};
+const VICTORY_TONE: f32 = ${v("wtone").toFixed(2)};
+const VICTORY_SPARKLE: f32 = ${v("wspark").toFixed(2)};
+/// Total length, so the cascade can be held to match.
+const VICTORY_SECONDS: f32 = ${(v("wgap")*3 + v("whold")).toFixed(2)};
 `;
 }
 

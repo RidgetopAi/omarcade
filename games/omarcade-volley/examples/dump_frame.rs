@@ -87,6 +87,36 @@ fn build(scene: &str) -> GameState {
 
         // Mid-rally, which is the interesting frame: ball in flight
         // with a trail, paddles committed, rally counter showing.
+        // ★ THE BALL HEATING UP. A CONTROLLED SET (L044): identical
+        // scenes differing ONLY in the rally count, so the colour is the
+        // only thing that may move between them.
+        //   heat-cool  rally 12 — below the threshold, the plain accent
+        //   heat-start rally 20 — the moment it begins
+        //   heat-mid   rally 30 — climbing
+        //   heat-full  rally 45 — the ember
+        "heat-cool" | "heat-start" | "heat-mid" | "heat-full" => {
+            s.begin();
+            physics::serve(&mut s);
+            s.score_left = 4;
+            s.score_right = 6;
+            // A long horizontal trail, so the heating tail is visible.
+            s.ball.pos = omarcade_core::geom::Vec2::new(state::FIELD_W * 0.42, state::FIELD_H * 0.5);
+            s.trail = (0..10)
+                .map(|i| {
+                    omarcade_core::geom::Vec2::new(
+                        s.ball.pos.x - i as f32 * 26.0,
+                        s.ball.pos.y + (i as f32 * 3.0),
+                    )
+                })
+                .collect();
+            s.rally = match scene {
+                "heat-start" => 20,
+                "heat-mid" => 30,
+                "heat-full" => 45,
+                _ => 12,
+            };
+        }
+
         "paused" | "rally" => {
             s.begin();
             s.score_left = 4;

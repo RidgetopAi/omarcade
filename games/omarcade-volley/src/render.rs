@@ -150,12 +150,76 @@ pub fn draw(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
             vp.fy(r.y),
             vp.flen(r.w),
             vp.flen(r.h),
-            theme.accent,
+            ball_colour(state, theme),
         );
     }
 
     draw_rally(state, canvas, theme, &vp);
     draw_phase_message(state, canvas, theme, &vp);
+}
+
+/// ★ The rally starts at [`HEAT_FROM`] returns, and the ball is fully
+/// hot by [`HEAT_FULL`].
+///
+/// 20 is a START, not a peak. Brian's best rally is 59 and the probes
+/// reach 40-70, so a ramp that maxed out at 25 would spend most of a good
+/// rally looking identical — the same mistake the sound's RALLY_STEP was
+/// tuned away from, and for the same reason.
+const HEAT_FROM: u32 = 20;
+/// Full heat. Past here the ball stays at the ember rather than pushing
+/// somewhere unreadable.
+const HEAT_FULL: u32 = 45;
+
+/// ★ The colour a long rally heats towards: a fixed ember.
+///
+/// ⚠️ **FIXED, not `theme.red`, and that is measured rather than assumed.**
+/// Across the 22 installed Omarchy themes, `red` is not reliably red:
+///
+/// - `vantablack`'s red is `#a4a4a4` — GREY. A ball "heating up" would
+///   go grey, which is worse than no effect at all.
+/// - `white`'s is `#2a2a2a`, nearly black.
+/// - `last-horizon`'s sits 13.9 from its own accent — invisible.
+/// - `hackerman` is green-on-green throughout.
+///
+/// The obvious `yellow -> orange -> red` ramp fails harder: `lupine`
+/// defines yellow and orange as the IDENTICAL colour, so one of three
+/// stages would simply not exist, and `hackerman`'s whole ramp is mush.
+///
+/// Heat is a physical fact, not a palette slot. So the TARGET is fixed
+/// while the START stays `theme.accent` — the ball still belongs to the
+/// player's theme when it is cool, which is the whole point of S5's rule
+/// that colour cannot be trusted in a theme-reactive game.
+///
+/// Verified against every installed theme: the weakest cool-to-hot shift
+/// is 57.7 (matte-black, whose accent is ALREADY orange — the honest
+/// worst case), and the hot ball stays at least 115 from every
+/// background, so it can never vanish into the field.
+const EMBER: Color = Color { r: 255, g: 70, b: 40, a: 255 };
+
+/// How hot the ball is, 0.0 cool to 1.0 fully lit.
+///
+/// ⚠️ Reads `rally`, which `award` resets to 0 on every point — so the
+/// ball cools INSTANTLY when a point ends rather than staying lit into
+/// the next serve. That is correct: the heat describes THIS rally.
+fn heat(rally: u32) -> f32 {
+    if rally < HEAT_FROM {
+        return 0.0;
+    }
+    let t = ease::inverse_lerp(HEAT_FROM as f32, HEAT_FULL as f32, rally as f32);
+    // `out_quad` puts most of the colour change EARLY, so crossing 20
+    // reads as an event rather than as a slow drift the player never
+    // notices starting. The same curve `rally_speed` uses, for the same
+    // reason.
+    ease::out_quad(t.clamp(0.0, 1.0))
+}
+
+/// The ball's colour for the current rally.
+///
+/// ⚠️ The trail uses this too. That is what actually sells the effect:
+/// at the speeds a long rally reaches, the trail is what the eye
+/// tracks, and a hot ball dragging a cool tail would read as a bug.
+fn ball_colour(state: &GameState, theme: &Theme) -> Color {
+    theme.accent.lerp(EMBER, heat(state.rally))
 }
 
 /// The dashed centre line.
@@ -182,6 +246,8 @@ fn draw_net(canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
 /// 60fps. Sampled once per frame by `physics::step`, never per fixed
 /// tick, so its length does not change with frame rate.
 fn draw_trail(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
+    // ★ The trail heats with the ball. See `ball_colour`.
+    let colour = ball_colour(state, theme);
     // Skip the newest sample: physics records the ball's CURRENT
     // position, so trail[0] sits exactly under the ball. Drawing it
     // costs a blend for a quad nothing can see and slightly muddies the
@@ -203,7 +269,7 @@ fn draw_trail(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Vi
             vp.fy(p.y - r),
             vp.flen(r * 2.0),
             vp.flen(r * 2.0),
-            theme.accent.with_alpha(alpha),
+            colour.with_alpha(alpha),
         );
     }
 }
@@ -817,6 +883,138 @@ mod tests {
         // And a restart puts it back.
         s.restart();
         assert_eq!(s.over_elapsed, 0.0, "restart clears the end clock");
+    }
+
+    // ------------------------------------------------------------------
+    // ★ The ball heats up on a long rally.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn a_short_rally_leaves_the_ball_alone() {
+        // Most rallies never get near HEAT_FROM. They must look exactly
+        // as they always have — the effect is a reward for a long rally,
+        // not a permanent tint.
+        let theme = Theme::fallback();
+        for rally in 0..HEAT_FROM {
+            let mut s = GameState::new();
+            s.rally = rally;
+            assert_eq!(
+                ball_colour(&s, &theme),
+                theme.accent,
+                "rally {rally} should still be the plain accent"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ball_heats_through_a_long_rally() {
+        assert_eq!(heat(HEAT_FROM - 1), 0.0, "cool right up to the threshold");
+        assert!(heat(HEAT_FROM) >= 0.0, "and starts at it");
+        assert!(heat(25) > heat(HEAT_FROM), "climbing by 25");
+        assert!(heat(35) > heat(25), "still climbing by 35");
+        assert_eq!(heat(HEAT_FULL), 1.0, "fully lit at HEAT_FULL");
+        assert_eq!(heat(1000), 1.0, "and bounded past it");
+    }
+
+    #[test]
+    fn the_heat_is_visible_well_past_where_it_starts() {
+        // ⚠️ 20 is a START, not a peak. Brian's best rally is 59 and the
+        // probes reach 40-70. If the ramp finished just after it began,
+        // most of a GREAT rally would look identical — exactly the flaw
+        // the sound's RALLY_STEP was tuned away from.
+        assert!(
+            heat(30) < 0.95,
+            "a 30-return rally must still have somewhere to go, got {}",
+            heat(30)
+        );
+        assert!(HEAT_FULL > HEAT_FROM + 15, "the ramp needs room to read");
+    }
+
+    #[test]
+    fn a_point_cools_the_ball_immediately() {
+        // `award` resets `rally`, so the heat describes THIS rally and
+        // never bleeds into the next serve.
+        let theme = Theme::fallback();
+        let mut s = GameState::new();
+        s.begin();
+        s.rally = 40;
+        assert_ne!(ball_colour(&s, &theme), theme.accent, "hot mid-rally");
+
+        s.award(Side::Left);
+        assert_eq!(
+            ball_colour(&s, &theme),
+            theme.accent,
+            "a point must cool the ball at once"
+        );
+    }
+
+    #[test]
+    fn a_hot_ball_is_actually_a_different_colour() {
+        // ⚠️ The point of the whole feature. A lerp that produced a
+        // near-identical colour would pass every test above while being
+        // invisible on screen.
+        let theme = Theme::fallback();
+        let mut s = GameState::new();
+        s.rally = HEAT_FULL;
+        let hot = ball_colour(&s, &theme);
+        let cool = theme.accent;
+
+        let d = |a: u8, b: u8| (a as f32 - b as f32).abs();
+        let shift = 0.3 * d(hot.r, cool.r) + 0.59 * d(hot.g, cool.g) + 0.11 * d(hot.b, cool.b);
+        assert!(
+            shift > 40.0,
+            "hot {hot:?} is not visibly different from cool {cool:?} (shift {shift:.1})"
+        );
+    }
+
+    #[test]
+    fn the_hot_ball_never_vanishes_into_the_field() {
+        // Measured across all 22 installed themes, the worst case is ~115
+        // away from the background. The fallback theme must clear the
+        // same bar, or a hot ball could be invisible on the one theme
+        // that ships when no Omarchy theme is readable.
+        let theme = Theme::fallback();
+        let mut s = GameState::new();
+        s.rally = HEAT_FULL;
+        let hot = ball_colour(&s, &theme);
+        let bg = theme.background;
+
+        let d = |a: u8, b: u8| (a as f32 - b as f32).abs();
+        let sep = 0.3 * d(hot.r, bg.r) + 0.59 * d(hot.g, bg.g) + 0.11 * d(hot.b, bg.b);
+        assert!(sep > 60.0, "a hot ball must stay readable, got {sep:.1}");
+    }
+
+    #[test]
+    fn the_trail_heats_with_the_ball() {
+        // A hot ball dragging a cool tail reads as a bug. Rendering a hot
+        // frame and a cool one must differ in MORE pixels than the ball
+        // itself occupies — which is only true if the trail moved too.
+        const W: u32 = 960;
+        const H: u32 = 720;
+        let mut s = GameState::new();
+        s.begin();
+        crate::physics::serve(&mut s);
+        s.trail = vec![s.ball.pos; 10];
+        // Spread the trail so it covers real ground.
+        for (i, p) in s.trail.iter_mut().enumerate() {
+            p.x -= i as f32 * 12.0;
+        }
+
+        s.rally = 0;
+        let cool = frame_of(&s, W, H);
+        s.rally = HEAT_FULL;
+        let hot = frame_of(&s, W, H);
+
+        let changed = differing(&cool, &hot);
+        let ball_px = {
+            let r = s.ball.rect();
+            (r.w * r.h) as usize
+        };
+        assert!(
+            changed > ball_px,
+            "only {changed} pixels changed but the ball alone is {ball_px} — \
+             the trail did not heat with it"
+        );
     }
 
 }

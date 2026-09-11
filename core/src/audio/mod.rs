@@ -255,13 +255,34 @@ impl AudioSystem {
     /// it once per stretch of frames under test.
     #[doc(hidden)]
     pub fn drain_enables_for_test(&self) -> std::collections::HashMap<VoiceId, bool> {
+        self.drain_for_test().0
+    }
+
+    /// Drain the ring and report both the enable states and the last
+    /// duck gain the mixer was told to move to. **Tests only.**
+    ///
+    /// ⚠️ THE DUCK IS WHY THE ENABLES ALONE WERE NOT ENOUGH. A run can
+    /// have every voice correctly enabled and still be silent, because
+    /// ducking attenuates at the master stage — which is exactly how
+    /// Omaprix came up mute after a run that ended without a crash. A
+    /// test asserting only "the voices are on" cannot see it.
+    ///
+    /// The second element is `None` if no duck command was queued.
+    /// Consumes the queued commands, as the mixer does.
+    #[doc(hidden)]
+    pub fn drain_for_test(&self) -> (std::collections::HashMap<VoiceId, bool>, Option<f32>) {
         let mut state = std::collections::HashMap::new();
+        let mut duck = None;
         while let Some(cmd) = self.ring.pop() {
-            if let Command::Enable { voice, on } = cmd {
-                state.insert(voice, on);
+            match cmd {
+                Command::Enable { voice, on } => {
+                    state.insert(voice, on);
+                }
+                Command::Duck { gain, .. } => duck = Some(gain),
+                _ => {}
             }
         }
-        state
+        (state, duck)
     }
 
     /// Fill the ring to capacity, so the next push is dropped.

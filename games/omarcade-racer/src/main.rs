@@ -83,6 +83,16 @@ const TRAFFIC_CARS: usize = 5;
 const WHEEL_PIXELS: f32 = 9.0;
 const WHEEL_TURNS_PER_SECOND: f32 = 3.0;
 
+/// How long a live run takes to lift a duck left behind by the previous
+/// one, in seconds.
+///
+/// Short, because on a restart there is nothing to fade IN from — the
+/// duck being released is a leftover, not an effect anyone is listening
+/// to, and the new run's countdown should start at full level. Not
+/// instant, because a step change in gain is itself a click (see
+/// `DUCK_MAX_STEP` in the mixer, which clamps the ramp regardless).
+const RESTART_UNDUCK_SECONDS: f32 = 0.05;
+
 struct Racer {
     theme: Theme,
     /// The volume readout, shared with the other two games.
@@ -665,6 +675,29 @@ impl Racer {
             audio.duck(VoiceId::NONE, 0.15, 0.12);
         } else if self.recovering > 0.0 {
             audio.unduck(crash::recovery_time(&self.tuning).max(0.2));
+        } else if should_run {
+            // ⚠️ THE DUCK IS MIXER STATE AND IT OUTLIVES THE GAME.
+            //
+            // `Event::Over` ducks EVERYTHING to zero above — right for
+            // the end of a run, and it is the fade-out you hear. But the
+            // only release used to be the crash-recovery branch, gated
+            // on `recovering > 0.0`. A run that ends WITHOUT a crash —
+            // failing to qualify, or the clock running out — never sets
+            // that, so the duck to zero was never lifted.
+            //
+            // Restarting could not lift it either: `restart()` rebuilds
+            // the game through `Racer::new`, while the duck lives on the
+            // AUDIO THREAD and is not the game's to reset. The next run
+            // came up correctly in every respect and was muted at the
+            // master stage, for the life of the process. A crash was the
+            // only way back, because a crash is what reaches the branch
+            // above — which is exactly why this read as "no sound until
+            // I crashed" both times.
+            //
+            // Stated, not assumed, for the same reason the voice enables
+            // are: a live run is UNDUCKED, said every frame, so no ending
+            // can strand the mixer in a state no later frame mentions.
+            audio.unduck(RESTART_UNDUCK_SECONDS);
         }
     }
 
@@ -1243,6 +1276,60 @@ mod tests {
             enabled.get(&g.engine),
             Some(&true),
             "a restarted run never told the mixer to start the engine again",
+        );
+    }
+
+    /// ⚠️★ THE ONE BRIAN ACTUALLY HIT. A run that ends WITHOUT a crash
+    /// left the mixer ducked to silence, and the restart could not lift
+    /// it.
+    ///
+    /// His repro, exactly: fail to qualify on your own, press Enter to
+    /// start a new game, and the new game has no sound. It survives for
+    /// the life of the process, and only a crash brings it back.
+    ///
+    /// `Event::Over` ducks EVERYTHING to 0.0 — correct, it is the
+    /// fade-out at the end of a run. But the only release was gated on
+    /// `recovering > 0.0`, which a crash sets and a DNQ never does. And
+    /// `restart()` rebuilds the GAME while the duck lives on the AUDIO
+    /// THREAD, so the new run came up with every voice correctly enabled
+    /// and fully attenuated at the master stage.
+    ///
+    /// ⚠️ THIS IS WHY ASSERTING THE ENABLES WAS NOT ENOUGH: they were all
+    /// `true` throughout. The duck is a separate seam and needs its own
+    /// observation.
+    #[test]
+    fn a_run_that_ends_without_a_crash_does_not_mute_the_next_one() {
+        let mut g = racer();
+        let mut audio = AudioSystem::new();
+
+        // The end of a run that nobody crashed out of. Set directly:
+        // raising the event would call `bank_score`, which writes the
+        // real score file — see the warning at the top of these tests.
+        g.race.phase = Phase::Over(race::Out::DidNotQualify);
+        g.sound(&mut audio.handle(), Some(Event::Over(race::Out::DidNotQualify)));
+
+        let (_, ducked) = audio.drain_for_test();
+        assert_eq!(
+            ducked,
+            Some(0.0),
+            "fixture: the end of a run should duck everything away",
+        );
+
+        // Enter. A brand new run.
+        g.restart();
+        g.update(1.0 / 60.0, &mut audio.handle());
+
+        let (enabled, duck) = audio.drain_for_test();
+        assert_eq!(
+            enabled.get(&g.engine),
+            Some(&true),
+            "fixture: the voices should be enabled in the new run",
+        );
+        assert_eq!(
+            duck,
+            Some(1.0),
+            "the new run is still ducked to silence — restarting cannot \
+             clear mixer state the game never speaks of again",
         );
     }
 

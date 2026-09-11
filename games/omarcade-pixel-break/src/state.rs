@@ -355,13 +355,21 @@ pub fn clamp_angle(vel: &mut Vec2) {
 /// straight up for this reason — "a perfectly vertical ball in a brick
 /// corridor bounces forever" — but an ordinary bounce could never hit
 /// offset exactly 0.0, because a moving ball never lands on the paddle's
-/// exact centre. A HELD ball is pinned to `paddle.center_x()` by design, so
-/// it lands there EVERY time, and a player who simply keeps the paddle
-/// under the ball gets a vertical ball on release.
+/// exact centre.
 ///
 /// Measured: `probe_balance` timed out on eight of ten levels, one ball
 /// bouncing at x=880 with `vel=(0, ±340)` for 216,000 ticks having cleared
 /// ten bricks. That is what this constant prevents.
+///
+/// ⚠️ **This is a GUARD RAIL, not the normal path — and it used to be
+/// both.** While a held ball was pinned to `paddle.center_x()`, every
+/// single release came through here, so the magnet's entire repertoire was
+/// a ±0.12 nudge: it fired nearly straight up no matter how the catch was
+/// made. Now the ball keeps its contact point (`Ball::held_offset`) and a
+/// release aims across the full steer range; this fires only for a catch
+/// genuinely within 12% of centre. Do not widen it to "improve" aim — it
+/// exists to stop an unwinnable vertical, and every unit it grows is a
+/// unit of the player's aim overwritten.
 const MIN_RELEASE_LEAN: f32 = 0.12;
 
 /// Fire a held ball off the paddle at the aim the player lined up.
@@ -521,6 +529,25 @@ pub struct Ball {
     /// "two balls held at once" unrepresentable in the shape of the data:
     /// each ball owns its own hold or has none.
     pub held_for: Option<f32>,
+    /// Where along the paddle this ball was caught: -1 at the left edge,
+    /// 0 at the centre, +1 at the right edge. Meaningless unless
+    /// `held_for` is `Some`.
+    ///
+    /// ⚠️ **A FRACTION of the paddle half-width, never a pixel offset.**
+    /// `grow` changes `paddle.w` while a ball is held, and an absolute
+    /// offset would then sit at a different proportion of the paddle than
+    /// it was caught at — on a shrinking paddle, outside it entirely. A
+    /// fraction rides the resize: caught at the right edge, still at the
+    /// right edge.
+    ///
+    /// ⚠️ **This is what gives the magnet its aim.** A held ball used to
+    /// be pinned to `paddle.center_x()`, so `release_held` always saw
+    /// offset 0 and fired nearly straight up however the catch was made —
+    /// the magnet destroyed the angle the player had earned. Keeping the
+    /// contact point means the release steers exactly like the bounce it
+    /// replaced, and the 20 s the player paid for buys TIME to choose,
+    /// not a worse shot.
+    pub held_offset: f32,
 }
 
 impl Ball {
@@ -533,6 +560,7 @@ impl Ball {
             trail: Vec::with_capacity(TRAIL_LEN),
             drained: false,
             held_for: None,
+            held_offset: 0.0,
         }
     }
 
@@ -1174,8 +1202,18 @@ impl GameState {
             let left = left - dt;
             if left > 0.0 {
                 ball.held_for = Some(left);
-                // A held ball rides the paddle: that is the aiming.
-                ball.pos.x = paddle.center_x();
+                // A held ball rides the paddle AT THE POINT IT WAS CAUGHT.
+                // The offset is a fraction, so it survives a `grow` that
+                // resizes the paddle mid-hold: caught at the right edge,
+                // still at the right edge on a paddle twice as wide.
+                //
+                // ⚠️ The offset does NOT change while held — that is the
+                // mechanic. Moving the paddle carries the ball with it
+                // rather than sliding the ball along it, so the angle the
+                // player gets is the angle they caught. The aiming happens
+                // BEFORE the catch, in positioning the paddle; the hold
+                // buys time to read the field, not a second chance to aim.
+                ball.pos.x = paddle.center_x() + ball.held_offset * (paddle.w / 2.0);
                 ball.pos.y = paddle.y - ball.radius - 1.0;
                 ball.vel = Vec2::ZERO;
             } else {

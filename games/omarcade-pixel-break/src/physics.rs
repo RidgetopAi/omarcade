@@ -445,6 +445,16 @@ fn collide_paddle(
     if magnet {
         // Caught. It rides the paddle until Space is released or the hold
         // runs out, whichever comes first.
+        //
+        // ⚠️ Record WHERE it struck, in the same terms `aim_off_paddle`
+        // reads: a fraction of the half-width, clamped, so a catch that
+        // overhangs the paddle end aims at full steer rather than past it.
+        // Without this the ball would be centred on the paddle for the
+        // whole hold and released almost straight up — the magnet taking
+        // away the angle the player had just earned. Set here, beside the
+        // hold itself, so a catch can never record one without the other.
+        ball.held_offset =
+            ((ball.pos.x - paddle.center_x()) / (paddle.w / 2.0)).clamp(-1.0, 1.0);
         ball.held_for = Some(MAGNET_HOLD_SECONDS);
         ball.vel = Vec2::ZERO;
         return PaddleTouch::Caught;
@@ -631,12 +641,6 @@ fn collide_bricks(state: &mut GameState, index: usize) {
 
     clamp_angle(&mut ball.vel);
 }
-
-/// Keep the ball from skimming too close to horizontal.
-///
-/// Without this a ball can end up travelling almost sideways, drifting
-/// between the walls for a very long time and making the game look
-/// broken even though nothing is technically wrong.
 
 /// Fall, catch, and forget.
 ///
@@ -1956,11 +1960,24 @@ mod magnet_tests {
     /// A game in play with the magnet armed and one ball falling onto the
     /// paddle from just above it.
     fn about_to_be_caught() -> GameState {
+        about_to_be_caught_at(0.0)
+    }
+
+    /// A ball one tick from being caught at a chosen point on the paddle:
+    /// -1 is the left edge, 0 the centre, +1 the right edge.
+    ///
+    /// ⚠️ The plain `about_to_be_caught` drops the ball at DEAD CENTRE,
+    /// and for a long time it was the only magnet fixture there was. That
+    /// is exactly why no test noticed the magnet was centring every ball
+    /// it caught: at offset 0 the broken behaviour and the correct one are
+    /// indistinguishable. Any test about AIM must pick a real offset.
+    fn about_to_be_caught_at(offset: f32) -> GameState {
         let mut s = GameState::new();
         s.launch();
         s.apply_item(ItemKind::Magnet);
         s.paddle.x = (FIELD_W - PADDLE_W) / 2.0;
-        s.balls[0].pos = Vec2::new(s.paddle.center_x(), s.paddle.y - BALL_RADIUS);
+        let x = s.paddle.center_x() + offset * (s.paddle.w / 2.0);
+        s.balls[0].pos = Vec2::new(x, s.paddle.y - BALL_RADIUS);
         s.balls[0].vel = Vec2::new(0.0, s.ball_speed());
         s
     }
@@ -1990,20 +2007,135 @@ mod magnet_tests {
         assert!(s.balls[0].vel.y < 0.0, "it should have bounced upward");
     }
 
-    /// ⚠️ The held ball rides the paddle — that IS the aiming. A ball that
-    /// stayed put while the paddle moved would make the magnet useless for
-    /// choosing an angle, which is the entire point of it.
+    /// ⚠️ The held ball rides the paddle RIGIDLY, keeping the point it was
+    /// caught at. A ball that stayed put while the paddle moved would slide
+    /// off the end; a ball that re-centred would throw away the angle the
+    /// player earned, which is the whole value of the catch.
+    ///
+    /// ⚠️ This test used to assert the ball sat within 1.0 of the paddle
+    /// CENTRE, and passed for months while the magnet was busy destroying
+    /// the player's aim — the fixture only ever caught at dead centre, so
+    /// "rides the paddle" and "is centred on the paddle" looked like the
+    /// same statement. They are not. Catch off-centre or this proves nothing.
     #[test]
-    fn a_held_ball_tracks_the_paddle() {
-        let mut s = about_to_be_caught();
+    fn a_held_ball_rides_the_paddle_at_the_point_it_was_caught() {
+        let mut s = about_to_be_caught_at(0.6);
+        step_fixed(&mut s);
+        assert!(s.balls[0].is_held());
+        let caught_at = s.balls[0].pos.x - s.paddle.center_x();
+
+        // ⚠️ The catch must actually be OFF-CENTRE, or the rest of this
+        // test passes just as happily against a magnet that centres
+        // everything — which is how the bug survived in the first place.
+        assert!(
+            caught_at > 1.0,
+            "the fixture caught at {caught_at}, too near centre to prove anything"
+        );
+
+        let started_at = s.paddle.center_x();
+        s.paddle.dir = 1.0;
+        steps(&mut s, 30);
+        assert!(
+            s.paddle.center_x() > started_at + 1.0,
+            "the paddle must actually have moved for this to mean anything"
+        );
+        let now_at = s.balls[0].pos.x - s.paddle.center_x();
+        assert!(
+            (now_at - caught_at).abs() < 1.0,
+            "the hold slid along the paddle: caught at {caught_at}, now {now_at}"
+        );
+        assert!(s.balls[0].is_held(), "it should still be held after 30 ticks");
+    }
+
+    /// ★ **THE REGRESSION TEST FOR BRIAN'S REPORT.** He reached level 10
+    /// and said the magnet was "almost a hindrance instead of an advantage":
+    /// it caught the ball, centred it, and fired it near-vertically however
+    /// he had lined the catch up.
+    ///
+    /// A catch out at +0.6 must release steering RIGHT and HARD — the same
+    /// aim an ordinary bounce off that spot would have given.
+    ///
+    /// ⚠️ Verified to FAIL against the old code (`vx` came back at +0.09,
+    /// the `MIN_RELEASE_LEAN` nudge, instead of +0.45).
+    #[test]
+    fn a_catch_keeps_the_angle_the_player_earned() {
+        let mut s = about_to_be_caught_at(0.6);
+        step_fixed(&mut s);
+        assert!(s.balls[0].is_held(), "the fixture failed to get a catch");
+
+        s.release_held_balls();
+        let vel = s.balls[0].vel;
+        assert!(vel.y < 0.0, "a released ball must travel upward");
+
+        // What an ordinary bounce off the same spot would have produced.
+        let mut reference = Ball::new(
+            Vec2::new(s.paddle.center_x() + 0.6 * (s.paddle.w / 2.0), 0.0),
+            Vec2::ZERO,
+            BALL_RADIUS,
+        );
+        crate::state::aim_off_paddle(&mut reference, &s.paddle, s.ball_speed());
+
+        assert!(
+            (vel.x - reference.vel.x).abs() < 1.0,
+            "the magnet aimed differently from the paddle it was stuck to: \
+             released vx {} vs a bounce's {}",
+            vel.x,
+            reference.vel.x
+        );
+        assert!(
+            vel.x > s.ball_speed() * 0.3,
+            "a catch out at +0.6 must steer RIGHT and hard, got vx {}",
+            vel.x
+        );
+    }
+
+    /// ⚠️ The offset is a FRACTION of the half-width, so a resize landing
+    /// mid-hold keeps the ball at the same PROPORTION of the paddle. Were
+    /// it stored in pixels, a catch near the edge of a paddle that then
+    /// SHRANK would leave the ball hanging off the end — and a bomb caught
+    /// while the magnet holds a ball does exactly that shrink.
+    #[test]
+    fn a_resize_mid_hold_keeps_the_ball_in_proportion() {
+        let mut s = about_to_be_caught_at(0.8);
         step_fixed(&mut s);
         assert!(s.balls[0].is_held());
 
-        s.paddle.dir = 1.0;
-        steps(&mut s, 30);
-        let dx = (s.balls[0].pos.x - s.paddle.center_x()).abs();
-        assert!(dx < 1.0, "held ball drifted {dx} from the paddle centre");
-        assert!(s.balls[0].is_held(), "it should still be held after 30 ticks");
+        let before = s.paddle.w;
+        s.apply_item(ItemKind::Bomb);
+        steps(&mut s, 2);
+        assert!(
+            s.paddle.w < before,
+            "the fixture did not actually resize the paddle ({before} -> {})",
+            s.paddle.w
+        );
+
+        let half = s.paddle.w / 2.0;
+        let offset = (s.balls[0].pos.x - s.paddle.center_x()) / half;
+        assert!(
+            (offset - 0.8).abs() < 0.05,
+            "the resize moved the ball off its catch point: offset {offset}"
+        );
+        assert!(
+            (s.balls[0].pos.x - s.paddle.center_x()).abs() <= half,
+            "the held ball is hanging off the end of the paddle"
+        );
+    }
+
+    /// ⚠️ `MIN_RELEASE_LEAN` is still load-bearing. Keeping the contact
+    /// point makes a dead-centre release RARE rather than universal — it
+    /// does not make it impossible, and a perfectly vertical ball still
+    /// stalls the game (`probe_balance` timed out on eight of ten levels).
+    #[test]
+    fn a_dead_centre_catch_still_cannot_fire_vertically() {
+        let mut s = about_to_be_caught_at(0.0);
+        step_fixed(&mut s);
+        assert!(s.balls[0].is_held());
+
+        s.release_held_balls();
+        assert!(
+            s.balls[0].vel.x.abs() > 0.0,
+            "a centred release went dead vertical — the game can stall"
+        );
     }
 
     /// ⚠️ A held ball is out of the simulation: it must not drain, and it

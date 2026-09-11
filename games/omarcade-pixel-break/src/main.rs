@@ -582,4 +582,41 @@ mod pause_tests {
         assert!(!g.skipped, "a fresh run must not be marked skipped");
     }
 
+
+    /// ★★ **THE WHOLE POINT: skipping nine levels reaches the ending.**
+    ///
+    /// Brian taps F8 to walk to level 10; this proves the walk arrives.
+    /// If the skip can only advance one level, or stalls in `Clearing`,
+    /// he finds out by tapping nine times into a wall rather than here.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn skipping_every_level_reaches_the_victory_sequence() {
+        let mut g = playing();
+        let mut audio = AudioSystem::new();
+
+        for _ in 0..600 {
+            match g.state.phase {
+                Phase::Playing => {
+                    g.on_input(InputEvent::KeyDown(Key::F8));
+                }
+                Phase::Ready => {
+                    g.on_input(InputEvent::KeyDown(Key::Space));
+                }
+                Phase::Victory | Phase::Won => break,
+                _ => {}
+            }
+            g.update(1.0 / 60.0, &mut audio.handle());
+        }
+
+        assert!(
+            matches!(g.state.phase, Phase::Victory | Phase::Won),
+            "skipping never reached the ending — stalled at {:?} on level {}",
+            g.state.phase,
+            g.state.level
+        );
+        assert_eq!(g.state.level, state::LEVELS, "the ending arrived on the wrong level");
+        assert!(g.state.score > 0, "no clear bonuses were awarded on the way");
+    }
+
+
 }

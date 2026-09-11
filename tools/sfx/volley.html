@@ -268,29 +268,67 @@
 
       <div class="pane" id="t-match">
         <div class="grp">
-          <h3>match won / lost</h3>
+          <h3 class="warn">★ the fanfare — match won</h3>
           <div class="note">
-            Three notes — a major triad, climbing for a win and reversed for a loss. Longer
-            and louder than a point because nothing follows it: there is no next rally for it
-            to get in the way of, which is the constraint every other sound here is shaped by.
-            The loss keeps the major third rather than going minor — this is an arcade
-            cabinet, and the falling direction already carries the meaning.
+            <b>I - IV - V - I</b>, four chords, the last resolving to the octave and held.
+            This replaced a three-note triad that ran 0.58 s — you played it and said the win
+            was "too short and not enough reward". The fix is not volume: a sequence needs a
+            <b>resolution</b> to read as an ending, and three notes climbing away from the
+            root never resolve, they just stop.
+            <br><br>
+            ★ <b>The hold is the "ta-da".</b> It is the entire difference between a flourish
+            and an ending. Try dragging it to its minimum and firing — the fanfare turns back
+            into a sequence of chords that happens to end.
+            <br><br>
+            ⚠️ The level is low because <b>thirteen notes sound nearly together</b> here. A
+            level that suits one struck note clips badly across a chord stack — watch the peak
+            meter, not the slider.
           </div>
           <div class="row"><label>root</label>
             <input type="range" id="mhz" min="120" max="600" step="1" value="262">
             <span class="val" id="mhzv"></span></div>
-          <div class="row"><label>length</label>
-            <input type="range" id="mlen" min="0.08" max="0.6" step="0.01" value="0.26">
+          <div class="row"><label>beat</label>
+            <input type="range" id="mgap" min="0.25" max="0.9" step="0.01" value="0.52">
+            <span class="val" id="mgapv"></span></div>
+          <div class="row"><label>chord length</label>
+            <input type="range" id="mlen" min="0.2" max="1.0" step="0.01" value="0.60">
             <span class="val" id="mlenv"></span></div>
+          <div class="row"><label>★ the hold</label>
+            <input type="range" id="mhold" min="0.3" max="3.5" step="0.05" value="2.00">
+            <span class="val" id="mholdv"></span></div>
           <div class="row"><label>level</label>
-            <input type="range" id="mlevel" min="0" max="1" step="0.01" value="0.34">
+            <input type="range" id="mlevel" min="0" max="0.6" step="0.01" value="0.17">
             <span class="val" id="mlevelv"></span></div>
           <div class="row"><label>timbre</label>
-            <input type="range" id="mtone" min="0" max="1" step="0.02" value="0.24">
+            <input type="range" id="mtone" min="0" max="1" step="0.02" value="0.38">
             <span class="val" id="mtonev"></span></div>
+          <div class="note" id="fanlen"></div>
+        </div>
+
+        <div class="grp">
+          <h3>match lost</h3>
+          <div class="note">
+            ⚠️ <b>Deliberately still short.</b> Losing does not get a ceremony — the player
+            wants to hit ENTER and go again, and a four-second sequence standing between them
+            and that is a punishment rather than an ending. The triad keeps its major third
+            rather than going minor: this is an arcade cabinet, not a requiem, and the falling
+            direction already carries the meaning.
+          </div>
+          <div class="row"><label>root</label>
+            <input type="range" id="lhz" min="120" max="600" step="1" value="262">
+            <span class="val" id="lhzv"></span></div>
+          <div class="row"><label>length</label>
+            <input type="range" id="llen" min="0.08" max="0.6" step="0.01" value="0.26">
+            <span class="val" id="llenv"></span></div>
+          <div class="row"><label>level</label>
+            <input type="range" id="llevel" min="0" max="1" step="0.01" value="0.34">
+            <span class="val" id="llevelv"></span></div>
+          <div class="row"><label>timbre</label>
+            <input type="range" id="ltone" min="0" max="1" step="0.02" value="0.24">
+            <span class="val" id="ltonev"></span></div>
           <div class="row"><label>gap</label>
-            <input type="range" id="mgap" min="0.06" max="0.4" step="0.01" value="0.16">
-            <span class="val" id="mgapv"></span></div>
+            <input type="range" id="lgap" min="0.06" max="0.4" step="0.01" value="0.16">
+            <span class="val" id="lgapv"></span></div>
         </div>
       </div>
     </div>
@@ -378,12 +416,12 @@ const SOUNDS = {
   ],
   pointWon: () => point(true),
   pointLost: () => point(false),
-  matchWon: () => match(true),
-  matchLost: () => match(false),
+  matchWon: () => matchWon(),
+  matchLost: () => matchLost(),
 };
 
 const POINT_INTERVAL = 3 / 2;
-const MATCH_STEPS = [1, 5 / 4, 3 / 2];
+const LOST_STEPS = [1, 5 / 4, 3 / 2];
 
 function point(won) {
   const hz = val("ohz");
@@ -395,15 +433,42 @@ function point(won) {
   ];
 }
 
-function match(won) {
+/// ★ The fanfare: I - IV - V - I, the last chord held.
+///
+/// Must stay identical to `Shot::MatchWon` in sound.rs. The held
+/// resolution is the whole point — it is what makes the sequence an
+/// ENDING rather than a fourth chord.
+function matchWon() {
   const hz = val("mhz");
-  return MATCH_STEPS.map((_, i) => {
-    const step = won ? MATCH_STEPS[i] : MATCH_STEPS[MATCH_STEPS.length - 1 - i];
-    return {
-      start: val("mgap") * i, hz: hz * step, len: val("mlen"),
-      level: val("mlevel"), tone: val("mtone"),
-    };
+  const gap = val("mgap"), len = val("mlen"), hold = val("mhold");
+  const level = val("mlevel"), tone = val("mtone");
+  // Equal temperament: a semitone is the twelfth root of two.
+  const st = semi => hz * Math.pow(2, semi / 12);
+  const notes = [];
+  [[0, 4, 7], [5, 9, 12], [7, 11, 14]].forEach((chord, c) => {
+    for (const semi of chord) {
+      notes.push({ start: gap * c, hz: st(semi), len, level, tone });
+    }
   });
+  const at = gap * 3;
+  for (const semi of [12, 16, 19]) {
+    notes.push({ start: at, hz: st(semi), len: hold, level, tone });
+  }
+  // The shine on top, two octaves above and quieter.
+  notes.push({
+    start: at, hz: st(24), len: hold * 0.7,
+    level: level * 0.45, tone,
+  });
+  return notes;
+}
+
+/// The loss: the triad read downwards. Short on purpose.
+function matchLost() {
+  const hz = val("lhz");
+  return LOST_STEPS.slice().reverse().map((step, i) => ({
+    start: val("lgap") * i, hz: hz * step, len: val("llen"),
+    level: val("llevel"), tone: val("ltone"),
+  }));
 }
 
 function soundLength(notes) {
@@ -564,6 +629,16 @@ function refresh() {
     const out = $(el.id + "v");
     if (out) out.textContent = el.value;
   }
+  const fl = $("fanlen");
+  if (fl) {
+    const secs = val("mgap") * 3 + val("mhold");
+    fl.innerHTML = `The whole fanfare runs <b class="warn">${secs.toFixed(2)}s</b>. ` +
+      (secs > 5
+        ? "⚠️ Long enough to hum is long enough to get sick of — a match replays with ENTER."
+        : secs < 2.5
+          ? "⚠️ Short. This is the complaint that started the rebuild."
+          : "A fanfare, not a song.");
+  }
   const at = capReachedAt();
   const el = $("capwhen");
   if (el) {
@@ -609,12 +684,20 @@ const POINT_LEVEL: f32 = ${f("olevel")};
 const POINT_TONE: f32 = ${f("otone")};
 const POINT_GAP: f32 = ${f("ogap", 3)};
 
-// ── match over ─────────────────────────────────────────────
+// ── ★ the fanfare ──────────────────────────────────────────
 const MATCH_HZ: f32 = ${f("mhz", 1)};
+pub const MATCH_BEAT: f32 = ${f("mgap", 3)};
 const MATCH_LEN: f32 = ${f("mlen", 3)};
+const MATCH_HOLD: f32 = ${f("mhold", 3)};
 const MATCH_LEVEL: f32 = ${f("mlevel")};
 const MATCH_TONE: f32 = ${f("mtone")};
-const MATCH_GAP: f32 = ${f("mgap", 3)};
+
+// ── the match lost ─────────────────────────────────────────
+const LOST_HZ: f32 = ${f("lhz", 1)};
+const LOST_LEN: f32 = ${f("llen", 3)};
+const LOST_LEVEL: f32 = ${f("llevel")};
+const LOST_TONE: f32 = ${f("ltone")};
+const LOST_GAP: f32 = ${f("lgap", 3)};
 `;
 }
 

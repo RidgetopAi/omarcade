@@ -259,6 +259,11 @@ impl Game for Volley {
         let bank = &mut self.sound;
         self.state.drain_cues(|cue| bank.play(audio, cue));
 
+        // ⚠️ The end screen's clock, driven from the FRAME loop. Nothing
+        // in `physics::step` reaches Phase::Over — it runs no simulation
+        // — so the staged reveal would never advance if this lived there.
+        self.state.tick_over(dt);
+
         if self.state.is_over() {
             self.bank_score();
         }

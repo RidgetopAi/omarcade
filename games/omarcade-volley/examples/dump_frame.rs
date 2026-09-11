@@ -18,6 +18,9 @@ mod ai;
 mod physics;
 #[path = "../src/render.rs"]
 mod render;
+// `render` times the win screen to the fanfare, so it needs the music.
+#[path = "../src/sound.rs"]
+mod sound;
 #[path = "../src/state.rs"]
 mod state;
 
@@ -142,13 +145,27 @@ fn build(scene: &str) -> GameState {
             s.rally = 14;
         }
 
-        "won" => {
+        // ★ The win, at each beat of the fanfare. A CONTROLLED SET
+        // (L044): the only thing that differs between these four is the
+        // clock, so anything else that moves between them is a bug.
+        //
+        //   won        the result alone, as the first chord lands
+        //   won-score  + the score, on the IV
+        //   won-best   + the record, on the V
+        //   won-full   + the invitation, with the held resolution
+        "won" | "won-score" | "won-best" | "won-full" => {
             s.begin();
             s.score_left = state::MATCH_POINT;
             s.score_right = 8;
             s.longest_rally = 31;
             s.best = 44;
             s.phase = Phase::Over { winner: Side::Left };
+            s.over_elapsed = match scene {
+                "won-score" => render::REVEAL_DETAIL + 0.01,
+                "won-best" => render::REVEAL_BEST + 0.01,
+                "won-full" => render::REVEAL_PROMPT + 0.01,
+                _ => 0.0,
+            };
         }
 
         "lost" => {

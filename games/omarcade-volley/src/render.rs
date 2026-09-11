@@ -18,7 +18,28 @@ use omarcade_core::geom::Rect;
 use omarcade_core::text::{GLYPH_H, text, text_width};
 use omarcade_core::{Canvas, Color, Theme};
 
+use crate::sound::{MATCH_BEAT, MATCH_WON_SECONDS};
 use crate::state::{Difficulty, FIELD_H, FIELD_W, GameState, Phase, Side};
+
+// ─────────────────────────────────────────────────────────────────
+// ★ THE WIN SCREEN'S STAGED REVEAL
+//
+// Each line arrives on a chord of the fanfare. ⚠️ These are DERIVED from
+// the music rather than typed as seconds, so retuning the fanfare cannot
+// leave the screen drifting out of time with it — which is exactly the
+// kind of silent decalibration this project has been bitten by before.
+// ─────────────────────────────────────────────────────────────────
+
+/// The score, on the IV chord — beat two.
+pub const REVEAL_DETAIL: f32 = MATCH_BEAT;
+/// The record, on the V — beat three.
+pub const REVEAL_BEST: f32 = MATCH_BEAT * 2.0;
+/// ★ The invitation, with the resolution — beat four, the held chord.
+pub const REVEAL_PROMPT: f32 = MATCH_BEAT * 3.0;
+
+/// Everything is on screen before the music ends, with the held chord
+/// still ringing. Pinned by `the_reveal_finishes_inside_the_fanfare`.
+const _: () = assert!(REVEAL_PROMPT < MATCH_WON_SECONDS);
 
 /// Maps play-field coordinates onto the window.
 #[derive(Debug, Clone, Copy)]
@@ -234,6 +255,42 @@ fn draw_rally(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Vi
     text(canvas, &s, x, y, scale, theme.muted);
 }
 
+/// Centred text on the end screen, with the net masked out behind it.
+///
+/// ⚠️ The dashed net runs down x = FIELD_W/2, which is exactly where
+/// every centred line on this screen sits — so "YOU WIN" and "ENTER TO
+/// PLAY AGAIN" both had a dash straight through them. The rally label at
+/// the foot of the field already solved this with a backing bar; this is
+/// the same idea, in the END SCREEN's colour rather than the field's.
+///
+/// ⚠️ The veil is ALREADY DOWN when this runs, so the backing must match
+/// the VEILED field, not `theme.background` — painting the unveiled
+/// colour here would put a bright patch behind the text instead of
+/// hiding a dash. `darker_background` at full opacity is what the veil
+/// is converging towards, so it reads as a hole in the net rather than a
+/// panel on top of it.
+fn centred_over_net(
+    canvas: &mut Canvas<'_>,
+    s: &str,
+    y: f32,
+    scale: u32,
+    colour: Color,
+    theme: &Theme,
+    vp: &Viewport,
+) {
+    let w = text_width(s, scale);
+    let x = vp.x(FIELD_W / 2.0) - (w / 2) as i32;
+    let py = vp.y(y);
+    canvas.fill_rect(
+        x - (6.0 * vp.scale) as i32,
+        py - (4.0 * vp.scale) as i32,
+        w + (12.0 * vp.scale) as u32,
+        (GLYPH_H * scale) + (8.0 * vp.scale) as u32,
+        theme.darker_background,
+    );
+    text(canvas, s, x, py, scale, colour);
+}
+
 /// The difficulty select.
 fn draw_select(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
     let title_scale = vp.text_scale(5.0);
@@ -290,8 +347,41 @@ fn draw_select(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &V
             canvas,
             line,
             x,
-            vp.y(560.0 + i as f32 * 34.0),
+            vp.y(520.0 + i as f32 * 34.0),
             hint_scale,
+            theme.muted,
+        );
+    }
+
+    // ★ The keys, following Pixel Break's title screen. Quiet and near the
+    // bottom — a player who wants them finds them, one who does not is not
+    // shouted at.
+    //
+    // ⚠️ P, M and the volume keys are otherwise UNDISCOVERABLE in this
+    // game. Nothing on screen has ever mentioned them, and the key a
+    // player would reach for instead — Escape — QUITS. A pause nobody can
+    // find is the same as no pause at all, and that matters more now than
+    // it did: the next people to play this are strangers.
+    //
+    // ⚠️ The volume line needs the `=` glyph. In Pixel Break this rendered
+    // as " LOUDER" until the font gained it — silently dropping the one
+    // character the hint exists to teach. `the_font_covers_everything_the
+    // _game_can_display` checks these strings for exactly that reason.
+    let ks = vp.text_scale(2.0);
+    for (i, line) in [
+        "MOVE   UP DOWN   P PAUSE",
+        "SOUND   M MUTE   - QUIETER   = LOUDER",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let x = vp.x(FIELD_W / 2.0) - (text_width(line, ks) / 2) as i32;
+        text(
+            canvas,
+            line,
+            x,
+            vp.y(600.0 + i as f32 * 34.0),
+            ks,
             theme.muted,
         );
     }
@@ -319,52 +409,83 @@ fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme,
             // is used for a STATE, never as a per-frame effect.
             canvas.veil(theme.darker_background.with_alpha(190));
 
+            // ★ The staged reveal. Brian asked for the win to feel like a
+            // reward rather than a stop, and the fanfare grew to 3.56 s to
+            // do it — but a screen that dumps everything in frame one
+            // leaves the music playing over a settled picture, which reads
+            // as a delay rather than a celebration.
+            //
+            // So the lines arrive ON the music: the result with the first
+            // chord, the detail over the middle of the progression, and
+            // the invitation to play again last, with the resolution.
+            //
+            // ⚠️ ONLY on a win. A loss shows everything immediately —
+            // staging a defeat would be dwelling on it, and the player
+            // wants ENTER and another match, not a ceremony.
+            let won = winner == Side::Left;
+            let t = state.over_elapsed;
+            let shown = |at: f32| !won || t >= at;
+
             let scale = vp.text_scale(4.0);
             let msg = match winner {
                 Side::Left => "YOU WIN",
                 Side::Right => "YOU LOSE",
             };
-            let x = vp.x(FIELD_W / 2.0) - (text_width(msg, scale) / 2) as i32;
-            text(
+            centred_over_net(
                 canvas,
                 msg,
-                x,
-                vp.y(260.0),
+                260.0,
                 scale,
                 if winner == Side::Left {
                     theme.green
                 } else {
                     theme.red
                 },
+                theme,
+                vp,
             );
 
             let sub = vp.text_scale(2.0);
-            let detail = format!(
-                "{} {}-{}   LONGEST RALLY {}",
-                state.difficulty.label(),
-                state.score_left,
-                state.score_right,
-                state.longest_rally
-            );
-            let dx = vp.x(FIELD_W / 2.0) - (text_width(&detail, sub) / 2) as i32;
-            text(canvas, &detail, dx, vp.y(360.0), sub, theme.foreground);
 
-            if state.best > 0 {
-                let best = format!("BEST RALLY {}", state.best);
-                let bx = vp.x(FIELD_W / 2.0) - (text_width(&best, sub) / 2) as i32;
-                text(canvas, &best, bx, vp.y(400.0), sub, theme.accent);
+            // The score, landing over the IV chord.
+            if shown(REVEAL_DETAIL) {
+                let detail = format!(
+                    "{} {}-{}   LONGEST RALLY {}",
+                    state.difficulty.label(),
+                    state.score_left,
+                    state.score_right,
+                    state.longest_rally
+                );
+                centred_over_net(canvas, &detail, 360.0, sub, theme.foreground, theme, vp);
             }
 
-            for (i, line) in ["ENTER TO PLAY AGAIN", "ESC TO QUIT"].iter().enumerate() {
-                let lx = vp.x(FIELD_W / 2.0) - (text_width(line, sub) / 2) as i32;
-                text(
-                    canvas,
-                    line,
-                    lx,
-                    vp.y(480.0 + i as f32 * 34.0),
-                    sub,
-                    theme.muted,
-                );
+            // The record, over the V. Last of the numbers, because it is
+            // the one worth pausing on.
+            if state.best > 0 && shown(REVEAL_BEST) {
+                let best = format!("BEST RALLY {}", state.best);
+                centred_over_net(canvas, &best, 400.0, sub, theme.accent, theme, vp);
+            }
+
+            // ★ The invitation, with the resolution. It arrives last on
+            // purpose: the player should hear the ending before being
+            // asked what to do next.
+            //
+            // ⚠️ ENTER and ESC still WORK from frame one — this gates
+            // only the drawing. A player who knows the keys is never made
+            // to wait for a screen to finish talking, which is the
+            // difference between a celebration and a cutscene.
+            if shown(REVEAL_PROMPT) {
+                for (i, line) in ["ENTER TO PLAY AGAIN", "ESC TO QUIT"].iter().enumerate() {
+                    centred_over_net(
+                        canvas,
+                        line,
+                        480.0 + i as f32 * 34.0,
+                        sub,
+                        theme.muted,
+                        theme,
+                        vp,
+                    );
+                }
             }
         }
         _ => {}
@@ -415,7 +536,11 @@ mod tests {
     /// reintroduce it.
     #[test]
     fn the_font_covers_everything_the_game_can_display() {
-        for ch in ('A'..='Z').chain('0'..='9').chain([' ', '-']) {
+        // ⚠️ `=` is in this list because of Pixel Break: its volume hint
+        // rendered as " LOUDER" for a whole session, silently dropping
+        // the one character the line exists to teach. A missing glyph
+        // does not panic — it draws nothing.
+        for ch in ('A'..='Z').chain('0'..='9').chain([' ', '-', '=']) {
             assert!(glyph(ch).is_some(), "font is missing {ch:?}");
         }
 
@@ -429,6 +554,8 @@ mod tests {
             "YOU LOSE".to_string(),
             "ENTER TO PLAY AGAIN".to_string(),
             "ESC TO QUIT".to_string(),
+            "MOVE   UP DOWN   P PAUSE".to_string(),
+            "SOUND   M MUTE   - QUIETER   = LOUDER".to_string(),
         ];
         for d in Difficulty::ALL {
             strings.push(d.label().to_string());
@@ -570,4 +697,126 @@ mod tests {
             "a rally worth remarking on should show its length"
         );
     }
+    #[test]
+    fn the_reveal_finishes_inside_the_fanfare() {
+        // The screen and the music must land together. If the prompt
+        // appeared after the last chord faded, the player would be left
+        // looking at a settled picture in silence, waiting — the exact
+        // "not enough reward" feeling the fanfare was grown to fix.
+        assert!(REVEAL_DETAIL < REVEAL_BEST);
+        assert!(REVEAL_BEST < REVEAL_PROMPT);
+        assert!(
+            REVEAL_PROMPT < MATCH_WON_SECONDS,
+            "the prompt lands at {REVEAL_PROMPT}s but the music ends at {MATCH_WON_SECONDS}s"
+        );
+        // And the held chord must still be ringing when it does — that
+        // is what makes the prompt part of the ending rather than an
+        // afterthought.
+        assert!(
+            MATCH_WON_SECONDS - REVEAL_PROMPT > 1.0,
+            "the resolution should still be ringing under the prompt"
+        );
+    }
+
+    #[test]
+    fn a_loss_shows_everything_at_once() {
+        // ⚠️ The asymmetry is deliberate and easy to "tidy up" later.
+        // Staging a defeat is dwelling on it; the player wants ENTER.
+        let mut s = GameState::new();
+        s.begin();
+        s.score_right = MATCH_POINT - 1;
+        s.award(Side::Right);
+        assert!(s.is_over());
+        assert_eq!(s.over_elapsed, 0.0, "the clock starts at zero");
+
+        // ⚠️ Compared against ITSELF LATER, not against a blank frame:
+        // the `veil` repaints all 691,200 pixels, so a blank baseline
+        // reports "everything differs" and can see nothing at all. The
+        // controlled pair is the same screen at two times.
+        const W: u32 = 960;
+        const H: u32 = 720;
+        let at_zero = frame_of(&s, W, H);
+        s.over_elapsed = MATCH_WON_SECONDS + 1.0;
+        let much_later = frame_of(&s, W, H);
+        assert_eq!(
+            differing(&at_zero, &much_later),
+            0,
+            "a loss must not stage anything: its screen never changes"
+        );
+    }
+
+    #[test]
+    fn the_win_screen_fills_in_as_the_music_plays() {
+        // The reveal must actually progress — a staged screen that never
+        // advances is just a screen missing its text.
+        let mut s = GameState::new();
+        s.begin();
+        s.score_left = MATCH_POINT - 1;
+        s.best = 42;
+        s.award(Side::Left);
+
+        // ⚠️ Each stage is compared against the PREVIOUS one — a
+        // controlled pair. A blank baseline is useless here: `veil`
+        // repaints every pixel, so "differs from blank" is always the
+        // whole screen and would hide any amount of missing text.
+        const W: u32 = 960;
+        const H: u32 = 720;
+
+        let at_zero = frame_of(&s, W, H);
+        s.over_elapsed = REVEAL_DETAIL + 0.01;
+        let with_detail = frame_of(&s, W, H);
+        s.over_elapsed = REVEAL_BEST + 0.01;
+        let with_best = frame_of(&s, W, H);
+        s.over_elapsed = REVEAL_PROMPT + 0.01;
+        let complete = frame_of(&s, W, H);
+
+        // Something is on screen from the first frame — the result.
+        assert_ne!(
+            differing(&at_zero, &blank(W, H)),
+            0,
+            "YOU WIN lands immediately"
+        );
+        // And each beat adds to it.
+        assert!(
+            differing(&at_zero, &with_detail) > 0,
+            "the score arrives on the IV chord"
+        );
+        assert!(
+            differing(&with_detail, &with_best) > 0,
+            "the record arrives on the V"
+        );
+        assert!(
+            differing(&with_best, &complete) > 0,
+            "the prompt arrives with the resolution"
+        );
+        // The reveal is monotonic: nothing that appeared may vanish
+        // again. Every earlier frame's lit text must still be lit.
+        assert!(
+            differing(&at_zero, &complete) > differing(&at_zero, &with_detail),
+            "the screen fills in rather than swapping"
+        );
+    }
+
+    #[test]
+    fn the_end_clock_only_runs_when_the_match_is_over() {
+        let mut s = GameState::new();
+        s.begin();
+        s.tick_over(0.5);
+        assert_eq!(s.over_elapsed, 0.0, "not over: the clock must not run");
+
+        s.score_left = MATCH_POINT - 1;
+        s.award(Side::Left);
+        s.tick_over(0.5);
+        assert_eq!(s.over_elapsed, 0.5);
+
+        // A clock going backwards must not unwind the reveal.
+        s.tick_over(-1.0);
+        s.tick_over(f32::NAN);
+        assert_eq!(s.over_elapsed, 0.5, "a bad dt is no time passing");
+
+        // And a restart puts it back.
+        s.restart();
+        assert_eq!(s.over_elapsed, 0.0, "restart clears the end clock");
+    }
+
 }

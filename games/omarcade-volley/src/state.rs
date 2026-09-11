@@ -374,6 +374,18 @@ pub struct GameState {
     /// so the headless harnesses see 0 and stay deterministic.
     pub best: u32,
 
+    /// Seconds since the match ended, for the end screen's staged reveal.
+    ///
+    /// ⚠️ A plain field rather than data inside `Phase::Over`, for the
+    /// reason pause is a flag rather than a phase: it is ORTHOGONAL to
+    /// which phase we are in, and burying a float in the variant makes
+    /// `Phase::Over { winner }` stop being comparable — several tests
+    /// assert on exactly that.
+    ///
+    /// Meaningless outside `Phase::Over`; reset by `award` when the match
+    /// ends and by `restart`, so it always counts from the last point.
+    pub over_elapsed: f32,
+
     /// Sounds raised this frame, drained once per frame by the caller.
     ///
     /// Capped at [`MAX_CUES`]; see there for why the ceiling is this low.
@@ -427,6 +439,7 @@ impl GameState {
             longest_rally: 0,
             serving: Side::Left,
             best: 0,
+            over_elapsed: 0.0,
             cues: Vec::new(),
             trail: Vec::new(),
         }
@@ -440,6 +453,18 @@ impl GameState {
     pub fn push_cue(&mut self, cue: Cue) {
         if self.cues.len() < MAX_CUES {
             self.cues.push(cue);
+        }
+    }
+
+    /// Advance the end screen's clock.
+    ///
+    /// ⚠️ Called from the frame loop, NOT from the fixed simulation step:
+    /// `Phase::Over` runs no physics at all, so nothing inside `step`
+    /// would ever reach it. That is also why this takes a real `dt`
+    /// rather than assuming a tick.
+    pub fn tick_over(&mut self, dt: f32) {
+        if matches!(self.phase, Phase::Over { .. }) && dt.is_finite() && dt > 0.0 {
+            self.over_elapsed += dt;
         }
     }
 
@@ -525,6 +550,7 @@ impl GameState {
             // at the single most important moment in the game, and the
             // match result already says who took the point.
             self.push_cue(Cue::MatchOver { won: to_player });
+            self.over_elapsed = 0.0;
             self.phase = Phase::Over { winner: side };
             self.park_ball();
         } else {

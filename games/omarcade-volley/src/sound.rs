@@ -135,25 +135,82 @@ const POINT_TONE: f32 = 0.20;
 const POINT_INTERVAL: f32 = 3.0 / 2.0;
 const POINT_GAP: f32 = 0.10;
 
-// ── match over ─────────────────────────────────────────────
-/// Three notes. Won is a rising triad, lost is the same shape falling.
+// ── ★ THE MATCH WON — the fanfare ──────────────────────────
+/// I-IV-V-I: four chords, the last resolving to the octave and held.
 ///
-/// Longer and louder than a point, because it is the end of the match and
-/// nothing follows it — there is no next rally for it to get in the way
-/// of, which is the constraint every other sound here is shaped by.
+/// ⚠️ This replaced a three-note rising triad that ran 0.58 s. Brian
+/// played it and said the win was "too short and not enough reward" —
+/// and the comparison he reached for was Pixel Break, whose victory runs
+/// 4.06 s. He was right, and the fix is not "make it louder": it is that
+/// a sequence needs a RESOLUTION to read as an ending, and three notes
+/// climbing away from the root never resolve. They stop.
+///
+/// ⚠️ The progression is not a flourish — it is the most resolved
+/// sequence in common practice, which is why every arcade fanfare since
+/// the 70s reaches for it. Pixel Break's victory is the same four chords
+/// and this is deliberately the same music, because the suite should
+/// sound like one cabinet rather than three unrelated games.
+///
+/// ⚠️ Held to about four seconds and no longer. 70s arcade "music" was
+/// fanfares, not songs — Space Invaders was four descending notes — and
+/// a tune long enough to hum is a tune too long to hear twice. That
+/// matters more in Volley than in Breakout: a match takes a couple of
+/// minutes and can be replayed with ENTER, so this is heard far more
+/// often than a ten-level playthrough's ending.
 const MATCH_HZ: f32 = 262.0;
-const MATCH_LEN: f32 = 0.26;
-const MATCH_LEVEL: f32 = 0.34;
-const MATCH_TONE: f32 = 0.24;
-const MATCH_GAP: f32 = 0.16;
-/// A major triad climbing, used in order for a win and reversed for a
-/// loss. The loss keeps the major third rather than going minor: this is
-/// an arcade cabinet, not a requiem, and the falling direction already
-/// carries the meaning.
-const MATCH_STEPS: [f32; 3] = [1.0, 5.0 / 4.0, 3.0 / 2.0];
+/// One beat. Three of these set the progression up.
+///
+/// ⚠️ Public because the win screen's staged reveal is timed to it — the
+/// lines land ON the chords. Deriving the screen from the music means
+/// retuning the fanfare moves both together rather than leaving them to
+/// drift apart silently.
+pub const MATCH_BEAT: f32 = 0.52;
+const MATCH_GAP: f32 = MATCH_BEAT;
+const MATCH_LEN: f32 = 0.60;
+/// The last chord, held far longer than the three that set it up. ★ THIS
+/// IS THE "TA-DA" — the held resolution is the entire difference between
+/// a flourish and an ending, and it is what the old three-note version
+/// had no room for.
+const MATCH_HOLD: f32 = 2.00;
+/// ⚠️ Low because THIRTEEN notes sound nearly together here. A level that
+/// suits one struck note clips badly across a chord stack — the same
+/// reason Pixel Break's fanfare sits at 0.17 while its paddle hit is at
+/// 0.34. Pinned by `a_rendered_sound_is_audible_and_never_clips`.
+const MATCH_LEVEL: f32 = 0.17;
+const MATCH_TONE: f32 = 0.38;
+/// Two octaves above the resolution, quieter: the shine on top.
+const MATCH_SPARKLE: f32 = 0.45;
 
-/// The most notes any one sound uses — the match-over triad.
-const MAX_NOTES: usize = 3;
+/// How long the whole fanfare runs — three chords then the held
+/// resolution. ⚠️ `state::VICTORY_SECONDS` is matched to this so the
+/// screen and the music finish together.
+pub const MATCH_WON_SECONDS: f32 = MATCH_GAP * 3.0 + MATCH_HOLD;
+
+// ── the match lost ─────────────────────────────────────────
+/// ⚠️ Deliberately still SHORT, and left as it was.
+///
+/// Losing does not get a ceremony. Stretching this to match the win
+/// would not be generous, it would be dwelling — the player wants to hit
+/// ENTER and go again, and a four-second sequence standing between them
+/// and that is a punishment rather than an ending.
+const LOST_HZ: f32 = 262.0;
+const LOST_LEN: f32 = 0.26;
+const LOST_LEVEL: f32 = 0.34;
+const LOST_TONE: f32 = 0.24;
+const LOST_GAP: f32 = 0.16;
+/// A major triad, read downwards. It keeps the major third rather than
+/// going minor: this is an arcade cabinet, not a requiem, and the falling
+/// direction already carries the meaning.
+const LOST_STEPS: [f32; 3] = [1.0, 5.0 / 4.0, 3.0 / 2.0];
+
+/// The most notes any one sound uses — the fanfare's four triads plus
+/// its sparkle.
+///
+/// ⚠️ Grown from 3 with the fanfare. A fourteenth note would be dropped
+/// SILENTLY, which on a chord means one voice quietly missing rather than
+/// an error, so `no_sound_overflows_the_note_buffer` pins this against
+/// every shot rather than trusting the comment.
+const MAX_NOTES: usize = 13;
 
 // ─────────────────────────────────────────────────────────────────
 // The synthesis.
@@ -271,7 +328,8 @@ impl Shot {
             Shot::Wall => WALL_LEN,
             Shot::Serve => SERVE_GAP + SERVE_LEN,
             Shot::PointWon | Shot::PointLost => POINT_GAP + POINT_LEN,
-            Shot::MatchWon | Shot::MatchLost => MATCH_GAP * 2.0 + MATCH_LEN,
+            Shot::MatchWon => MATCH_WON_SECONDS,
+            Shot::MatchLost => LOST_GAP * 2.0 + LOST_LEN,
         }
     }
 }
@@ -373,24 +431,62 @@ impl Struck {
                 };
                 2
             }
-            Shot::MatchWon | Shot::MatchLost => {
-                let won = what == Shot::MatchWon;
-                for (i, slot) in n.iter_mut().enumerate() {
-                    // The same triad, read forwards or backwards.
-                    let step = if won {
-                        MATCH_STEPS[i]
-                    } else {
-                        MATCH_STEPS[MATCH_STEPS.len() - 1 - i]
-                    };
-                    *slot = Note {
-                        start: MATCH_GAP * i as f32,
-                        hz: MATCH_HZ * step,
-                        len: MATCH_LEN,
+            Shot::MatchWon => {
+                // Equal temperament: a semitone is the twelfth root of two.
+                let st = |semi: f32| MATCH_HZ * 2.0f32.powf(semi / 12.0);
+                let mut i = 0;
+                // I - IV - V, each a triad, each landing on the beat.
+                for (c, chord) in [[0.0, 4.0, 7.0], [5.0, 9.0, 12.0], [7.0, 11.0, 14.0]]
+                    .iter()
+                    .enumerate()
+                {
+                    for semi in chord {
+                        n[i] = Note {
+                            start: MATCH_GAP * c as f32,
+                            hz: st(*semi),
+                            len: MATCH_LEN,
+                            level: MATCH_LEVEL,
+                            tone: MATCH_TONE,
+                        };
+                        i += 1;
+                    }
+                }
+                // ★ The resolution: the octave, held. This is the ending.
+                let at = MATCH_GAP * 3.0;
+                for semi in [12.0, 16.0, 19.0] {
+                    n[i] = Note {
+                        start: at,
+                        hz: st(semi),
+                        len: MATCH_HOLD,
                         level: MATCH_LEVEL,
                         tone: MATCH_TONE,
                     };
+                    i += 1;
                 }
-                MATCH_STEPS.len()
+                // The shine on top, two octaves above and quieter.
+                n[i] = Note {
+                    start: at,
+                    hz: st(24.0),
+                    len: MATCH_HOLD * 0.7,
+                    level: MATCH_LEVEL * MATCH_SPARKLE,
+                    tone: MATCH_TONE,
+                };
+                i += 1;
+                i
+            }
+            Shot::MatchLost => {
+                // The triad, read downwards. Short on purpose — see
+                // LOST_STEPS.
+                for (i, step) in LOST_STEPS.iter().rev().enumerate() {
+                    n[i] = Note {
+                        start: LOST_GAP * i as f32,
+                        hz: LOST_HZ * step,
+                        len: LOST_LEN,
+                        level: LOST_LEVEL,
+                        tone: LOST_TONE,
+                    };
+                }
+                LOST_STEPS.len()
             }
         };
         (n, count)
@@ -616,20 +712,68 @@ mod tests {
     }
 
     #[test]
-    fn a_won_match_rises_and_a_lost_one_falls() {
-        let (won, n) = Struck::notes(Shot::MatchWon, 1.0);
-        let (lost, _) = Struck::notes(Shot::MatchLost, 1.0);
+    fn a_lost_match_falls() {
+        let (lost, n) = Struck::notes(Shot::MatchLost, 1.0);
         for i in 1..n {
-            assert!(won[i].hz > won[i - 1].hz, "the winning triad climbs");
             assert!(lost[i].hz < lost[i - 1].hz, "the losing triad falls");
         }
-        // The same three notes either way — it is one triad read in two
-        // directions, not two separately tuned chords that could drift.
-        let mut a: Vec<u32> = won[..n].iter().map(|x| x.hz as u32).collect();
-        let mut b: Vec<u32> = lost[..n].iter().map(|x| x.hz as u32).collect();
-        a.sort_unstable();
-        b.sort_unstable();
-        assert_eq!(a, b, "the same triad, reversed");
+    }
+
+    #[test]
+    fn the_fanfare_resolves_rather_than_just_stopping() {
+        // ★ The reason the win was rebuilt. Brian played the old
+        // three-note version and said it was "too short and not enough
+        // reward". The fix is not volume — it is that a sequence needs a
+        // RESOLUTION to read as an ending. Three notes climbing away from
+        // the root never resolve; they stop.
+        //
+        // So: the last chord must RETURN to the root (up an octave), and
+        // it must be HELD far longer than the chords that set it up.
+        let (n, count) = Struck::notes(Shot::MatchWon, 1.0);
+        let notes = &n[..count];
+
+        let last_start = notes.iter().map(|x| x.start).fold(0.0f32, f32::max);
+        let opening: Vec<&Note> = notes.iter().filter(|x| x.start == 0.0).collect();
+        let closing: Vec<&Note> = notes.iter().filter(|x| x.start == last_start).collect();
+
+        assert!(opening.len() >= 3, "the fanfare opens on a chord");
+        assert!(closing.len() >= 3, "and closes on one");
+
+        // The resolution is the opening root, an octave up.
+        let root = opening.iter().map(|x| x.hz).fold(f32::MAX, f32::min);
+        let resolved = closing.iter().map(|x| x.hz).fold(f32::MAX, f32::min);
+        let ratio = resolved / root;
+        assert!(
+            (ratio - 2.0).abs() < 0.02,
+            "the last chord must resolve to the octave, got {ratio:.3}x"
+        );
+
+        // ★ And it must be HELD. This is the "ta-da" — without it the
+        // fourth chord is just a fourth chord.
+        let held = closing.iter().map(|x| x.len).fold(0.0f32, f32::max);
+        let setup = opening.iter().map(|x| x.len).fold(0.0f32, f32::max);
+        assert!(
+            held > setup * 2.0,
+            "the resolution must be held: {held}s against a {setup}s chord"
+        );
+    }
+
+    #[test]
+    fn the_win_is_a_real_ending_and_the_loss_is_not() {
+        // The asymmetry is the point, and it is easy to "tidy up" by
+        // accident later. Losing does not get a ceremony: the player
+        // wants to hit ENTER and go again, and a four-second sequence
+        // between them and that is a punishment rather than an ending.
+        let won = Shot::MatchWon.length();
+        let lost = Shot::MatchLost.length();
+        assert!(
+            won > lost * 3.0,
+            "the win should dwarf the loss: {won}s against {lost}s"
+        );
+        // Long enough to be an ending, short enough to hear twice. 70s
+        // arcade music was fanfares, not songs.
+        assert!((3.0..=5.0).contains(&won), "the fanfare runs {won}s");
+        assert!(lost < 1.0, "the loss runs {lost}s");
     }
 
     #[test]
@@ -751,5 +895,4 @@ mod tests {
             }
         }
     }
-
 }

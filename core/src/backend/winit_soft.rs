@@ -390,6 +390,10 @@ fn translate_key(code: KeyCode) -> Option<Key> {
         KeyCode::KeyM => Key::M,
         KeyCode::Minus | KeyCode::NumpadSubtract => Key::Minus,
         KeyCode::Equal | KeyCode::NumpadAdd => Key::Equals,
+        // ★ The developer key. Compiled out of release builds entirely —
+        // see `Key::F8`.
+        #[cfg(debug_assertions)]
+        KeyCode::F8 => Key::F8,
         _ => return None,
     })
 }
@@ -416,5 +420,18 @@ mod tests {
     fn unmapped_keys_are_dropped() {
         assert_eq!(translate_key(KeyCode::F7), None);
         assert_eq!(translate_key(KeyCode::KeyQ), None);
+    }
+
+    /// ★ The developer key reaches a debug build and nothing else does.
+    ///
+    /// ⚠️ This test can only ever run in debug — `cargo test` is a debug
+    /// profile — so it proves the key ARRIVES, not that it is absent from
+    /// release. The absence is enforced by `#[cfg(debug_assertions)]` on
+    /// the variant itself: in release there is no `Key::F8` to name, so a
+    /// release build that tried to use it would not compile.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_developer_key_is_delivered_in_debug() {
+        assert_eq!(translate_key(KeyCode::F8), Some(Key::F8));
     }
 }

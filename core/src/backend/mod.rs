@@ -443,6 +443,23 @@ pub enum Key {
     Minus,
     /// Volume up. Backend-handled, like [`Key::M`].
     Equals,
+    /// ★ **A DEVELOPER KEY, AND IT DOES NOT EXIST IN A RELEASE BUILD.**
+    ///
+    /// Gated at the seam rather than in a game, and deliberately so: if
+    /// the variant existed in release, a game could still wire something
+    /// to it. With the variant compiled out, a release binary has no way
+    /// to express the key at all — the cheat is not merely unreachable,
+    /// it is unrepresentable.
+    ///
+    /// A function key because no player presses one by accident, and
+    /// because the movement keys already claim A/D/W/S. F7 stays
+    /// unmapped on purpose — it is the canary in
+    /// `unmapped_keys_are_dropped`.
+    ///
+    /// What a game does with it is the game's business; core only
+    /// promises to deliver it in debug builds.
+    #[cfg(debug_assertions)]
+    F8,
 }
 
 /// What the platform tells the game about.

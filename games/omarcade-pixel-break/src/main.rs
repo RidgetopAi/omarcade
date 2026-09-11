@@ -81,6 +81,14 @@ struct PixelBreak {
     /// title, and resuming must land back in the one you left. See
     /// `omarcade_core::pause` for the full argument.
     pause: Pause,
+    /// ★ **Whether this run used the developer skip.** Debug builds only.
+    ///
+    /// A skipped run is never banked: Brian's real BEST must not be
+    /// overwritten by a run that did not earn it. The tally still DRAWS
+    /// in full, NEW BEST included — the screen tells the truth about the
+    /// run in front of it — but the score file is left alone.
+    #[cfg(debug_assertions)]
+    skipped: bool,
 }
 
 impl PixelBreak {
@@ -106,6 +114,8 @@ impl PixelBreak {
             sound: sound::Bank::register(audio),
             volume: VolumeIndicator::new(),
             pause: Pause::new(),
+            #[cfg(debug_assertions)]
+            skipped: false,
         }
     }
 
@@ -115,6 +125,14 @@ impl PixelBreak {
     /// written is not a reason to interrupt someone's game.
     fn bank_score(&mut self) {
         if self.recorded {
+            return;
+        }
+        // ★ A skipped run is watched, not recorded. Debug builds only —
+        // in release the flag does not exist and neither does the key
+        // that sets it.
+        #[cfg(debug_assertions)]
+        if self.skipped {
+            self.recorded = true;
             return;
         }
         self.recorded = true;
@@ -180,6 +198,38 @@ impl Game for PixelBreak {
             // ball — checks the pause in its own arm below, because the
             // ball must stay HELD rather than merely not-fired.
             InputEvent::KeyDown(_) if self.pause.is_paused() => return true,
+
+            // ★ **THE DEVELOPER SKIP. DEBUG BUILDS ONLY.**
+            //
+            // Built because the ending takes 68.9 minutes to reach at the
+            // FLOOR and Brian had tried three times without seeing the
+            // thing he commissioned. `cargo run -p omarcade-pixel-break`,
+            // tap to level 10, play it for real.
+            //
+            // ⚠️ It kills the remaining bricks and lets `check_win` fire
+            // on the next physics tick, rather than calling
+            // `advance_level` from here. That keeps ONE entry point into
+            // the level transition: the skip takes the genuine path, with
+            // the real cue, the real clear bonus, and the real
+            // `begin_victory` on level 10. A second caller would be a
+            // second thing to keep in step, and the ending is exactly the
+            // thing that must not be a special case of itself.
+            //
+            // ⚠️ Only while `Playing`. During `Clearing` or `Victory` a
+            // press would skip a level the cascade has not finished
+            // handing over.
+            //
+            // ⚠️ No per-brick score is awarded, because no bricks were
+            // broken. The tally shows what the run actually earned.
+            #[cfg(debug_assertions)]
+            InputEvent::KeyDown(Key::F8) => {
+                if self.state.phase == Phase::Playing {
+                    self.skipped = true;
+                    for brick in &mut self.state.bricks {
+                        brick.hits = 0;
+                    }
+                }
+            }
 
             InputEvent::KeyDown(Key::Left) => self.left_held = true,
             InputEvent::KeyUp(Key::Left) => self.left_held = false,
@@ -452,4 +502,84 @@ mod pause_tests {
         g.pause.resume();
         assert!(!g.pause.is_paused());
     }
+
+    // ---- the developer skip (debug builds only) ----
+
+    /// ★ The skip clears the field, and the level advances through the
+    /// REAL path — `check_win` on the next physics tick, not a second
+    /// caller of `advance_level`.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_skip_clears_the_field_and_advances() {
+        let mut g = playing();
+        assert!(g.state.bricks_remaining() > 0);
+        let level = g.state.level;
+
+        g.on_input(InputEvent::KeyDown(Key::F8));
+        assert_eq!(g.state.bricks_remaining(), 0, "the field was not cleared");
+
+        // One frame of real physics is what actually advances it.
+        let mut audio = AudioSystem::new();
+        g.update(1.0 / 60.0, &mut audio.handle());
+        assert_ne!(g.state.phase, Phase::Playing, "the level did not transition");
+        assert!(
+            g.state.score > 0,
+            "the level-clear bonus was not awarded — the skip bypassed advance_level"
+        );
+        let _ = level;
+    }
+
+    /// ⚠️ Only while Playing. During the cascade a press would skip a
+    /// level the transition has not finished handing over.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_skip_is_refused_outside_play() {
+        let mut g = playing();
+        g.state.phase = Phase::Clearing;
+        let before = g.state.bricks_remaining();
+        g.on_input(InputEvent::KeyDown(Key::F8));
+        assert_eq!(g.state.bricks_remaining(), before, "the skip fired mid-cascade");
+        assert!(!g.skipped, "a refused skip must not taint the run");
+    }
+
+    /// ⚠️ And it is swallowed while paused, like every other press.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_skip_is_swallowed_while_paused() {
+        let mut g = playing();
+        g.on_input(InputEvent::KeyDown(Key::P));
+        let before = g.state.bricks_remaining();
+        g.on_input(InputEvent::KeyDown(Key::F8));
+        assert_eq!(g.state.bricks_remaining(), before, "the skip fired while paused");
+    }
+
+    /// ★★ **The one that protects Brian's marquee.** A skipped run is
+    /// watched, never recorded.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_skipped_run_is_never_banked() {
+        let mut g = playing();
+        g.on_input(InputEvent::KeyDown(Key::F8));
+        assert!(g.skipped);
+
+        let best_before = g.state.best;
+        g.state.phase = Phase::Lost;
+        g.state.score = 999_999;
+        g.bank_score();
+
+        assert_eq!(
+            g.state.best, best_before,
+            "a skipped run overwrote the best score"
+        );
+    }
+
+    /// ⚠️ An untouched run still banks — the taint must be the skip, not
+    /// the mere existence of the flag.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn an_ordinary_run_still_banks() {
+        let g = playing();
+        assert!(!g.skipped, "a fresh run must not be marked skipped");
+    }
+
 }

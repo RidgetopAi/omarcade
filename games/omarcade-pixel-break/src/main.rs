@@ -29,7 +29,7 @@ mod state;
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::scores::ScoreFile;
 use omarcade_core::{
-    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Theme, VolumeIndicator,
+    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Pause, Theme, VolumeIndicator,
 };
 
 use physics::Accumulator;
@@ -73,6 +73,14 @@ struct PixelBreak {
     /// handle and `render` deliberately never sees one. The type carries
     /// its own copy of the volume for exactly that reason.
     volume: VolumeIndicator,
+    /// Whether the game is held still, and the PAUSED overlay.
+    ///
+    /// ⚠️ A flag beside the game rather than a `Phase`, which is the one
+    /// place this game departs from "everything is a phase". Pause is
+    /// ORTHOGONAL to the phases: you pause Playing, or Ready, or the
+    /// title, and resuming must land back in the one you left. See
+    /// `omarcade_core::pause` for the full argument.
+    pause: Pause,
 }
 
 impl PixelBreak {
@@ -97,6 +105,7 @@ impl PixelBreak {
             recorded: false,
             sound: sound::Bank::register(audio),
             volume: VolumeIndicator::new(),
+            pause: Pause::new(),
         }
     }
 
@@ -132,6 +141,46 @@ impl Game for PixelBreak {
         match event {
             InputEvent::KeyDown(Key::Escape) => return false,
 
+            // ⚠️ **P, and only P.** Escape is quit, above — binding pause
+            // to the key a player might guess would throw away their run.
+            // The title screen says so, next to the volume keys.
+            //
+            // Refused on the title screen: there is nothing running to
+            // freeze there, and a player who paused it would be looking at
+            // a PAUSED overlay on a menu with no way to read what it is
+            // covering. Every other phase pauses, including the end
+            // screens — reading a final score in peace is a fair use of it.
+            InputEvent::KeyDown(Key::P) => {
+                if self.state.phase != Phase::Title {
+                    self.pause.toggle();
+                }
+            }
+
+            // ⚠️ **Everything else is swallowed while paused**, and this
+            // has to be a gate rather than a check inside each arm.
+            //
+            // Space is the reason. Hold it for the magnet, pause, then let
+            // go: without this the release would FIRE the held ball at a
+            // field the player cannot see, aimed by a paddle they cannot
+            // watch. It stays held instead, and its own three-second
+            // auto-release takes it from there once play resumes.
+            //
+            // Enter is the other: a paused game-over screen is a fair
+            // place to sit, and a stray Enter there would wipe the run
+            // before the player had finished reading it.
+            //
+            // ⚠️ Only KEY PRESSES are swallowed. A RELEASE is never an
+            // action — it only ever clears state — and swallowing the
+            // arrow KeyUps would leave `left_held` true after the player
+            // let go, so the paddle would set off on its own the moment
+            // play resumed with no key held. Releases fall through to
+            // their own arms and to `apply_direction`.
+            //
+            // The one release that IS an action — Space firing a held
+            // ball — checks the pause in its own arm below, because the
+            // ball must stay HELD rather than merely not-fired.
+            InputEvent::KeyDown(_) if self.pause.is_paused() => return true,
+
             InputEvent::KeyDown(Key::Left) => self.left_held = true,
             InputEvent::KeyUp(Key::Left) => self.left_held = false,
             InputEvent::KeyDown(Key::Right) => self.right_held = true,
@@ -158,8 +207,15 @@ impl Game for PixelBreak {
             }
             // Releasing fires whatever the magnet is holding. A no-op with
             // nothing held, which is every press outside a magnet.
+            //
+            // ⚠️ Not while paused: firing at a field the player cannot see,
+            // aimed by a paddle they cannot watch, is the opposite of what
+            // the magnet is for. The ball stays held and its own
+            // three-second auto-release takes over once play resumes.
             InputEvent::KeyUp(Key::Space) => {
-                self.state.release_held_balls();
+                if !self.pause.is_paused() {
+                    self.state.release_held_balls();
+                }
             }
 
             // Enter restarts, but only once the game has actually
@@ -169,6 +225,11 @@ impl Game for PixelBreak {
                     self.state.restart();
                     // Arm the next run, or its score would never be banked.
                     self.recorded = false;
+                    // ⚠️ A restart must never inherit a pause. Enter is
+                    // unreachable while paused today, but a fresh game
+                    // frozen behind a PAUSED overlay reads as a hang, and
+                    // that must not depend on the input gate above.
+                    self.pause.resume();
                 }
             }
 
@@ -185,6 +246,16 @@ impl Game for PixelBreak {
         // over, so this must advance in every phase — the S7 rule that
         // left a shake stuck at 100% when it ticked inside `Playing`.
         self.volume.update(audio, dt);
+
+        // ⚠️ AFTER the volume tick, and that order is the whole point.
+        // The volume keys are handled by the backend and answer in every
+        // phase; pausing must not be the one state where they stop being
+        // answered, or a mute pressed while paused would leave the
+        // indicator frozen on screen with nothing to decay it. Everything
+        // below this line is the simulation, and the simulation stops.
+        if self.pause.is_paused() {
+            return;
+        }
 
         physics::step(&mut self.state, &mut self.accumulator, dt);
 
@@ -205,8 +276,23 @@ impl Game for PixelBreak {
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
         render::draw(&mut self.state, canvas, &self.theme);
-        // Drawn last so it sits above the field, and by `main` rather than
-        // by `render` because it is not part of the game's own picture.
+        // ⚠️ The scrim goes down BEFORE the volume indicator, so a volume
+        // change made while paused stays legible instead of being dimmed
+        // along with the field it is sitting on. Both are drawn by `main`
+        // rather than by `render`, because neither is part of the game's
+        // own picture.
+        // ⚠️ Centred on the PLAYFIELD, not the window. The window centre
+        // (y=360) sits just under the brick field's fixed bottom edge at
+        // y=288 — right in the airspace the ball occupies, which a render
+        // showed immediately and no test could. The clear band runs from
+        // the bricks (288) to the paddle (660); its middle is 474.
+        let band_mid = ((state::BRICK_TOP
+            + (state::BRICK_ROWS as f32 - 1.0) * (state::BRICK_H + state::BRICK_GAP)
+            + state::BRICK_H)
+            + state::PADDLE_Y)
+            / 2.0;
+        self.pause
+            .draw_centred_at(canvas, &self.theme, band_mid as i32);
         self.volume.draw(canvas, &self.theme);
     }
 }
@@ -227,4 +313,143 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run(game, audio)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+    use omarcade_core::geom::Vec2;
+
+    /// ⚠️ `AudioSystem::new` opens no device — it is pure until `start`,
+    /// so the whole game harness is constructible in a test and the input
+    /// wiring can be driven with real events rather than reasoned about.
+    fn game() -> PixelBreak {
+        let mut audio = AudioSystem::new();
+        PixelBreak::new(Theme::default(), &mut audio)
+    }
+
+    /// A game past the title, mid-play, which is where a pause matters.
+    fn playing() -> PixelBreak {
+        let mut g = game();
+        g.state.start_from_title();
+        g.state.launch();
+        assert_eq!(g.state.phase, Phase::Playing);
+        g
+    }
+
+    #[test]
+    fn p_pauses_and_p_resumes() {
+        let mut g = playing();
+        assert!(!g.pause.is_paused(), "a game must not start paused");
+        g.on_input(InputEvent::KeyDown(Key::P));
+        assert!(g.pause.is_paused(), "P must pause");
+        g.on_input(InputEvent::KeyDown(Key::P));
+        assert!(!g.pause.is_paused(), "P again must resume");
+    }
+
+    /// ⚠️ Escape is QUIT, in all three games. If pause ever starts
+    /// answering it, a player reaching for a pause loses their run.
+    #[test]
+    fn escape_still_quits_and_does_not_pause() {
+        let mut g = playing();
+        assert!(!g.on_input(InputEvent::KeyDown(Key::Escape)), "Escape must quit");
+        assert!(!g.pause.is_paused(), "Escape must never pause");
+    }
+
+    #[test]
+    fn the_title_screen_does_not_pause() {
+        let mut g = game();
+        assert_eq!(g.state.phase, Phase::Title);
+        g.on_input(InputEvent::KeyDown(Key::P));
+        assert!(
+            !g.pause.is_paused(),
+            "there is nothing running to freeze on the title screen"
+        );
+    }
+
+    /// ★ **The bug this nearly shipped with.** Pause while holding Left,
+    /// let go while paused, resume: if the KeyUp is swallowed by the pause
+    /// gate then `left_held` stays true and the paddle sets off on its own
+    /// with no key held. A release is never an action — it only ever
+    /// clears state — so only key PRESSES may be swallowed.
+    #[test]
+    fn releasing_an_arrow_while_paused_does_not_strand_the_paddle() {
+        let mut g = playing();
+        g.on_input(InputEvent::KeyDown(Key::Left));
+        assert!(g.left_held);
+
+        g.on_input(InputEvent::KeyDown(Key::P));
+        assert!(g.pause.is_paused());
+
+        g.on_input(InputEvent::KeyUp(Key::Left));
+        assert!(!g.left_held, "the release was swallowed by the pause gate");
+
+        g.on_input(InputEvent::KeyDown(Key::P));
+        assert_eq!(
+            g.state.paddle.dir, 0.0,
+            "the paddle resumed moving with no key held"
+        );
+    }
+
+    /// ⚠️ A press IS swallowed, which is the other half of the same rule.
+    #[test]
+    fn a_pause_swallows_gameplay_presses() {
+        let mut g = playing();
+        g.on_input(InputEvent::KeyDown(Key::P));
+        g.on_input(InputEvent::KeyDown(Key::Left));
+        assert!(!g.left_held, "a press while paused must not reach the game");
+    }
+
+    /// ⚠️ Hold Space for the magnet, pause, release: the ball must stay
+    /// HELD rather than firing at a field the player cannot see, aimed by
+    /// a paddle they cannot watch.
+    #[test]
+    fn releasing_space_while_paused_keeps_the_ball_held() {
+        let mut g = playing();
+        // Put a ball in the magnet's grip directly — this is about the
+        // input wiring, not about how a catch happens.
+        g.state.balls[0].held_for = Some(1.0);
+        g.state.balls[0].vel = Vec2::ZERO;
+
+        g.on_input(InputEvent::KeyDown(Key::P));
+        g.on_input(InputEvent::KeyUp(Key::Space));
+        assert!(
+            g.state.balls[0].is_held(),
+            "a paused release fired the ball blind"
+        );
+
+        // And once resumed, the same release does fire it.
+        g.on_input(InputEvent::KeyDown(Key::P));
+        g.on_input(InputEvent::KeyUp(Key::Space));
+        assert!(!g.state.balls[0].is_held(), "resuming must restore the release");
+    }
+
+    /// ⚠️ A paused game-over screen is a fair place to sit and read a
+    /// final score. A stray Enter must not wipe the run first.
+    #[test]
+    fn enter_cannot_restart_a_paused_game_over() {
+        let mut g = playing();
+        g.state.phase = Phase::Lost;
+        g.state.score = 4321;
+
+        g.on_input(InputEvent::KeyDown(Key::P));
+        g.on_input(InputEvent::KeyDown(Key::Enter));
+        assert_eq!(g.state.phase, Phase::Lost, "Enter restarted a paused game");
+        assert_eq!(g.state.score, 4321, "the run was wiped while paused");
+    }
+
+    /// ⚠️ And a restart must never inherit a pause: a fresh game frozen
+    /// behind a PAUSED overlay reads as a hang.
+    #[test]
+    fn restarting_clears_the_pause() {
+        let mut g = playing();
+        g.state.phase = Phase::Lost;
+        g.on_input(InputEvent::KeyDown(Key::Enter));
+        assert!(!g.pause.is_paused());
+
+        // Even if a pause somehow survived to the restart itself.
+        g.pause.toggle();
+        g.pause.resume();
+        assert!(!g.pause.is_paused());
+    }
 }

@@ -425,6 +425,21 @@ fn main() {
         // The indicator scenes want an ordinary mid-game field behind
         // them — the point is whether it reads OVER the game, not on an
         // empty screen.
+        // ⚠️ A CONTROLLED PAIR (L044): `paused` is the overlay, `unpaused`
+        // is the SAME frame without it. Judging whether a 150-alpha scrim
+        // still leaves the board readable is impossible from one picture —
+        // "can you still read the bricks" only means something against the
+        // bricks undimmed.
+        "paused" | "unpaused" => {
+            s.launch();
+            s.level = 7;
+            s.score = 12_480;
+            s.lives = 2;
+            for _ in 0..240 {
+                physics::step_fixed(&mut s);
+            }
+            fill_trail(&mut s);
+        }
         "volume" | "volume-muted" | "volume-full" => {
             s.launch();
             s.level = 4;
@@ -451,6 +466,22 @@ fn main() {
         // `volume-muted` at the same setting muted. Judging whether MUTED
         // reads differently from a quiet bar needs both in front of you —
         // a single frame cannot show a difference.
+        // ⚠️ Drawn BEFORE the volume indicator, exactly as `main` does it,
+        // so a volume change made while paused stays legible rather than
+        // being dimmed along with the field under it.
+        if scene == "paused" {
+            let mut pause = omarcade_core::Pause::new();
+            pause.toggle();
+            // ⚠️ The same centre `main` uses — the middle of the clear band
+            // between the bricks and the paddle, NOT the window centre.
+            let band_mid = ((state::BRICK_TOP
+                + (state::BRICK_ROWS as f32 - 1.0) * (state::BRICK_H + state::BRICK_GAP)
+                + state::BRICK_H)
+                + state::PADDLE_Y)
+                / 2.0;
+            pause.draw_centred_at(&mut c, &theme, band_mid as i32);
+        }
+
         if let Some(vol) = volume_scene(&scene) {
             vol.draw(&mut c, &theme);
         }

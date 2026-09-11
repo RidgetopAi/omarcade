@@ -20,6 +20,7 @@ pub mod backend;
 pub mod ease;
 pub mod geom;
 pub mod particles;
+pub mod pause;
 pub mod scores;
 pub mod sprite;
 pub mod text;
@@ -27,6 +28,7 @@ pub mod volume;
 pub mod theme;
 
 pub use audio::{Audio, AudioSystem, SoundId, Voice, VoiceId, VoiceParams};
+pub use pause::Pause;
 pub use volume::VolumeIndicator;
 pub use backend::{Backend, Canvas, Color, Game, InputEvent, Key};
 pub use geom::{Axis, Rect, Vec2};

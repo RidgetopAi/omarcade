@@ -881,7 +881,14 @@ fn draw_title(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Vi
     // until this screen asked for it: "= LOUDER" rendered as " LOUDER",
     // silently dropping the one character the hint exists to teach.
     let ks = (vp.scale * 2.0).max(1.0) as u32;
-    for (i, line) in ["MOVE   ARROWS OR A D", "SOUND   M MUTE   - QUIETER   = LOUDER"]
+    // ⚠️ P is on this screen because it is otherwise UNDISCOVERABLE:
+    // nothing else in the suite uses it, and the key a player would
+    // reach for instead — Escape — quits. A pause nobody can find is
+    // the same as no pause at all.
+    for (i, line) in [
+        "MOVE   ARROWS OR A D   P PAUSE",
+        "SOUND   M MUTE   - QUIETER   = LOUDER",
+    ]
         .iter()
         .enumerate()
     {

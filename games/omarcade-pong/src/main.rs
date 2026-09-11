@@ -16,7 +16,7 @@ mod state;
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::scores::ScoreFile;
 use omarcade_core::{
-    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Theme, VolumeIndicator,
+    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Pause, Theme, VolumeIndicator,
 };
 
 use ai::Opponent;
@@ -54,6 +54,12 @@ struct Pong {
     /// phase alone would rewrite the file sixty times a second; this
     /// makes it an edge, not a level.
     recorded: bool,
+    /// Whether the match is held still, and the PAUSED overlay.
+    ///
+    /// ⚠️ A flag rather than a `Phase`: pause is orthogonal to Select /
+    /// Serve / Playing / Over, and resuming must land back in the one it
+    /// left. See `omarcade_core::pause`.
+    pause: Pause,
 }
 
 impl Pong {
@@ -74,6 +80,7 @@ impl Pong {
             down_held: false,
             scores,
             recorded: false,
+            pause: Pause::new(),
         };
         game.refresh_best();
         game
@@ -158,6 +165,24 @@ impl Game for Pong {
         match event {
             InputEvent::KeyDown(Key::Escape) => return false,
 
+            // ⚠️ **P, and only P.** Escape is quit, above.
+            //
+            // Refused on the select screen: nothing is running to freeze
+            // there, and a PAUSED overlay over a menu covers the very
+            // thing it would need the player to read.
+            InputEvent::KeyDown(Key::P) => {
+                if !matches!(self.state.phase, Phase::Select) {
+                    self.pause.toggle();
+                }
+            }
+
+            // ⚠️ Only key PRESSES are swallowed. A RELEASE only ever
+            // clears state, and swallowing the arrow KeyUps would leave
+            // `up_held` set after the player let go, so the paddle would
+            // set off on its own the moment the match resumed. Releases
+            // fall through to their own arms and to `apply_direction`.
+            InputEvent::KeyDown(_) if self.pause.is_paused() => return true,
+
             InputEvent::KeyDown(Key::Up) => {
                 self.up_held = true;
                 self.on_select_move(false);
@@ -178,6 +203,9 @@ impl Game for Pong {
                 self.opponent.reset(self.state.difficulty);
                 // Arm the next match, or its result is never banked.
                 self.recorded = false;
+                // ⚠️ A restart must never inherit a pause: a fresh match
+                // frozen behind a PAUSED overlay reads as a hang.
+                self.pause.resume();
             }
 
             _ => {}
@@ -192,6 +220,14 @@ impl Game for Pong {
         // points, not only during them.
         self.volume.update(audio, dt);
 
+        // ⚠️ AFTER the volume tick: the volume keys answer in every phase
+        // and pausing must not be the one state where they stop, or a
+        // mute pressed while paused would leave the indicator frozen on
+        // screen. Everything below is the simulation, and it stops.
+        if self.pause.is_paused() {
+            return;
+        }
+
         // The opponent decides before time advances, so its choice is
         // acted on by the same physics step the player's input is.
         self.opponent.update(&mut self.state, dt);
@@ -204,6 +240,16 @@ impl Game for Pong {
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
         render::draw(&self.state, canvas, &self.theme);
+        // ⚠️ The scrim goes down BEFORE the volume indicator, so a volume
+        // change made while paused stays legible instead of being dimmed
+        // with the field under it.
+        //
+        // ⚠️ Centred on the WINDOW here, unlike Pixel Break. Pong's ball
+        // crosses the whole field, so no band is permanently clear — but
+        // the scores sit at the top (y=46) and the hint at the bottom
+        // (y=694), and the middle is the one place the overlay collides
+        // with neither. Verified by rendering it.
+        self.pause.draw(canvas, &self.theme);
         self.volume.draw(canvas, &self.theme);
     }
 }
@@ -216,4 +262,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run(Pong::new(theme), AudioSystem::new())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+
+    fn game() -> Pong {
+        Pong::new(Theme::default())
+    }
+
+    /// A match in progress, which is where a pause matters.
+    fn playing() -> Pong {
+        let mut g = game();
+        g.state.phase = Phase::Playing;
+        g
+    }
+
+    #[test]
+    fn p_pauses_and_p_resumes() {
+        let mut g = playing();
+        assert!(!g.pause.is_paused(), "a match must not start paused");
+        g.on_input(InputEvent::KeyDown(Key::P));
+        assert!(g.pause.is_paused(), "P must pause");
+        g.on_input(InputEvent::KeyDown(Key::P));
+        assert!(!g.pause.is_paused(), "P again must resume");
+    }
+
+    /// ⚠️ Escape is QUIT. If pause ever starts answering it, a player
+    /// reaching for a pause loses their match.
+    #[test]
+    fn escape_still_quits_and_does_not_pause() {
+        let mut g = playing();
+        assert!(!g.on_input(InputEvent::KeyDown(Key::Escape)), "Escape must quit");
+        assert!(!g.pause.is_paused(), "Escape must never pause");
+    }
+
+    #[test]
+    fn the_select_screen_does_not_pause() {
+        let mut g = game();
+        assert!(matches!(g.state.phase, Phase::Select));
+        g.on_input(InputEvent::KeyDown(Key::P));
+        assert!(
+            !g.pause.is_paused(),
+            "there is nothing running to freeze on the select screen"
+        );
+    }
+
+    /// ★ Pause while holding Up, let go while paused, resume: if the
+    /// KeyUp is swallowed then `up_held` stays true and the paddle sets
+    /// off on its own with no key held.
+    #[test]
+    fn releasing_an_arrow_while_paused_does_not_strand_the_paddle() {
+        let mut g = playing();
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        assert!(g.up_held);
+
+        g.on_input(InputEvent::KeyDown(Key::P));
+        g.on_input(InputEvent::KeyUp(Key::Up));
+        assert!(!g.up_held, "the release was swallowed by the pause gate");
+    }
+
+    #[test]
+    fn a_pause_swallows_gameplay_presses() {
+        let mut g = playing();
+        g.on_input(InputEvent::KeyDown(Key::P));
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        assert!(!g.up_held, "a press while paused must not reach the game");
+    }
 }

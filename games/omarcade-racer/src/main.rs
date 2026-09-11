@@ -30,7 +30,7 @@ mod track;
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::scores::ScoreFile;
 use omarcade_core::{
-    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Roll, SoundId, Theme,
+    Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Pause, Roll, SoundId, Theme,
     VoiceId, VoiceParams, VolumeIndicator,
 };
 
@@ -87,6 +87,15 @@ struct Racer {
     theme: Theme,
     /// The volume readout, shared with the other two games.
     volume: VolumeIndicator,
+    /// Whether the run is held still, and the PAUSED overlay.
+    ///
+    /// ⚠️ A flag rather than a `race::Phase`: pause is orthogonal to the
+    /// countdown, qualifying, racing and the end screens, and resuming
+    /// must land back in the one it left. See `omarcade_core::pause`.
+    ///
+    /// ⚠️ `restart` rebuilds the whole struct through `Racer::new`, so a
+    /// restart gets a fresh, unpaused one for free.
+    pause: Pause,
     art: Art,
     road: Road,
     tuning: Tuning,
@@ -223,6 +232,7 @@ impl Racer {
         Racer {
             theme,
             volume: VolumeIndicator::new(),
+            pause: Pause::new(),
             art,
             road,
             tuning,
@@ -503,7 +513,12 @@ impl Racer {
         // The engine starts at the green light, not at the menu: a car
         // that is not running should not idle at the player through the
         // attract screen.
-        let should_run = !matches!(self.race.phase, Phase::Over(_) | Phase::Finished { .. });
+        // ⚠️ A paused run goes quiet the same way a finished one does,
+        // reusing this switch rather than adding a parallel one: an
+        // engine droning under a PAUSED overlay is the audio version of a
+        // frozen screen with nothing to say why.
+        let should_run = !self.pause.is_paused()
+            && !matches!(self.race.phase, Phase::Over(_) | Phase::Finished { .. });
         if should_run != self.engine_running {
             self.engine_running = should_run;
             if should_run {
@@ -676,6 +691,16 @@ impl Game for Racer {
             InputEvent::CloseRequested => return false,
             InputEvent::KeyDown(Key::Escape) => return false,
 
+            // ⚠️ **P, and only P.** Escape is quit, above.
+            InputEvent::KeyDown(Key::P) => self.pause.toggle(),
+
+            // ⚠️ Only key PRESSES are swallowed. A RELEASE only ever
+            // clears state — swallowing the KeyUps would leave the
+            // throttle or a steering key held after the player let go,
+            // and the car would drive off on its own the moment the run
+            // resumed. Releases fall through to their own arms.
+            InputEvent::KeyDown(_) if self.pause.is_paused() => return true,
+
             InputEvent::KeyDown(Key::Left) => self.left_held = true,
             InputEvent::KeyUp(Key::Left) => self.left_held = false,
             InputEvent::KeyDown(Key::Right) => self.right_held = true,
@@ -718,6 +743,22 @@ impl Game for Racer {
         // of the simulation's control flow, and a countdown or a finished
         // run must still answer the volume keys.
         self.volume.update(audio, dt);
+
+        // ⚠️ AFTER the volume tick, for the reason the comment above
+        // gives about the countdown: pausing must not be the one state
+        // where the volume keys stop being answered.
+        //
+        // ⚠️ `sound` still runs. That is the same rule this function is
+        // built around — sound is not hung off the simulation's control
+        // flow — and it is what makes a paused run go QUIET: `sound`
+        // reads the pause in its `should_run`, so the engine, tyres and
+        // surface stop exactly the way they do at the end of a run,
+        // rather than droning under a PAUSED overlay.
+        if self.pause.is_paused() {
+            self.sound(audio, None);
+            return;
+        }
+
         let event = self.simulate(dt);
         self.sound(audio, event);
     }
@@ -764,6 +805,16 @@ impl Game for Racer {
         // thing that ends you.
         let layout = hud::compose(&self.race, self.flash.as_ref(), &self.scoreboard());
         hud::draw(canvas, &self.theme, &layout, WIDTH, HEIGHT);
+
+        // ⚠️ Over the road and the HUD, but UNDER the volume indicator,
+        // so a volume change made while paused stays legible rather than
+        // being dimmed with the scene behind it.
+        //
+        // ⚠️ Centred on the WINDOW. The racer's HUD lives in the top-left
+        // corner and its flash line at 0.62h, so the middle is clear; the
+        // end banner IS centred, but a finished run is not a thing anyone
+        // pauses. Verified by rendering it.
+        self.pause.draw(canvas, &self.theme);
 
         // Above even the HUD: it is transient, and it answers a keypress
         // the player just made.
@@ -1424,4 +1475,92 @@ mod tests {
         }
         panic!("the recovery window never ended");
     }
+
+    // ---- pause ----
+
+    #[test]
+    fn p_pauses_and_p_resumes() {
+        let mut g = on_track();
+        assert!(!g.pause.is_paused(), "a run must not start paused");
+        g.on_input(InputEvent::KeyDown(Key::P));
+        assert!(g.pause.is_paused(), "P must pause");
+        g.on_input(InputEvent::KeyDown(Key::P));
+        assert!(!g.pause.is_paused(), "P again must resume");
+    }
+
+    /// ⚠️ Escape is QUIT. If pause ever starts answering it, a player
+    /// reaching for a pause throws away their run.
+    #[test]
+    fn escape_still_quits_and_does_not_pause() {
+        let mut g = on_track();
+        assert!(!g.on_input(InputEvent::KeyDown(Key::Escape)), "Escape must quit");
+        assert!(!g.pause.is_paused(), "Escape must never pause");
+    }
+
+    /// ★ Pause while holding the throttle, let go while paused, resume:
+    /// if the KeyUp is swallowed then `throttle_held` stays true and the
+    /// car drives off on its own with no key held.
+    #[test]
+    fn releasing_the_throttle_while_paused_does_not_strand_the_car() {
+        let mut g = on_track();
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        assert!(g.throttle_held);
+
+        g.on_input(InputEvent::KeyDown(Key::P));
+        g.on_input(InputEvent::KeyUp(Key::Up));
+        assert!(!g.throttle_held, "the release was swallowed by the pause gate");
+    }
+
+    #[test]
+    fn a_pause_swallows_gameplay_presses() {
+        let mut g = on_track();
+        g.on_input(InputEvent::KeyDown(Key::P));
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        assert!(!g.throttle_held, "a press while paused must not reach the game");
+    }
+
+    /// ⚠️ **A paused run holds still.** The clock is what ends you in
+    /// this game, so a pause that let time pass would be worse than none.
+    #[test]
+    fn a_paused_run_does_not_advance() {
+        let mut g = on_track();
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        for _ in 0..30 {
+            step(&mut g, 1.0 / 60.0);
+        }
+        let moved = g.car.z;
+        let clock = g.race.elapsed;
+
+        g.on_input(InputEvent::KeyDown(Key::P));
+        for _ in 0..60 {
+            step(&mut g, 1.0 / 60.0);
+        }
+        assert_eq!(g.car.z, moved, "the car moved while paused");
+        assert_eq!(g.race.elapsed, clock, "the clock ran while paused");
+
+        // And it picks up again on resume.
+        g.on_input(InputEvent::KeyDown(Key::P));
+        for _ in 0..30 {
+            step(&mut g, 1.0 / 60.0);
+        }
+        assert!(g.car.z > moved, "the car did not resume");
+    }
+
+    /// ⚠️ A paused run goes QUIET: the engine stops the same way it does
+    /// at the end of a run, rather than droning under a PAUSED overlay.
+    #[test]
+    fn a_paused_run_stops_the_engine() {
+        let mut g = on_track();
+        step(&mut g, 1.0 / 60.0);
+        assert!(g.engine_running, "the engine should be running on track");
+
+        g.on_input(InputEvent::KeyDown(Key::P));
+        step(&mut g, 1.0 / 60.0);
+        assert!(!g.engine_running, "the engine kept running while paused");
+
+        g.on_input(InputEvent::KeyDown(Key::P));
+        step(&mut g, 1.0 / 60.0);
+        assert!(g.engine_running, "the engine did not restart on resume");
+    }
+
 }

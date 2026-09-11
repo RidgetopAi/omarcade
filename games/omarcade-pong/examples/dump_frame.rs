@@ -45,7 +45,19 @@ fn main() {
     let mut buf = vec![0u32; (w * h) as usize];
     {
         let mut canvas = Canvas::new(&mut buf, w, h);
-        render::draw(&state, &mut canvas, &Theme::load());
+        let theme = Theme::load();
+        render::draw(&state, &mut canvas, &theme);
+        // ⚠️ The pause overlay is drawn by `main`, not by `render` — it is
+        // not part of the game's own picture. Drawn here the same way, or
+        // a `paused` scene would show a rally with nothing over it.
+        //
+        // ⚠️ A CONTROLLED PAIR (L044): `rally` is this same frame without
+        // the overlay.
+        if scene == "paused" {
+            let mut pause = omarcade_core::Pause::new();
+            pause.toggle();
+            pause.draw(&mut canvas, &theme);
+        }
     }
 
     match write_png(out, &buf, w, h) {
@@ -72,7 +84,7 @@ fn build(scene: &str) -> GameState {
 
         // Mid-rally, which is the interesting frame: ball in flight
         // with a trail, paddles committed, rally counter showing.
-        "rally" => {
+        "paused" | "rally" => {
             s.begin();
             s.score_left = 4;
             s.score_right = 6;

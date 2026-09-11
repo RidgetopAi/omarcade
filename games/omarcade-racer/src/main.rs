@@ -152,10 +152,6 @@ struct Racer {
     /// point of contact, so reading it when the sound is played would
     /// make every shunt sound like a gentle nudge.
     impact: Option<f32>,
-    /// Whether the engine has been started yet — it begins at the green
-    /// light rather than at the menu, so a car that is not running does
-    /// not idle at the player.
-    engine_running: bool,
     /// The run: qualifying, the grid, the clock, the laps. Every limit
     /// in it is derived from the reference driver at start-up.
     race: Race,
@@ -253,7 +249,6 @@ impl Racer {
             last_light: None,
             near: None,
             impact: None,
-            engine_running: false,
             race,
             grid_z: start_z,
             flash: None,
@@ -503,6 +498,18 @@ impl Racer {
         event
     }
 
+    /// Whether the three continuous voices should be sounding this frame.
+    ///
+    /// ⚠️ DERIVED, NEVER CACHED. This used to be a `engine_running: bool`
+    /// field, and the gap between what that field believed and what the
+    /// mixer had actually been told is exactly where a whole race of
+    /// silence hid — the flag read `true` throughout. A predicate over
+    /// the state that decides it cannot drift from that state.
+    fn engine_should_run(&self) -> bool {
+        !self.pause.is_paused()
+            && !matches!(self.race.phase, Phase::Over(_) | Phase::Finished { .. })
+    }
+
     /// Say what this frame sounds like.
     ///
     /// Kept out of `update` proper because the simulation above is long
@@ -510,26 +517,43 @@ impl Racer {
     /// the frame has already settled — sound is downstream of the
     /// simulation, never a participant in it.
     fn sound(&mut self, audio: &mut Audio<'_>, event: Option<Event>) {
-        // The engine starts at the green light, not at the menu: a car
-        // that is not running should not idle at the player through the
-        // attract screen.
+        // The engine runs from the lights until the run ends.
         // ⚠️ A paused run goes quiet the same way a finished one does,
         // reusing this switch rather than adding a parallel one: an
         // engine droning under a PAUSED overlay is the audio version of a
         // frozen screen with nothing to say why.
-        let should_run = !self.pause.is_paused()
-            && !matches!(self.race.phase, Phase::Over(_) | Phase::Finished { .. });
-        if should_run != self.engine_running {
-            self.engine_running = should_run;
-            if should_run {
-                audio.start(self.engine);
-                audio.start(self.tyres);
-                audio.start(self.surface);
-            } else {
-                audio.stop(self.engine);
-                audio.stop(self.tyres);
-                audio.stop(self.surface);
-            }
+        let should_run = self.engine_should_run();
+
+        // ⚠️ STATED EVERY FRAME, NEVER ON A CHANGE. This used to be
+        // guarded by `if should_run != self.engine_running`, which made
+        // the ONE `Enable` command that ever turned these three voices on
+        // a single point of failure.
+        //
+        // The ring is bounded (256) and `push` DROPS silently when it is
+        // full — that is the right trade for a `Set`, which is replaced
+        // sixty times a second, and the wrong one for an `Enable` that is
+        // never sent again. Lose that one command at startup, when the
+        // ring is most congested, and the game believes the engine, tyres
+        // and surface are running while the mixer never enabled them: a
+        // whole race in silence, with only the one-shots (a countdown
+        // blip, a crash) audible, because those push a fresh command each
+        // time. Restarting could not recover it either — `restart()`
+        // rebuilds via `Racer::new`, resetting the flag to `false`
+        // without telling the mixer anything, so the two stayed out of
+        // sync for the life of the process.
+        //
+        // `Command::Enable` is `s.enabled = on` in the mixer — no
+        // retrigger, no phase reset — so restating it is idempotent and
+        // free, exactly like `set` below, and a dropped command heals on
+        // the very next frame instead of lasting the whole run.
+        if should_run {
+            audio.start(self.engine);
+            audio.start(self.tyres);
+            audio.start(self.surface);
+        } else {
+            audio.stop(self.engine);
+            audio.stop(self.tyres);
+            audio.stop(self.surface);
         }
 
         // This frame's numbers, every frame. `set` is idempotent, so
@@ -1114,13 +1138,111 @@ mod tests {
             matches!(g.race.phase, Phase::Countdown { .. }),
             "fixture: a new race starts on the lights",
         );
-        assert!(!g.engine_running, "fixture: nothing started yet");
+        let mut audio = AudioSystem::new();
+        g.update(1.0 / 60.0, &mut audio.handle());
 
-        step(&mut g, 1.0 / 60.0);
-
-        assert!(
-            g.engine_running,
+        // ⚠️ What the MIXER was told, not what the game believes. See
+        // `drain_enables_for_test`.
+        let enabled = audio.drain_enables_for_test();
+        assert_eq!(
+            enabled.get(&g.engine),
+            Some(&true),
             "the voices were never started — sound is trapped behind an early return",
+        );
+    }
+
+    /// ⚠️ REGRESSION, AND THE SECOND TIME THIS SYMPTOM HAS BITTEN.
+    ///
+    /// Brian, again: a whole race in silence, "you can hear a blip sound
+    /// and then it goes dead", and it survived a restart. The first fix
+    /// (above) got `sound` out from behind `simulate`'s early returns.
+    /// This is the other half, and the one that made it look like a race
+    /// condition — because it was one.
+    ///
+    /// The voices were enabled by a SINGLE `Enable` command, sent only on
+    /// the frame `should_run` changed. `Ring::push` drops silently when
+    /// the ring is full, which at start-up — the most congested moment,
+    /// before the audio thread has drained anything — is exactly when
+    /// that one command is sent. Lose it and the mixer never enables the
+    /// engine, tyres or surface for the entire run, while the game's
+    /// `engine_running` flag reads `true` and every test asserting the
+    /// flag passes. Only the one-shots stayed audible, because those push
+    /// a fresh command each time: the countdown blip, and the crash.
+    ///
+    /// The fix is to state the enable state EVERY frame, like `set`.
+    /// This test saturates the ring so the first frame's commands are all
+    /// dropped, then asserts the voices still come up on a later frame.
+    #[test]
+    fn a_dropped_enable_command_does_not_silence_the_whole_run() {
+        let mut g = racer();
+        let mut audio = AudioSystem::new();
+
+        // The ring is full: this frame's every command is discarded,
+        // exactly as it is under real start-up congestion.
+        audio.saturate_ring_for_test();
+        g.update(1.0 / 60.0, &mut audio.handle());
+        assert!(
+            audio.dropped_commands() > 0,
+            "fixture: the frame's commands should have been dropped",
+        );
+
+        // Drain everything the mixer would have taken, clearing the ring.
+        let _ = audio.drain_enables_for_test();
+
+        // The very next frame must put the voices back. With the old
+        // change-detection guard this frame sent NOTHING — the game had
+        // already flipped its flag on the dropped frame and never spoke
+        // of it again.
+        g.update(1.0 / 60.0, &mut audio.handle());
+        let enabled = audio.drain_enables_for_test();
+
+        assert_eq!(
+            enabled.get(&g.engine),
+            Some(&true),
+            "the engine never recovered from a dropped Enable — the run is silent",
+        );
+        assert_eq!(
+            enabled.get(&g.tyres),
+            Some(&true),
+            "the tyres never recovered from a dropped Enable",
+        );
+        assert_eq!(
+            enabled.get(&g.surface),
+            Some(&true),
+            "the surface never recovered from a dropped Enable",
+        );
+    }
+
+    /// And the restart path, which is how Brian met it the second time:
+    /// `restart()` rebuilds through `Racer::new`, so the old code reset
+    /// its flag to `false` without ever telling the mixer to stop — then
+    /// re-sent a single `Enable` into the same congested ring. Stating it
+    /// every frame makes a restart self-correcting.
+    #[test]
+    fn a_restart_re_states_the_voices_rather_than_assuming_them() {
+        let mut g = racer();
+        let mut audio = AudioSystem::new();
+
+        g.update(1.0 / 60.0, &mut audio.handle());
+        let _ = audio.drain_enables_for_test();
+
+        g.restart();
+
+        // ⚠️ The restart's own first frame is dropped, which is the real
+        // shape of it: a fresh `Racer` believes nothing is running, sends
+        // its single `Enable` into a ring that is still congested, and
+        // loses it. Without re-stating every frame there is no second
+        // chance for the rest of the process's life.
+        audio.saturate_ring_for_test();
+        g.update(1.0 / 60.0, &mut audio.handle());
+        let _ = audio.drain_enables_for_test();
+
+        g.update(1.0 / 60.0, &mut audio.handle());
+        let enabled = audio.drain_enables_for_test();
+        assert_eq!(
+            enabled.get(&g.engine),
+            Some(&true),
+            "a restarted run never told the mixer to start the engine again",
         );
     }
 
@@ -1137,7 +1259,7 @@ mod tests {
         step(&mut g, 1.0 / 60.0);
         assert!(g.crash.is_some(), "fixture: should be burning");
         assert!(
-            g.engine_running,
+            g.engine_should_run(),
             "the voices went away while the wreck burned",
         );
     }
@@ -1552,15 +1674,15 @@ mod tests {
     fn a_paused_run_stops_the_engine() {
         let mut g = on_track();
         step(&mut g, 1.0 / 60.0);
-        assert!(g.engine_running, "the engine should be running on track");
+        assert!(g.engine_should_run(), "the engine should be running on track");
 
         g.on_input(InputEvent::KeyDown(Key::P));
         step(&mut g, 1.0 / 60.0);
-        assert!(!g.engine_running, "the engine kept running while paused");
+        assert!(!g.engine_should_run(), "the engine kept running while paused");
 
         g.on_input(InputEvent::KeyDown(Key::P));
         step(&mut g, 1.0 / 60.0);
-        assert!(g.engine_running, "the engine did not restart on resume");
+        assert!(g.engine_should_run(), "the engine did not restart on resume");
     }
 
 }

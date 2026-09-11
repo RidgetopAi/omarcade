@@ -240,6 +240,40 @@ impl AudioSystem {
         self.ring.dropped()
     }
 
+    /// Drain the ring the way the audio thread would, and report the
+    /// enable state each voice was last told to take. **Tests only.**
+    ///
+    /// ⚠️ THIS EXISTS BECAUSE BELIEVING A GAME'S OWN FLAG IS HOW A WHOLE
+    /// RACE WENT SILENT. Omaprix tracked `engine_running: bool` and
+    /// asserted against it; the flag said the engine was on for the
+    /// entire run while the mixer had never been told, because the one
+    /// `Enable` that would have said so was dropped by a full ring. A
+    /// test that reads the sender's intent cannot see a lost message —
+    /// only draining what the receiver would actually get can.
+    ///
+    /// Consumes the queued commands, exactly as the mixer does, so call
+    /// it once per stretch of frames under test.
+    #[doc(hidden)]
+    pub fn drain_enables_for_test(&self) -> std::collections::HashMap<VoiceId, bool> {
+        let mut state = std::collections::HashMap::new();
+        while let Some(cmd) = self.ring.pop() {
+            if let Command::Enable { voice, on } = cmd {
+                state.insert(voice, on);
+            }
+        }
+        state
+    }
+
+    /// Fill the ring to capacity, so the next push is dropped.
+    /// **Tests only** — reproduces the congestion this crate's `push`
+    /// silently discards into.
+    #[doc(hidden)]
+    pub fn saturate_ring_for_test(&self) {
+        for _ in 0..ring::CAPACITY {
+            self.ring.push(Command::Master { gain: 1.0 });
+        }
+    }
+
     fn persist(&self) {
         // A volume that cannot be saved is not worth interrupting a game
         // for; the next run simply starts at the default.

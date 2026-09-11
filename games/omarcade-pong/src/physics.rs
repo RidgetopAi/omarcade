@@ -27,7 +27,9 @@
 use omarcade_core::ease;
 use omarcade_core::geom::Vec2;
 
-use crate::state::{GameState, Phase, Side, FIELD_H, FIELD_W, TRAIL_LEN};
+use crate::state::{
+    GameState, Phase, Side, FIELD_H, FIELD_W, PADDLE_INSET, PADDLE_W, TRAIL_LEN,
+};
 
 /// Simulation rate, matching Breakout. High enough that per-tick
 /// movement (~2 units at the fastest ramped ball) stays far smaller
@@ -158,7 +160,7 @@ pub fn rally_speed(state: &GameState) -> f32 {
     let t = ease::out_quad((state.rally as f32) / RAMP_RALLIES);
     let ramped = ease::lerp(base, ceiling, t);
 
-    // Past the ceiling, keep climbing — slowly, and without limit.
+    // Past the ceiling, keep climbing — slowly, and up to a LIMIT.
     //
     // A flat ceiling is a stalemate machine. Measured with one: every
     // Easy match timed out, because Easy's ceiling sat below the speed
@@ -169,8 +171,84 @@ pub fn rally_speed(state: &GameState) -> f32 {
     //
     // Linear and gentle, so it is invisible in a normal exchange and
     // decisive in a pathological one.
+    //
+    // ⚠️ THIS CLIMB WAS ONCE UNBOUNDED, AND THAT WAS THE BUG THAT MADE
+    // THE GAME UNPLAYABLE. At 22 px/s per return with no ceiling, an
+    // Easy ball reached 852 px/s by rally 20 and ~1290 by rally 40 —
+    // faster than HARD ever opens, on the EASIEST setting. The player
+    // who reported it had a best rally of 36. He was not being beaten
+    // by a good opponent; the ball was accelerating out of human reach
+    // WHILE HE WAS WINNING THE EXCHANGE, and it did that identically on
+    // every tier, which is why all three felt the same. Worse, it hid
+    // every other difficulty dial: past rally ~20 the BALL ends the
+    // point, not the opponent, so the AI's aim error stopped mattering
+    // at all. Any future tuning of the opponent is meaningless if this
+    // cap is removed.
     let over = (state.rally as f32 - RAMP_RALLIES).max(0.0);
-    ramped + over * OVERTIME_GAIN
+    (ramped + over * OVERTIME_GAIN).min(overtime_cap(state))
+}
+
+/// The fastest the ball may ever travel, in px/s.
+///
+/// Derived from the paddle rather than picked, because the property
+/// that matters is a RELATIONSHIP: the ball must never outrun what a
+/// paddle can answer. A fixed multiple of the tier's ball speed cannot
+/// express that — measured, the same multiple leaves Easy with nearly
+/// twice the headroom it needs while Hard has less than it needs, which
+/// is how "capped" ends up meaning something different on every tier.
+///
+/// The bar set here is 40% OF THE FIELD: however long the rally runs,
+/// the paddle must still be able to travel 288 px while the ball
+/// crosses once. That is a floor, not a comfort — it answers a shot
+/// from a central position to well past either shoulder, while leaving
+/// a corner-to-corner shot genuinely able to beat you, which is what
+/// keeps position worth playing for.
+///
+/// 40% rather than 50%, and the difference is load-bearing. At half a
+/// field the cap landed BELOW Hard's own ramped ceiling, which would
+/// have stopped overtime dead on Hard and brought back the stalemate
+/// this whole mechanism exists to break — `overtime_keeps_a_deadlocked_rally_climbing`
+/// caught exactly that. At 40% every tier's cap clears its ceiling with
+/// real headroom (Easy +987 px/s, Normal +628, Hard +224), so a
+/// deadlock always breaks, and the reach guaranteed at the cap is the
+/// SAME 288 px on all three — the property stops being accidentally
+/// tier-dependent.
+/// Two bounds, and the lower one wins, because each alone fails a
+/// property the other protects:
+///
+/// - **The reach bound** keeps the ball answerable. Alone it is
+///   perverse: it scales with paddle speed, and EASY has the fastest
+///   paddle, so Easy would earn the HIGHEST cap (1663 px/s) and a long
+///   rally on Easy would become the fastest ball in the game. Tiers
+///   must stay ordered at every rally length, not just at the opening —
+///   `a_long_easy_rally_stays_gentler_than_a_long_hard_one` caught this.
+/// - **The ceiling multiple** keeps the tiers ordered, since the
+///   ceilings already are. Alone it says nothing about whether a human
+///   can reach the result — which is the entire bug being fixed.
+///
+/// Taking the lower satisfies both at once rather than trading them
+/// off, and the outcome is better than either: Easy is bounded by the
+/// multiple and keeps 73% of the field reachable, Hard by reach at the
+/// 40% floor, and every tier retains 10-13 returns of overtime headroom
+/// so a deadlock still breaks.
+fn overtime_cap(state: &GameState) -> f32 {
+    // Distance the ball covers between the two paddle faces.
+    let face_to_face = FIELD_W - 2.0 * (PADDLE_INSET + PADDLE_W);
+    // A ball is rarely flat; the typical angle spends ~85% of its speed
+    // on the x axis, and that is the component that sets crossing time.
+    const TYPICAL_X_FRACTION: f32 = 0.85;
+    // The fraction of the field the player is guaranteed to be able to
+    // cover, no matter how long the rally has run.
+    const GUARANTEED_REACH: f32 = FIELD_H * 0.40;
+    // How far past its own designed ceiling a tier's overtime may climb.
+    const CEILING_HEADROOM: f32 = 1.35;
+
+    let by_reach = state.difficulty.paddle_speed() * face_to_face
+        / (TYPICAL_X_FRACTION * GUARANTEED_REACH);
+    let by_ceiling =
+        state.difficulty.ball_speed() * state.difficulty.ramp_ceiling() * CEILING_HEADROOM;
+
+    by_reach.min(by_ceiling)
 }
 
 /// Advance the game by one frame's worth of real time.
@@ -242,9 +320,33 @@ pub fn serve(state: &mut GameState) {
 }
 
 fn move_paddles(state: &mut GameState) {
+    // Per difficulty for the PLAYER: see Difficulty::paddle_speed.
+    //
+    // ⚠️ THE OPPONENT DOES NOT SHARE IT, and the reason is subtle
+    // enough to have been got wrong once already. `Skill::speed` is
+    // expressed as a FRACTION of the player's speed, so feeding the new
+    // per-tier number to both paddles handed the Easy opponent a silent
+    // 60% speed increase (234 -> 374 px/s) as a side effect of giving
+    // the PLAYER more reach. Measured immediately afterwards: matches
+    // on Easy stopped finishing at all — 0-0 after a 505-return rally —
+    // because both sides had been sped up together, so neither could
+    // ever be beaten. The stalemate the overtime gain exists to prevent
+    // came back through the front door.
+    //
+    // The opponent's difficulty was measured at the ORIGINAL speed, so
+    // it keeps that as its reference. `Skill::speed` stays a fraction
+    // of PADDLE_SPEED, which is exactly what that constant is still
+    // documented as being: the reference the old tuning was written
+    // against, not the speed anything necessarily travels at.
+    let player_speed = state.difficulty.paddle_speed();
     for side in [Side::Left, Side::Right] {
+        let speed = if side == Side::Left {
+            player_speed
+        } else {
+            crate::state::PADDLE_SPEED
+        };
         let p = state.paddle_mut(side);
-        p.y += p.dir * crate::state::PADDLE_SPEED * FIXED_DT;
+        p.y += p.dir * speed * FIXED_DT;
         // Clamp inside the field; a paddle never leaves the play area.
         p.y = p.y.clamp(0.0, FIELD_H - p.h);
     }
@@ -489,9 +591,37 @@ mod tests {
             "a 54-return rally should be well past the ceiling {ceiling}, was {overtime}"
         );
 
-        // And it must never stop climbing.
+        // It climbs until it reaches the cap, and then holds there.
+        //
+        // ⚠️ THIS ASSERTION USED TO READ `rally_speed(&s) > overtime`
+        // AFTER ANOTHER 20 RETURNS — i.e. it climbs FOREVER — and that
+        // unbounded climb was the bug that made the game unplayable:
+        // the ball outran what any human could reach, on every tier, at
+        // roughly the same rally length. See `overtime_cap`.
+        //
+        // The property that actually matters is not "always faster", it
+        // is "fast enough that a deadlock ends". A ball held at the cap
+        // is still far above the tier's ceiling, so two evenly-matched
+        // players cannot rally indefinitely — and it is still reachable,
+        // so the point is decided by play rather than by arithmetic.
         s.rally += 20;
-        assert!(rally_speed(&s) > overtime);
+        let later = rally_speed(&s);
+        assert!(
+            later >= overtime,
+            "overtime must never go BACKWARDS: {later} < {overtime}"
+        );
+        assert!(
+            later > ceiling + 100.0,
+            "even held at the cap, a deadlocked rally must stay well past \
+             the ceiling {ceiling} or it stops breaking deadlocks — was {later}"
+        );
+
+        // And it is genuinely bounded, which is the whole fix.
+        s.rally = 10_000;
+        assert!(
+            rally_speed(&s) <= later + 0.01,
+            "the climb is capped, so an absurd rally adds nothing further"
+        );
     }
 
     #[test]
@@ -847,5 +977,204 @@ mod tests {
         let mut a = Accumulator::new();
         assert_eq!(a.steps_for(-1.0), 0);
         assert_eq!(a.steps_for(f32::NAN), 0);
+    }
+
+    // ------------------------------------------------------------------
+    // The overtime cap (FIX 2)
+    //
+    // These exist because the climb was once unbounded and that made
+    // the game unplayable on every tier at once. Each one fails against
+    // the pre-fix code.
+    // ------------------------------------------------------------------
+
+    /// The regression. A long rally must never produce a ball the
+    /// paddle cannot answer.
+    #[test]
+    fn a_long_rally_never_outruns_the_paddle() {
+        for d in Difficulty::ALL {
+            let mut s = GameState::with_difficulty(d);
+            s.begin();
+
+            // Eighty returns: far past any honest exchange, and the
+            // shape of rally that used to end in an unreachable ball.
+            s.rally = 80;
+            let speed = rally_speed(&s);
+
+            // How far the paddle travels while that ball crosses once.
+            let face_to_face = FIELD_W - 2.0 * (PADDLE_INSET + PADDLE_W);
+            let crossing = face_to_face / (speed * 0.85);
+            let reach = d.paddle_speed() * crossing;
+
+            assert!(
+                reach >= FIELD_H * 0.40,
+                "{d:?}: at rally 80 the ball is {speed:.0} px/s and the paddle \
+                 reaches only {reach:.0}px — under 40% of the field, so shots \
+                 exist that nobody can return"
+            );
+        }
+    }
+
+    /// Pre-fix, Easy passed 850 px/s by rally 20 — faster than Hard
+    /// opens. The tiers must stay ordered no matter how long the rally.
+    #[test]
+    fn a_long_easy_rally_stays_gentler_than_a_long_hard_one() {
+        for rally in [0u32, 14, 20, 40, 80, 200] {
+            let mut easy = GameState::with_difficulty(Difficulty::Easy);
+            easy.begin();
+            easy.rally = rally;
+
+            let mut hard = GameState::with_difficulty(Difficulty::Hard);
+            hard.begin();
+            hard.rally = rally;
+
+            assert!(
+                rally_speed(&easy) < rally_speed(&hard),
+                "at rally {rally}, easy is {:.0} px/s and hard {:.0} — easy must \
+                 never be the faster game",
+                rally_speed(&easy),
+                rally_speed(&hard)
+            );
+        }
+    }
+
+    /// The cap bounds the climb; it must not flatten the rally's arc.
+    /// A rally still has to accelerate, or the stalemate it was added
+    /// to break comes back.
+    #[test]
+    fn the_ball_still_speeds_up_across_a_rally() {
+        for d in Difficulty::ALL {
+            let mut s = GameState::with_difficulty(d);
+            s.begin();
+
+            s.rally = 0;
+            let opening = rally_speed(&s);
+            s.rally = 14;
+            let ramped = rally_speed(&s);
+            s.rally = 30;
+            let late = rally_speed(&s);
+
+            assert!(ramped > opening, "{d:?}: the ramp does nothing");
+            assert!(
+                late > ramped,
+                "{d:?}: overtime does nothing, so a deadlock never breaks"
+            );
+        }
+    }
+
+    /// It is a ceiling, not a target: the cap must never SPEED UP a
+    /// rally that had not reached it.
+    #[test]
+    fn the_cap_never_raises_a_speed() {
+        for d in Difficulty::ALL {
+            let mut s = GameState::with_difficulty(d);
+            s.begin();
+            let ceiling = d.ball_speed() * d.ramp_ceiling();
+
+            for rally in 0..=14 {
+                s.rally = rally;
+                assert!(
+                    rally_speed(&s) <= ceiling + 0.01,
+                    "{d:?} rally {rally}: {:.0} exceeds the designed ceiling {ceiling:.0} \
+                     before overtime has even begun",
+                    rally_speed(&s)
+                );
+            }
+        }
+    }
+
+    /// The cap is derived from paddle speed, so it must never sit below
+    /// the tier's own designed ceiling — that would undo the ramp
+    /// rather than bound the overtime past it.
+    #[test]
+    fn the_cap_never_undercuts_the_designed_ceiling() {
+        for d in Difficulty::ALL {
+            let mut s = GameState::with_difficulty(d);
+            s.begin();
+            s.rally = 1000;
+            let ceiling = d.ball_speed() * d.ramp_ceiling();
+            assert!(
+                rally_speed(&s) >= ceiling,
+                "{d:?}: capped at {:.0}, below its own ramped ceiling {ceiling:.0}",
+                rally_speed(&s)
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Per-tier paddle speed (FIX 1)
+    // ------------------------------------------------------------------
+
+    /// Harder means LESS reach. This dial is inverted against every
+    /// other one on Difficulty, deliberately, so it gets its own test.
+    #[test]
+    fn a_harder_tier_gives_the_player_less_reach() {
+        let (e, n, h) = (Difficulty::Easy, Difficulty::Normal, Difficulty::Hard);
+        assert!(e.paddle_speed() > n.paddle_speed());
+        assert!(n.paddle_speed() > h.paddle_speed());
+    }
+
+    /// The paddle must actually MOVE at its tier's speed. A missed
+    /// reader would silently leave it at the old global 300, and the
+    /// symptom — "it feels the same on every level" — is exactly the
+    /// one that took a measurement to find the first time.
+    #[test]
+    fn a_paddle_moves_at_its_own_tiers_speed() {
+        for d in Difficulty::ALL {
+            let mut s = GameState::with_difficulty(d);
+            s.begin();
+            s.phase = Phase::Playing;
+            s.left.y = 200.0;
+            s.left.dir = 1.0;
+
+            let before = s.left.y;
+            move_paddles(&mut s);
+            let moved = (s.left.y - before) / FIXED_DT;
+
+            assert!(
+                (moved - d.paddle_speed()).abs() < 0.5,
+                "{d:?}: paddle travelled at {moved:.0} px/s, expected {:.0}",
+                d.paddle_speed()
+            );
+        }
+    }
+
+    /// The OPPONENT must not inherit the player's new speed.
+    ///
+    /// This test exists because the opposite was written first and it
+    /// broke the game: `Skill::speed` is a fraction of the player's
+    /// speed, so giving both paddles the per-tier number handed the
+    /// Easy opponent a 60% speed increase for free, and Easy matches
+    /// stopped ending — 0-0 after a 505-return rally. The opponent's
+    /// difficulty was measured against PADDLE_SPEED and stays there.
+    #[test]
+    fn the_opponent_does_not_inherit_the_players_speed() {
+        for d in Difficulty::ALL {
+            let mut s = GameState::with_difficulty(d);
+            s.begin();
+            s.phase = Phase::Playing;
+            s.left.y = 200.0;
+            s.right.y = 200.0;
+            s.left.dir = 1.0;
+            s.right.dir = 1.0;
+
+            let (lb, rb) = (s.left.y, s.right.y);
+            move_paddles(&mut s);
+
+            let player = (s.left.y - lb) / FIXED_DT;
+            let opponent = (s.right.y - rb) / FIXED_DT;
+
+            assert!(
+                (player - d.paddle_speed()).abs() < 0.5,
+                "{d:?}: the player moved at {player:.0}, expected {:.0}",
+                d.paddle_speed()
+            );
+            assert!(
+                (opponent - crate::state::PADDLE_SPEED).abs() < 0.5,
+                "{d:?}: the opponent moved at {opponent:.0}, expected the \
+                 reference {:.0} — if it tracks the player's speed, raising \
+                 the player's reach silently buffs the opponent too",
+                crate::state::PADDLE_SPEED
+            );
+        }
     }
 }

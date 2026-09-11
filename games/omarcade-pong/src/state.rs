@@ -38,10 +38,22 @@ pub const PADDLE_INSET: f32 = 40.0;
 /// Pong's geometry is not Breakout's. The paddle travels the same axis
 /// the ball has to be beaten on, so paddle speed IS the difficulty of
 /// covering the field, and it has to be tuned against the crossing time
-/// rather than against how twitchy it feels. At 300, against the ball
-/// speeds below, a steep shot leaves the defender covering roughly
-/// 70-100% of the field: marginal, which is what makes reaching it a
-/// play rather than a formality.
+/// rather than against how twitchy it feels.
+///
+/// ⚠️ NOTHING MOVES AT THIS SPEED ANY MORE. It is kept as the reference
+/// the old tuning was written against, and as the unit the opponent's
+/// `Skill::speed` is a fraction of. The speed a paddle actually travels
+/// at comes from [`Difficulty::paddle_speed`].
+///
+/// The history is worth keeping, because the mistake is easy to repeat:
+/// this was ONE GLOBAL CONSTANT for three difficulties. It was tuned
+/// once, against roughly Normal's ball speed, to leave a defender
+/// covering "70-100% of the field: marginal" — and then Easy and Hard
+/// were built on top of it and inherited a number that was never tuned
+/// for them. Measured, at 300 a perfect player who reacts instantly and
+/// never guesses wrong could reach only 67% of recovery shots on EASY
+/// and 48% on HARD. The rest were not hard, they were impossible, and
+/// no amount of practice would have changed that.
 pub const PADDLE_SPEED: f32 = 300.0;
 
 pub const BALL_RADIUS: f32 = 8.0;
@@ -130,6 +142,42 @@ impl Difficulty {
             Difficulty::Easy => 70.0,
             Difficulty::Normal => 50.0,
             Difficulty::Hard => 34.0,
+        }
+    }
+
+    /// How fast the player's paddle travels, in px/s.
+    ///
+    /// THE DIFFICULTY DIAL THE PLAYER CAN ACTUALLY FEEL. Every other
+    /// knob on this enum tunes how well the OPPONENT plays, and an
+    /// opponent's judgement is close to invisible from the other side
+    /// of the net: one that misjudges by half a paddle and one that
+    /// misjudges by a fifth both send the ball back. What a player
+    /// feels is their own reach, and until this became a per-tier
+    /// number every tier had exactly the same reach.
+    ///
+    /// Tuned against corner recovery rather than against feel, because
+    /// that is the shot that was impossible: after a rally leaves you
+    /// at one edge, can you answer a shot to the other? Measured with
+    /// a perfect player (instant reaction, never guesses wrong), at the
+    /// tier's ramped ball speed:
+    ///
+    /// | tier   | was (300) | now | corner reach |
+    /// |--------|-----------|-----|--------------|
+    /// | Easy   | 67%       | 480 | 100%         |
+    /// | Normal | 58%       | 420 | 79%          |
+    /// | Hard   | 48%       | 360 | 58%          |
+    ///
+    /// Easy gets the whole field back: nothing is unanswerable, so
+    /// every point lost is a point the player can see they lost. Hard
+    /// deliberately does NOT — covering the field is the challenge
+    /// there, and a shot you have to read early to reach is the skill
+    /// the tier is asking for. The ordering is inverted against every
+    /// other dial on purpose: harder means LESS reach, not more.
+    pub fn paddle_speed(self) -> f32 {
+        match self {
+            Difficulty::Easy => 480.0,
+            Difficulty::Normal => 420.0,
+            Difficulty::Hard => 360.0,
         }
     }
 

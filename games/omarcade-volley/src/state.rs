@@ -231,6 +231,54 @@ impl Difficulty {
     }
 }
 
+/// Something happened that the player should hear.
+///
+/// Physics raises these; `sound::Bank` decides what they sound like. The
+/// split is the same one Pixel Break draws, and for the same reason: the
+/// simulation must stay headless, because every probe in `examples/` runs
+/// it thousands of times with no audio device anywhere.
+///
+/// ⚠️ This is a SHORT list, and deliberately so. Volley's event vocabulary
+/// genuinely is a subset of Breakout's — there are no bricks, no items and
+/// no magnet, so there is nothing here to match them. Adding a sixth voice
+/// would mean inventing an event the game does not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cue {
+    /// The ball came off a paddle. `rally` counts returns since the serve,
+    /// which is what makes the pitch climb as a rally goes long.
+    ///
+    /// ⚠️ Raised for BOTH paddles, the opponent's included. A rally is a
+    /// conversation and hearing only your own half of it would be strange
+    /// — and worse, the climb would appear to stall on every other hit.
+    PaddleHit { rally: u32 },
+    /// The ball bounced off the top or bottom wall.
+    WallBounce,
+    /// The ball was put into play.
+    Serve,
+    /// A point ended. `to_player` distinguishes the two, because winning a
+    /// point and losing one are not the same event — that distinction is
+    /// most of this game's feedback. One cue rather than two because the
+    /// sound is the same shape at a different pitch.
+    Point { to_player: bool },
+    /// The match ended. `won` is from the player's side.
+    MatchOver { won: bool },
+}
+
+/// The most cues one frame may hold.
+///
+/// Sized against the worst honest frame rather than a round number. A
+/// frame runs at most eight fixed ticks, and a tick holds ONE ball which
+/// can raise at most one paddle hit and one wall bounce — the paddle
+/// collision returns early after the first hit, and a point ends the
+/// rally. Sixteen covers that with the serve and the point on top.
+///
+/// Pixel Break's cap is 96 because it can have ten balls in flight; here a
+/// single ball makes the ceiling genuinely small. A frame that somehow
+/// exceeded this is already one where no individual sound is audible, so
+/// dropping the surplus costs nothing and keeps a stalled frame from
+/// turning into unbounded memory.
+pub const MAX_CUES: usize = 16;
+
 /// Where the game is in its lifecycle.
 ///
 /// Explicit states rather than a scatter of booleans, so "are we
@@ -244,7 +292,9 @@ pub enum Phase {
     Serve,
     Playing,
     /// Someone reached [`MATCH_POINT`]. `winner` says who.
-    Over { winner: Side },
+    Over {
+        winner: Side,
+    },
 }
 
 /// A vertical paddle, positioned by its top edge.
@@ -324,6 +374,11 @@ pub struct GameState {
     /// so the headless harnesses see 0 and stay deterministic.
     pub best: u32,
 
+    /// Sounds raised this frame, drained once per frame by the caller.
+    ///
+    /// Capped at [`MAX_CUES`]; see there for why the ceiling is this low.
+    pub cues: Vec<Cue>,
+
     /// Recent ball positions, newest first, for the motion trail.
     ///
     /// Presentation state in the world model on purpose: physics is the
@@ -372,7 +427,32 @@ impl GameState {
             longest_rally: 0,
             serving: Side::Left,
             best: 0,
+            cues: Vec::new(),
             trail: Vec::new(),
+        }
+    }
+
+    /// Raise a sound, if there is room.
+    ///
+    /// Silently drops past [`MAX_CUES`]. A dropped cue is a sound nobody
+    /// could have picked out of the frame it belonged to, which is a
+    /// better outcome than an unbounded queue on a stalled frame.
+    pub fn push_cue(&mut self, cue: Cue) {
+        if self.cues.len() < MAX_CUES {
+            self.cues.push(cue);
+        }
+    }
+
+    /// Hand every cue raised this frame to `f` and clear the queue.
+    ///
+    /// ⚠️ The caller MUST drain every frame even when it has no audio —
+    /// the headless probes in `examples/` run millions of ticks, and a
+    /// queue that is only ever pushed to would grow until the cap, then
+    /// silently discard for the rest of the run. `Vec::drain` keeps the
+    /// allocation, so this does not churn.
+    pub fn drain_cues(&mut self, mut f: impl FnMut(Cue)) {
+        for c in self.cues.drain(..) {
+            f(c);
         }
     }
 
@@ -436,10 +516,19 @@ impl GameState {
         self.longest_rally = self.longest_rally.max(self.rally);
         self.rally = 0;
 
+        // The player is the LEFT side throughout this game.
+        let to_player = side == Side::Left;
+
         if self.score(side) >= MATCH_POINT {
+            // ⚠️ The match-ending point raises ONE cue, not two. A point
+            // sound landing under the match sound would read as a stutter
+            // at the single most important moment in the game, and the
+            // match result already says who took the point.
+            self.push_cue(Cue::MatchOver { won: to_player });
             self.phase = Phase::Over { winner: side };
             self.park_ball();
         } else {
+            self.push_cue(Cue::Point { to_player });
             // The side that conceded serves next.
             self.serving = side.other();
             self.phase = Phase::Serve;
@@ -613,7 +702,12 @@ mod tests {
         for _ in 0..MATCH_POINT {
             s.award(Side::Right);
         }
-        assert_eq!(s.phase, Phase::Over { winner: Side::Right });
+        assert_eq!(
+            s.phase,
+            Phase::Over {
+                winner: Side::Right
+            }
+        );
     }
 
     #[test]

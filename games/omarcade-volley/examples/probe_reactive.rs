@@ -49,8 +49,8 @@ mod physics;
 mod state;
 
 use ai::Opponent;
-use physics::{serve, step_fixed, FIXED_DT};
-use state::{Difficulty, GameState, Phase, Side, FIELD_H, MATCH_POINT};
+use physics::{FIXED_DT, serve, step_fixed};
+use state::{Difficulty, FIELD_H, GameState, MATCH_POINT, Phase, Side};
 
 /// How close to the target the paddle must be before it stops, matching
 /// the deadband the AI and the predictive bench both use.
@@ -79,17 +79,37 @@ struct Reactive {
 
 impl Reactive {
     /// Someone who has played Pong twice. Barely leads the ball.
-    const POOR: Reactive = Reactive { speed: 0.70, reaction: 0.20, slop: 60.0, lead: 0.05 };
+    const POOR: Reactive = Reactive {
+        speed: 0.70,
+        reaction: 0.20,
+        slop: 60.0,
+        lead: 0.05,
+    };
     /// The player EASY is actually for: has played a few times, leads
     /// the ball a little, still slow and sloppy. The gap between POOR
     /// and FAIR was where the original cliff hid, so the ladder needs a
     /// rung in it.
-    const LEARNING: Reactive = Reactive { speed: 0.78, reaction: 0.15, slop: 42.0, lead: 0.09 };
+    const LEARNING: Reactive = Reactive {
+        speed: 0.78,
+        reaction: 0.15,
+        slop: 42.0,
+        lead: 0.09,
+    };
     /// A normal person paying attention.
-    const FAIR: Reactive = Reactive { speed: 0.88, reaction: 0.10, slop: 28.0, lead: 0.12 };
+    const FAIR: Reactive = Reactive {
+        speed: 0.88,
+        reaction: 0.10,
+        slop: 28.0,
+        lead: 0.12,
+    };
     /// Someone who is good at this: fast hands, reads the line well,
     /// still cannot see through a wall.
-    const GOOD: Reactive = Reactive { speed: 1.0, reaction: 0.045, slop: 10.0, lead: 0.25 };
+    const GOOD: Reactive = Reactive {
+        speed: 1.0,
+        reaction: 0.045,
+        slop: 10.0,
+        lead: 0.25,
+    };
 }
 
 struct ReactivePlayer {
@@ -173,9 +193,24 @@ struct Predictive {
 }
 
 impl Predictive {
-    const POOR: Predictive = Predictive { speed: 0.70, reaction: 0.20, slop: 60.0, depth: 1 };
-    const FAIR: Predictive = Predictive { speed: 0.88, reaction: 0.10, slop: 28.0, depth: 2 };
-    const GOOD: Predictive = Predictive { speed: 1.0, reaction: 0.045, slop: 10.0, depth: 4 };
+    const POOR: Predictive = Predictive {
+        speed: 0.70,
+        reaction: 0.20,
+        slop: 60.0,
+        depth: 1,
+    };
+    const FAIR: Predictive = Predictive {
+        speed: 0.88,
+        reaction: 0.10,
+        slop: 28.0,
+        depth: 2,
+    };
+    const GOOD: Predictive = Predictive {
+        speed: 1.0,
+        reaction: 0.045,
+        slop: 10.0,
+        depth: 4,
+    };
 }
 
 struct PredictivePlayer {
@@ -271,11 +306,7 @@ impl Player {
             Player::Reactive(p) => (p.sprint_ticks, p.total_ticks),
             Player::Predictive(p) => (p.sprint_ticks, p.total_ticks),
         };
-        if t == 0 {
-            0.0
-        } else {
-            s as f32 / t as f32
-        }
+        if t == 0 { 0.0 } else { s as f32 / t as f32 }
     }
 }
 
@@ -293,7 +324,11 @@ fn play_match(difficulty: Difficulty, mut player: Player, variant: u32) -> Outco
 
     let mut opponent = Opponent::new(Side::Right, difficulty);
     // Identical opening to probe_ai, so the two are comparable.
-    s.serving = if variant % 2 == 0 { Side::Left } else { Side::Right };
+    s.serving = if variant % 2 == 0 {
+        Side::Left
+    } else {
+        Side::Right
+    };
     player.set_ticks(variant);
     let start = (variant % 7) as f32 * 40.0;
     s.left.y = start.min(FIELD_H - s.left.h);

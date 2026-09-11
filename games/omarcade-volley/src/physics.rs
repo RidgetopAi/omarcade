@@ -28,7 +28,7 @@ use omarcade_core::ease;
 use omarcade_core::geom::Vec2;
 
 use crate::state::{
-    GameState, Phase, Side, FIELD_H, FIELD_W, PADDLE_INSET, PADDLE_W, TRAIL_LEN,
+    Cue, FIELD_H, FIELD_W, GameState, PADDLE_INSET, PADDLE_W, Phase, Side, TRAIL_LEN,
 };
 
 /// Simulation rate, matching Breakout. High enough that per-tick
@@ -243,8 +243,8 @@ fn overtime_cap(state: &GameState) -> f32 {
     // How far past its own designed ceiling a tier's overtime may climb.
     const CEILING_HEADROOM: f32 = 1.35;
 
-    let by_reach = state.difficulty.paddle_speed() * face_to_face
-        / (TYPICAL_X_FRACTION * GUARANTEED_REACH);
+    let by_reach =
+        state.difficulty.paddle_speed() * face_to_face / (TYPICAL_X_FRACTION * GUARANTEED_REACH);
     let by_ceiling =
         state.difficulty.ball_speed() * state.difficulty.ramp_ceiling() * CEILING_HEADROOM;
 
@@ -316,6 +316,7 @@ pub fn serve(state: &mut GameState) {
     let vy = if total % 2 == 0 { SERVE_VY } else { -SERVE_VY };
 
     state.ball.vel = Vec2::new(dir, vy).with_length(rally_speed(state));
+    state.push_cue(Cue::Serve);
     state.phase = Phase::Playing;
 }
 
@@ -362,14 +363,24 @@ fn collide_walls(state: &mut GameState) {
     let r = state.ball.radius;
     let b = &mut state.ball;
 
-    if b.pos.y - r < 0.0 {
+    let hit = if b.pos.y - r < 0.0 {
         b.pos.y = r;
         // Set the sign rather than negating: a ball that somehow ends a
         // tick still overlapping cannot flip back and forth.
         b.vel.y = b.vel.y.abs();
+        true
     } else if b.pos.y + r > FIELD_H {
         b.pos.y = FIELD_H - r;
         b.vel.y = -b.vel.y.abs();
+        true
+    } else {
+        false
+    };
+
+    // Raised outside the borrow above: `b` holds &mut state.ball, and
+    // push_cue needs the whole state.
+    if hit {
+        state.push_cue(Cue::WallBounce);
     }
 }
 
@@ -410,14 +421,17 @@ fn bounce_off_paddle(state: &mut GameState, side: Side) {
     };
 
     // -1 at the top edge, 0 at the centre, +1 at the bottom edge.
-    let offset =
-        ((state.ball.pos.y - paddle.center_y()) / (paddle.h / 2.0)).clamp(-1.0, 1.0);
+    let offset = ((state.ball.pos.y - paddle.center_y()) / (paddle.h / 2.0)).clamp(-1.0, 1.0);
 
     let vy = offset * PADDLE_STEER;
     // Always outward, and always flat enough to actually cross.
     let vx = side.outward() * (1.0 - vy * vy).max(MIN_HORIZONTAL_FRACTION).sqrt();
 
     state.rally += 1;
+    // Raised with the rally count AFTER the increment, so the first
+    // return of a rally is 1 rather than 0 and the pitch climb starts
+    // where the player can hear it.
+    state.push_cue(Cue::PaddleHit { rally: state.rally });
     let speed = rally_speed(state);
     state.ball.vel = Vec2::new(vx, vy).with_length(speed);
     // A dead-centre strike steers nothing, which is how the ball flattens
@@ -759,7 +773,11 @@ mod tests {
         let mut v = Vec2::new(1.0, 400.0);
         let before = v.length();
         clamp_angle(&mut v);
-        assert!((v.length() - before).abs() < 1e-2, "speed changed: {before} -> {}", v.length());
+        assert!(
+            (v.length() - before).abs() < 1e-2,
+            "speed changed: {before} -> {}",
+            v.length()
+        );
         assert!(v.x.abs() / v.length() >= MIN_HORIZONTAL_FRACTION - 1e-3);
     }
 
@@ -836,7 +854,10 @@ mod tests {
                 }
             }
 
-            assert!(returns > 50, "{d:?}: only {returns} returns, too few to judge");
+            assert!(
+                returns > 50,
+                "{d:?}: only {returns} returns, too few to judge"
+            );
             assert!(
                 worst >= MIN_VERTICAL_FRACTION - 1e-3,
                 "{d:?}: ball flattened to |vy|/speed = {worst} over {returns} returns"
@@ -869,7 +890,10 @@ mod tests {
                     break;
                 }
             }
-            assert!(ended, "{d:?}: a point never resolved against a still paddle");
+            assert!(
+                ended,
+                "{d:?}: a point never resolved against a still paddle"
+            );
         }
     }
 
@@ -1177,4 +1201,133 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn an_undrained_queue_stays_bounded_over_a_long_match() {
+        // ⚠️ The headless probes in examples/ NEVER drain: they run
+        // millions of ticks with no audio anywhere. If the queue were
+        // unbounded this would be a slow leak that only ever showed up in
+        // the instruments the difficulty tuning depends on.
+        //
+        // Bounded is the requirement. Cues being DROPPED here is correct
+        // and expected — nobody is listening.
+        let mut s = served(Difficulty::Normal);
+        for _ in 0..200_000 {
+            step(&mut s, &mut Accumulator::new(), FIXED_DT);
+            if s.is_over() {
+                s.restart();
+                serve(&mut s);
+            }
+        }
+        assert!(
+            s.cues.len() <= crate::state::MAX_CUES,
+            "the cue queue grew past its cap: {}",
+            s.cues.len()
+        );
+    }
+
+    #[test]
+    fn draining_empties_the_queue() {
+        let mut s = served(Difficulty::Normal);
+        for _ in 0..2_000 {
+            step(&mut s, &mut Accumulator::new(), FIXED_DT);
+        }
+        assert!(!s.cues.is_empty(), "a rally must raise something to hear");
+
+        let mut heard = 0;
+        s.drain_cues(|_| heard += 1);
+        assert!(heard > 0, "drain handed over nothing");
+        assert!(s.cues.is_empty(), "drain must leave the queue empty");
+    }
+
+    #[test]
+    fn a_rally_is_heard_as_it_happens() {
+        // The cue carries the rally count AFTER the increment, so the
+        // first return is 1. A 0 here would mean the pitch climb starts
+        // one return late, inaudibly but wrongly.
+        //
+        // ⚠️ The receiving paddle is parked on the ball's line by hand.
+        // `step` moves paddles from `dir`, and `dir` is set by INPUT or by
+        // `ai::Opponent` — neither of which exists in a physics test. Left
+        // alone, the serve crosses the field untouched and scores a point,
+        // and the first cue is a Point rather than a PaddleHit.
+        let mut s = served(Difficulty::Normal);
+        let receiving = if s.ball.vel.x > 0.0 { Side::Right } else { Side::Left };
+        let ball_y = s.ball.pos.y;
+        {
+            let p = s.paddle_mut(receiving);
+            p.y = ball_y - p.h / 2.0;
+        }
+
+        let mut first = None;
+        for _ in 0..4_000 {
+            step(&mut s, &mut Accumulator::new(), FIXED_DT);
+            // Keep the paddle on the ball, so the rally continues rather
+            // than ending on the first return.
+            let ball_y = s.ball.pos.y;
+            {
+                let p = s.paddle_mut(receiving);
+                p.y = (ball_y - p.h / 2.0).clamp(0.0, FIELD_H - p.h);
+            }
+            s.drain_cues(|c| {
+                if let Cue::PaddleHit { rally } = c {
+                    if first.is_none() {
+                        first = Some(rally);
+                    }
+                }
+            });
+            if first.is_some() {
+                break;
+            }
+        }
+        assert_eq!(first, Some(1), "the first return of a rally is 1, not 0");
+    }
+
+    #[test]
+    fn a_point_is_heard_from_the_players_side() {
+        // Left is the player. A point awarded to the right must NOT
+        // report to_player: getting this backwards would play the win
+        // sound every time he concedes.
+        let mut s = served(Difficulty::Normal);
+        s.cues.clear();
+        s.award(Side::Left);
+        assert!(
+            s.cues.contains(&Cue::Point { to_player: true }),
+            "left is the player: {:?}",
+            s.cues
+        );
+
+        let mut s = served(Difficulty::Normal);
+        s.cues.clear();
+        s.award(Side::Right);
+        assert!(
+            s.cues.contains(&Cue::Point { to_player: false }),
+            "right is the opponent: {:?}",
+            s.cues
+        );
+    }
+
+    #[test]
+    fn the_final_point_is_heard_once_as_the_match_ending() {
+        // The match-ending point must raise the match sound and NOT also
+        // a point sound — two sounds stacked at the most important moment
+        // in the game read as a stutter.
+        let mut s = served(Difficulty::Normal);
+        s.score_left = MATCH_POINT - 1;
+        s.cues.clear();
+        s.award(Side::Left);
+
+        assert!(s.is_over(), "sanity: that was match point");
+        assert!(
+            s.cues.contains(&Cue::MatchOver { won: true }),
+            "{:?}",
+            s.cues
+        );
+        assert!(
+            !s.cues.iter().any(|c| matches!(c, Cue::Point { .. })),
+            "the point sound must not land under the match sound: {:?}",
+            s.cues
+        );
+    }
+
+
 }

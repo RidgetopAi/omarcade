@@ -38,7 +38,7 @@
 
 use omarcade_core::geom::Vec2;
 
-use crate::state::{Difficulty, GameState, Phase, Side, FIELD_H};
+use crate::state::{Difficulty, FIELD_H, GameState, Phase, Side};
 
 /// How close to its target the paddle must be before it stops.
 ///
@@ -262,7 +262,11 @@ pub fn predict_intercept(
     }
 
     // The ball's centre stops `radius` short of the face.
-    let target_x = if vel.x > 0.0 { face_x - radius } else { face_x + radius };
+    let target_x = if vel.x > 0.0 {
+        face_x - radius
+    } else {
+        face_x + radius
+    };
 
     // Already past it.
     if (vel.x > 0.0 && pos.x >= target_x) || (vel.x < 0.0 && pos.x <= target_x) {
@@ -427,9 +431,13 @@ mod tests {
         // the paddle could actually be.
         for i in 0..80 {
             let vy = -800.0 + (i as f32) * 20.0;
-            if let Some(hit) =
-                predict_intercept(Vec2::new(80.0, 360.0), Vec2::new(300.0, vy), FACE, BALL_RADIUS, 8)
-            {
+            if let Some(hit) = predict_intercept(
+                Vec2::new(80.0, 360.0),
+                Vec2::new(300.0, vy),
+                FACE,
+                BALL_RADIUS,
+                8,
+            ) {
                 assert!(
                     (BALL_RADIUS - 1e-3..=FIELD_H - BALL_RADIUS + 1e-3).contains(&hit),
                     "vy {vy}: prediction {hit} is off the field"
@@ -552,7 +560,11 @@ mod tests {
         s.ball.pos.y = 600.0;
         ai.update(&mut s, physics::FIXED_DT);
 
-        assert_eq!(ai.target(), committed, "must stay committed within the delay");
+        assert_eq!(
+            ai.target(),
+            committed,
+            "must stay committed within the delay"
+        );
     }
 
     #[test]
@@ -574,7 +586,10 @@ mod tests {
 
         let above = targets.iter().filter(|&&t| t > 360.0).count();
         let below = targets.iter().filter(|&&t| t < 360.0).count();
-        assert!(above > 0 && below > 0, "error should fall both ways: {targets:?}");
+        assert!(
+            above > 0 && below > 0,
+            "error should fall both ways: {targets:?}"
+        );
     }
 
     #[test]
@@ -601,7 +616,10 @@ mod tests {
     fn reset_re_arms_for_a_new_difficulty() {
         let mut ai = Opponent::new(Side::Right, Difficulty::Easy);
         ai.reset(Difficulty::Hard);
-        assert_eq!(ai.skill.depth, Skill::for_difficulty(Difficulty::Hard).depth);
+        assert_eq!(
+            ai.skill.depth,
+            Skill::for_difficulty(Difficulty::Hard).depth
+        );
         assert!((ai.target() - FIELD_H / 2.0).abs() < 1e-3);
     }
 }

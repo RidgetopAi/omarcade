@@ -15,10 +15,10 @@
 
 use omarcade_core::ease;
 use omarcade_core::geom::Rect;
-use omarcade_core::text::{text, text_width, GLYPH_H};
+use omarcade_core::text::{GLYPH_H, text, text_width};
 use omarcade_core::{Canvas, Color, Theme};
 
-use crate::state::{Difficulty, GameState, Phase, Side, FIELD_H, FIELD_W};
+use crate::state::{Difficulty, FIELD_H, FIELD_W, GameState, Phase, Side};
 
 /// Maps play-field coordinates onto the window.
 #[derive(Debug, Clone, Copy)]
@@ -73,7 +73,13 @@ impl Viewport {
     }
 
     fn rect(&self, r: Rect, canvas: &mut Canvas<'_>, color: Color) {
-        canvas.fill_rect(self.x(r.x), self.y(r.y), self.len(r.w), self.len(r.h), color);
+        canvas.fill_rect(
+            self.x(r.x),
+            self.y(r.y),
+            self.len(r.w),
+            self.len(r.h),
+            color,
+        );
     }
 
     /// Text scale that keeps the HUD proportional to the window rather
@@ -268,7 +274,11 @@ fn draw_select(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &V
             x,
             vp.y(y),
             scale,
-            if selected { theme.background } else { theme.muted },
+            if selected {
+                theme.background
+            } else {
+                theme.muted
+            },
         );
         y += 70.0;
     }
@@ -288,18 +298,20 @@ fn draw_select(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &V
 }
 
 /// Serve prompt and the end-of-match screen.
-fn draw_phase_message(
-    state: &GameState,
-    canvas: &mut Canvas<'_>,
-    theme: &Theme,
-    vp: &Viewport,
-) {
+fn draw_phase_message(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
     match state.phase {
         Phase::Serve => {
             let scale = vp.text_scale(2.0);
             let msg = "SPACE TO SERVE";
             let x = vp.x(FIELD_W / 2.0) - (text_width(msg, scale) / 2) as i32;
-            text(canvas, msg, x, vp.y(FIELD_H / 2.0 + 60.0), scale, theme.muted);
+            text(
+                canvas,
+                msg,
+                x,
+                vp.y(FIELD_H / 2.0 + 60.0),
+                scale,
+                theme.muted,
+            );
         }
         Phase::Over { winner } => {
             // One veil for the whole state. It is the most expensive
@@ -319,7 +331,11 @@ fn draw_phase_message(
                 x,
                 vp.y(260.0),
                 scale,
-                if winner == Side::Left { theme.green } else { theme.red },
+                if winner == Side::Left {
+                    theme.green
+                } else {
+                    theme.red
+                },
             );
 
             let sub = vp.text_scale(2.0);
@@ -358,8 +374,8 @@ fn draw_phase_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omarcade_core::text::glyph;
     use crate::state::MATCH_POINT;
+    use omarcade_core::text::glyph;
 
     /// Pixels differing from a reference frame.
     ///
@@ -416,7 +432,13 @@ mod tests {
         ];
         for d in Difficulty::ALL {
             strings.push(d.label().to_string());
-            strings.push(format!("{} {}-{}   LONGEST RALLY {}", d.label(), MATCH_POINT, 9, 42));
+            strings.push(format!(
+                "{} {}-{}   LONGEST RALLY {}",
+                d.label(),
+                MATCH_POINT,
+                9,
+                42
+            ));
         }
         strings.push(format!("BEST RALLY {}", 137));
         strings.push(format!("RALLY {}", 23));
@@ -450,7 +472,10 @@ mod tests {
         let vp = Viewport::fit(0, 0);
         assert!(vp.scale.is_finite());
         assert!(vp.x(100.0).is_positive() || vp.x(100.0) <= 0);
-        assert!(vp.len(10.0) >= 1, "a thin object must never vanish entirely");
+        assert!(
+            vp.len(10.0) >= 1,
+            "a thin object must never vanish entirely"
+        );
     }
 
     #[test]
@@ -469,7 +494,9 @@ mod tests {
                 Phase::Serve,
                 Phase::Playing,
                 Phase::Over { winner: Side::Left },
-                Phase::Over { winner: Side::Right },
+                Phase::Over {
+                    winner: Side::Right,
+                },
             ] {
                 let mut s = GameState::new();
                 s.begin();

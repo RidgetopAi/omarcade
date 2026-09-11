@@ -37,10 +37,8 @@ mod physics;
 mod state;
 
 use omarcade_core::geom::Vec2;
-use physics::{step_fixed, FIXED_DT};
-use state::{
-    Difficulty, GameState, Phase, Side, BALL_RADIUS, FIELD_H, FIELD_W,
-};
+use physics::{FIXED_DT, step_fixed};
+use state::{BALL_RADIUS, Difficulty, FIELD_H, FIELD_W, GameState, Phase, Side};
 
 /// Where a rally can leave you, as a fraction of the field height.
 const STARTS: [(&str, f32); 5] = [
@@ -94,7 +92,10 @@ fn attempt(difficulty: Difficulty, start_y: f32, shot: Shot, speed_mult: f32) ->
     // shot is genuinely slower across the field — same as in play.
     let speed = difficulty.ball_speed() * speed_mult;
     let vx_mag = (speed * speed - shot.vy * shot.vy).max(1.0).sqrt();
-    s.ball.pos = Vec2::new(FIELD_W - state::PADDLE_INSET - state::PADDLE_W - BALL_RADIUS, shot.from_y);
+    s.ball.pos = Vec2::new(
+        FIELD_W - state::PADDLE_INSET - state::PADDLE_W - BALL_RADIUS,
+        shot.from_y,
+    );
     s.ball.vel = Vec2::new(-vx_mag, shot.vy);
     s.trail.clear();
 
@@ -177,12 +178,7 @@ fn sweep(difficulty: Difficulty, start_frac: f32, speed_mult: f32) -> (u32, u32,
         for j in 0..11 {
             // vy from steeply up to steeply down.
             let vy = -400.0 + (j as f32) * 80.0;
-            let a = attempt(
-                difficulty,
-                start_y,
-                Shot { from_y, vy },
-                speed_mult,
-            );
+            let a = attempt(difficulty, start_y, Shot { from_y, vy }, speed_mult);
             total += 1;
             if a.reached {
                 reached += 1;
@@ -194,12 +190,7 @@ fn sweep(difficulty: Difficulty, start_frac: f32, speed_mult: f32) -> (u32, u32,
         }
     }
 
-    (
-        reached,
-        total,
-        worst_miss,
-        max_reach_distance,
-    )
+    (reached, total, worst_miss, max_reach_distance)
 }
 
 fn main() {

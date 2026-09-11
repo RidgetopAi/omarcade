@@ -11,6 +11,7 @@
 mod ai;
 mod physics;
 mod render;
+mod sound;
 mod state;
 
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
@@ -47,10 +48,10 @@ const LEGACY_GAME_ID: &str = "omarcade-pong";
 
 struct Volley {
     theme: Theme,
-    /// The volume readout. Volley has no sounds of its own yet, which makes
-    /// this MORE useful here rather than less: the volume keys still work,
-    /// and without a readout there is nothing at all to show they did.
+    /// The volume readout.
     volume: VolumeIndicator,
+    /// Volley's five voices. See `sound`.
+    sound: sound::Bank,
     state: GameState,
     accumulator: Accumulator,
     opponent: Opponent,
@@ -75,7 +76,10 @@ struct Volley {
 }
 
 impl Volley {
-    fn new(theme: Theme) -> Self {
+    /// ⚠️ Takes the `AudioSystem` so voices can be registered while it is
+    /// still accepting them. The alternative — registering inside `main`
+    /// and passing the `Bank` in — splits one decision across two files.
+    fn new(theme: Theme, audio: &mut AudioSystem) -> Self {
         // Longest rally is higher-is-better, so the default ranking is
         // the right one and no `lower_is_better()` is needed here.
         let scores = ScoreFile::load_or_migrate(GAME_ID, GAME_NAME, LEGACY_GAME_ID);
@@ -85,6 +89,7 @@ impl Volley {
         let mut game = Volley {
             theme,
             volume: VolumeIndicator::new(),
+            sound: sound::Bank::register(audio),
             state,
             accumulator: Accumulator::new(),
             opponent,
@@ -245,6 +250,15 @@ impl Game for Volley {
         self.opponent.update(&mut self.state, dt);
         physics::step(&mut self.state, &mut self.accumulator, dt);
 
+        // Everything the simulation thought was worth hearing, played once
+        // per frame rather than once per fixed tick.
+        //
+        // ⚠️ `physics::step` runs several fixed ticks in a frame, so
+        // draining HERE — after the whole step rather than inside it — is
+        // what keeps a slow frame from playing the same bounce twice.
+        let bank = &mut self.sound;
+        self.state.drain_cues(|cue| bank.play(audio, cue));
+
         if self.state.is_over() {
             self.bank_score();
         }
@@ -269,9 +283,14 @@ impl Game for Volley {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let theme = Theme::load();
 
+    // Registration is startup-only, so the system is built here and the
+    // voices go in before `run` opens the device.
+    let mut audio = AudioSystem::new();
+    let game = Volley::new(theme, &mut audio);
+
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
-        .run(Volley::new(theme), AudioSystem::new())?;
+        .run(game, audio)?;
 
     Ok(())
 }
@@ -281,7 +300,11 @@ mod pause_tests {
     use super::*;
 
     fn game() -> Volley {
-        Volley::new(Theme::default())
+        // A registered-but-never-started AudioSystem: the voices go in,
+        // no device is ever opened, and nothing renders. Exactly what a
+        // headless test wants.
+        let mut audio = AudioSystem::new();
+        Volley::new(Theme::default(), &mut audio)
     }
 
     /// A match in progress, which is where a pause matters.
@@ -306,7 +329,10 @@ mod pause_tests {
     #[test]
     fn escape_still_quits_and_does_not_pause() {
         let mut g = playing();
-        assert!(!g.on_input(InputEvent::KeyDown(Key::Escape)), "Escape must quit");
+        assert!(
+            !g.on_input(InputEvent::KeyDown(Key::Escape)),
+            "Escape must quit"
+        );
         assert!(!g.pause.is_paused(), "Escape must never pause");
     }
 

@@ -157,7 +157,9 @@ fn build(scene: &str) -> GameState {
             s.score_right = state::MATCH_POINT;
             s.longest_rally = 22;
             s.best = 44;
-            s.phase = Phase::Over { winner: Side::Right };
+            s.phase = Phase::Over {
+                winner: Side::Right,
+            };
         }
 
         other => {

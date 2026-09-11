@@ -25,8 +25,8 @@ mod physics;
 mod state;
 
 use ai::Opponent;
-use physics::{serve, step_fixed, FIXED_DT};
-use state::{Difficulty, GameState, Phase, Side, FIELD_H, MATCH_POINT, PADDLE_SPEED};
+use physics::{FIXED_DT, serve, step_fixed};
+use state::{Difficulty, FIELD_H, GameState, MATCH_POINT, PADDLE_SPEED, Phase, Side};
 
 /// A scripted player of a known, fixed standard.
 ///
@@ -48,11 +48,26 @@ struct Bench {
 
 impl Bench {
     /// Someone who has played Pong twice.
-    const POOR: Bench = Bench { speed: 0.70, reaction: 0.20, slop: 60.0, depth: 1 };
+    const POOR: Bench = Bench {
+        speed: 0.70,
+        reaction: 0.20,
+        slop: 60.0,
+        depth: 1,
+    };
     /// A normal person paying attention.
-    const FAIR: Bench = Bench { speed: 0.88, reaction: 0.10, slop: 28.0, depth: 2 };
+    const FAIR: Bench = Bench {
+        speed: 0.88,
+        reaction: 0.10,
+        slop: 28.0,
+        depth: 2,
+    };
     /// Someone who is good at this.
-    const GOOD: Bench = Bench { speed: 1.0, reaction: 0.045, slop: 10.0, depth: 4 };
+    const GOOD: Bench = Bench {
+        speed: 1.0,
+        reaction: 0.045,
+        slop: 10.0,
+        depth: 4,
+    };
 }
 
 /// The benchmark player's running state.
@@ -65,7 +80,12 @@ struct BenchPlayer {
 
 impl BenchPlayer {
     fn new(cfg: Bench) -> Self {
-        BenchPlayer { cfg, target: FIELD_H / 2.0, cooldown: 0.0, ticks: 0 }
+        BenchPlayer {
+            cfg,
+            target: FIELD_H / 2.0,
+            cooldown: 0.0,
+            ticks: 0,
+        }
     }
 
     /// Predict where the ball will arrive, then aim off by `slop`.
@@ -137,7 +157,11 @@ fn play_match(difficulty: Difficulty, cfg: Bench, variant: u32) -> Outcome {
     let mut opponent = Opponent::new(Side::Right, difficulty);
     let mut bench = BenchPlayer::new(cfg);
     // Vary the opening: who serves, and where the benchmark starts.
-    s.serving = if variant % 2 == 0 { Side::Left } else { Side::Right };
+    s.serving = if variant % 2 == 0 {
+        Side::Left
+    } else {
+        Side::Right
+    };
     bench.ticks = variant;
     let start = (variant % 7) as f32 * 40.0;
     s.left.y = start.min(FIELD_H - s.left.h);
@@ -178,7 +202,11 @@ fn main() {
     let mut failures: Vec<String> = Vec::new();
 
     for d in Difficulty::ALL {
-        for (label, cfg) in [("poor", Bench::POOR), ("fair", Bench::FAIR), ("good", Bench::GOOD)] {
+        for (label, cfg) in [
+            ("poor", Bench::POOR),
+            ("fair", Bench::FAIR),
+            ("good", Bench::GOOD),
+        ] {
             let mut wins = 0u32;
             let mut ai_pts = 0u32;
             let mut bench_pts = 0u32;
@@ -207,7 +235,9 @@ fn main() {
         }
 
         // Every tier must be a real difficulty, not an absolute.
-        let vs_fair = (0..MATCHES).filter(|&v| play_match(d, Bench::FAIR, v).ai_won).count();
+        let vs_fair = (0..MATCHES)
+            .filter(|&v| play_match(d, Bench::FAIR, v).ai_won)
+            .count();
         let rate = 100.0 * vs_fair as f32 / MATCHES as f32;
         if rate == 0.0 || rate == 100.0 {
             failures.push(format!(
@@ -220,7 +250,9 @@ fn main() {
 
     // The shape the design asks for: harder must actually be harder.
     let win_vs_fair = |d: Difficulty| {
-        (0..MATCHES).filter(|&v| play_match(d, Bench::FAIR, v).ai_won).count()
+        (0..MATCHES)
+            .filter(|&v| play_match(d, Bench::FAIR, v).ai_won)
+            .count()
     };
     let (e, n, h) = (
         win_vs_fair(Difficulty::Easy),

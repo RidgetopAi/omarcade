@@ -36,10 +36,12 @@ mod physics;
 #[path = "../src/state.rs"]
 mod state;
 
-use omarcade_core::geom::Vec2;
 use ai::{Opponent, Skill};
-use physics::{serve, step_fixed, FIXED_DT};
-use state::{Difficulty, GameState, Phase, Side, BALL_RADIUS, FIELD_H, FIELD_W, PADDLE_INSET, PADDLE_W};
+use omarcade_core::geom::Vec2;
+use physics::{FIXED_DT, serve, step_fixed};
+use state::{
+    BALL_RADIUS, Difficulty, FIELD_H, FIELD_W, GameState, PADDLE_INSET, PADDLE_W, Phase, Side,
+};
 
 const SETTLE: f32 = 6.0;
 
@@ -66,9 +68,24 @@ struct Reactive {
 }
 
 impl Reactive {
-    const POOR: Reactive = Reactive { speed: 0.70, reaction: 0.20, slop: 60.0, lead: 0.05 };
-    const FAIR: Reactive = Reactive { speed: 0.88, reaction: 0.10, slop: 28.0, lead: 0.12 };
-    const GOOD: Reactive = Reactive { speed: 1.0, reaction: 0.045, slop: 10.0, lead: 0.25 };
+    const POOR: Reactive = Reactive {
+        speed: 0.70,
+        reaction: 0.20,
+        slop: 60.0,
+        lead: 0.05,
+    };
+    const FAIR: Reactive = Reactive {
+        speed: 0.88,
+        reaction: 0.10,
+        slop: 28.0,
+        lead: 0.12,
+    };
+    const GOOD: Reactive = Reactive {
+        speed: 1.0,
+        reaction: 0.045,
+        slop: 10.0,
+        lead: 0.25,
+    };
 }
 
 struct ReactivePlayer {
@@ -80,7 +97,12 @@ struct ReactivePlayer {
 
 impl ReactivePlayer {
     fn new(cfg: Reactive, ticks: u32) -> Self {
-        ReactivePlayer { cfg, target: FIELD_H / 2.0, cooldown: 0.0, ticks }
+        ReactivePlayer {
+            cfg,
+            target: FIELD_H / 2.0,
+            cooldown: 0.0,
+            ticks,
+        }
     }
 
     fn update(&mut self, s: &mut GameState) {
@@ -158,8 +180,7 @@ fn reachability(c: Candidate, start_frac: f32, speed_mult: f32) -> f32 {
 
             let speed = c.ball_speed * speed_mult;
             let vx_mag = (speed * speed - vy * vy).max(1.0).sqrt();
-            s.ball.pos =
-                Vec2::new(FIELD_W - PADDLE_INSET - PADDLE_W - BALL_RADIUS, from_y);
+            s.ball.pos = Vec2::new(FIELD_W - PADDLE_INSET - PADDLE_W - BALL_RADIUS, from_y);
             s.ball.vel = Vec2::new(-vx_mag, vy);
             s.trail.clear();
 
@@ -322,7 +343,11 @@ fn main() {
             let mut c = current(d);
             c.paddle_speed = ps;
             let v = evaluate(c, std, MATCHES);
-            let flag = if v.corner_reach >= 95.0 { " <- reachable" } else { "" };
+            let flag = if v.corner_reach >= 95.0 {
+                " <- reachable"
+            } else {
+                ""
+            };
             println!(
                 "{:<8} {:>8.0} {:>9.0}% {:>11.0}% {:>11.0}%{}",
                 d.label(),

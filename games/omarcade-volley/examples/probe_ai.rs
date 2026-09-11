@@ -9,7 +9,7 @@
 //! so the win rate means something specific: not "is the AI good" but
 //! "how does it do against a player who tracks with THIS much skill".
 //!
-//!   cargo run -p omarcade-pong --example probe_ai
+//!   cargo run -p omarcade-volley --example probe_ai
 //!
 //! What to look for: Easy should lose most matches to a mediocre
 //! player, Hard should win most against a good one, and every tier
@@ -166,7 +166,7 @@ fn play_match(difficulty: Difficulty, cfg: Bench, variant: u32) -> Outcome {
 fn main() {
     const MATCHES: u32 = 60;
 
-    println!("Pong opponent — measured over {MATCHES} matches per cell\n");
+    println!("Volley opponent — measured over {MATCHES} matches per cell\n");
     println!("PADDLE_SPEED {PADDLE_SPEED}, match to {MATCH_POINT}\n");
 
     println!(

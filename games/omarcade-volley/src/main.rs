@@ -1,4 +1,4 @@
-//! Pong — the second Omarcade title.
+//! Volley — the second Omarcade title.
 //!
 //! This file is only wiring: input to intent, time to the simulation,
 //! state to the renderer. The game lives in `state`/`physics`/`ai`, the
@@ -23,19 +23,31 @@ use ai::Opponent;
 use physics::Accumulator;
 use state::{GameState, Phase, Side};
 
-const TITLE: &str = "Omarcade Pong";
+const TITLE: &str = "Omarcade Volley";
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 720;
 
 /// Score-file id. Matches the binary name and the file the marquee
-/// reads, so it is public surface: renaming it orphans everyone's
-/// scores.
-const GAME_ID: &str = "omarcade-pong";
-const GAME_NAME: &str = "Pong";
+/// reads, so it is public surface.
+///
+/// This game shipped as Pong and was renamed. Renaming the id renames the
+/// score file, which is why [`LEGACY_GAME_ID`] exists rather than this
+/// being a one-line change: the records under the old name are real runs
+/// on a real machine and they are carried across on first launch.
+const GAME_ID: &str = "omarcade-volley";
+const GAME_NAME: &str = "Volley";
 
-struct Pong {
+/// The id this game's scores were written under before the rename.
+///
+/// Kept as a constant rather than inlined because it is a historical
+/// fact with an expiry: once every install has launched once, no
+/// `omarcade-pong.json` exists anywhere and this can go. It is harmless
+/// until then — a missing legacy file is the ordinary case, not an error.
+const LEGACY_GAME_ID: &str = "omarcade-pong";
+
+struct Volley {
     theme: Theme,
-    /// The volume readout. Pong has no sounds of its own yet, which makes
+    /// The volume readout. Volley has no sounds of its own yet, which makes
     /// this MORE useful here rather than less: the volume keys still work,
     /// and without a readout there is nothing at all to show they did.
     volume: VolumeIndicator,
@@ -62,15 +74,15 @@ struct Pong {
     pause: Pause,
 }
 
-impl Pong {
+impl Volley {
     fn new(theme: Theme) -> Self {
         // Longest rally is higher-is-better, so the default ranking is
         // the right one and no `lower_is_better()` is needed here.
-        let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
+        let scores = ScoreFile::load_or_migrate(GAME_ID, GAME_NAME, LEGACY_GAME_ID);
         let state = GameState::new();
         let opponent = Opponent::new(Side::Right, state.difficulty);
 
-        let mut game = Pong {
+        let mut game = Volley {
             theme,
             volume: VolumeIndicator::new(),
             state,
@@ -160,7 +172,7 @@ impl Pong {
     }
 }
 
-impl Game for Pong {
+impl Game for Volley {
     fn on_input(&mut self, event: InputEvent) -> bool {
         match event {
             InputEvent::KeyDown(Key::Escape) => return false,
@@ -244,7 +256,7 @@ impl Game for Pong {
         // change made while paused stays legible instead of being dimmed
         // with the field under it.
         //
-        // ⚠️ Centred on the WINDOW here, unlike Pixel Break. Pong's ball
+        // ⚠️ Centred on the WINDOW here, unlike Pixel Break. Volley's ball
         // crosses the whole field, so no band is permanently clear — but
         // the scores sit at the top (y=46) and the hint at the bottom
         // (y=694), and the middle is the one place the overlay collides
@@ -259,7 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
-        .run(Pong::new(theme), AudioSystem::new())?;
+        .run(Volley::new(theme), AudioSystem::new())?;
 
     Ok(())
 }
@@ -268,12 +280,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod pause_tests {
     use super::*;
 
-    fn game() -> Pong {
-        Pong::new(Theme::default())
+    fn game() -> Volley {
+        Volley::new(Theme::default())
     }
 
     /// A match in progress, which is where a pause matters.
-    fn playing() -> Pong {
+    fn playing() -> Volley {
         let mut g = game();
         g.state.phase = Phase::Playing;
         g

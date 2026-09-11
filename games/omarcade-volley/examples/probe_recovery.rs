@@ -20,7 +20,7 @@
 //!    leaves you). That difference is the cost of the previous shot,
 //!    and it is what "after a rally" means.
 //!
-//!   cargo run --release -q -p omarcade-pong --example probe_recovery
+//!   cargo run --release -q -p omarcade-volley --example probe_recovery
 //!
 //! What to look for: whether EASY is meaningfully more forgiving than
 //! HARD. `PADDLE_SPEED` is a single global constant that difficulty
@@ -203,7 +203,7 @@ fn sweep(difficulty: Difficulty, start_frac: f32, speed_mult: f32) -> (u32, u32,
 }
 
 fn main() {
-    println!("Pong — CAN A PERFECT PLAYER EVEN GET THERE?");
+    println!("Volley — CAN A PERFECT PLAYER EVEN GET THERE?");
     println!(
         "Paddle speed is now PER TIER (easy {:.0} / normal {:.0} / hard {:.0}); field {FIELD_H} px.",
         Difficulty::Easy.paddle_speed(),

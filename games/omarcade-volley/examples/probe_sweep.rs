@@ -11,7 +11,7 @@
 //! against both properties at once, then read off the settings that
 //! satisfy both.
 //!
-//!   cargo run --release -q -p omarcade-pong --example probe_sweep
+//!   cargo run --release -q -p omarcade-volley --example probe_sweep
 //!
 //! The two properties a tier must satisfy, stated as numbers:
 //!
@@ -275,7 +275,7 @@ fn current(d: Difficulty) -> Candidate {
 fn main() {
     const MATCHES: u32 = 40;
 
-    println!("Pong — SWEEPING CANDIDATE TIER CONSTANTS\n");
+    println!("Volley — SWEEPING CANDIDATE TIER CONSTANTS\n");
     println!("Each tier is judged against the player it is FOR:");
     println!("  EASY vs a poor player · NORMAL vs fair · HARD vs good\n");
     println!("Targets: corner reachability >= 95% (nothing unanswerable),");

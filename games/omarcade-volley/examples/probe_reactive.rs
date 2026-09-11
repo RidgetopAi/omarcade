@@ -34,7 +34,7 @@
 //!
 //! Run it beside the predictive one:
 //!
-//!   cargo run --release -q -p omarcade-pong --example probe_reactive
+//!   cargo run --release -q -p omarcade-volley --example probe_reactive
 //!
 //! What to look for: the PREDICTIVE and REACTIVE columns for the same
 //! tier. If reactive is far worse, the difficulty cliff in `probe_ai`
@@ -357,7 +357,7 @@ fn measure(difficulty: Difficulty, make: impl Fn() -> Player, matches: u32) -> C
 fn main() {
     const MATCHES: u32 = 60;
 
-    println!("Pong opponent — PREDICTIVE vs REACTIVE yardsticks, {MATCHES} matches per cell");
+    println!("Volley opponent — PREDICTIVE vs REACTIVE yardsticks, {MATCHES} matches per cell");
     println!(
         "Paddle speed PER TIER: easy {:.0} / normal {:.0} / hard {:.0}; match to {MATCH_POINT}",
         Difficulty::Easy.paddle_speed(),

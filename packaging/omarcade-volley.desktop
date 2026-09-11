@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Omarcade Volley
+GenericName=Arcade Game
+Comment=First to eleven against an opponent that plays like it means it.
+Exec=@BINDIR@/omarcade-volley
+Icon=omarcade
+Terminal=false
+Categories=Game;ArcadeGame;
+# "pong" stays as a SEARCH TERM, not as identity: someone who opens their
+# launcher and types the genre they know should still find this. The name,
+# the binary and the score file are Volley everywhere.
+Keywords=arcade;volley;pong;retro;omarcade;game;
+StartupNotify=true
+StartupWMClass=omarcade

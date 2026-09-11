@@ -1,6 +1,6 @@
 [package]
-name = "omarcade-pong"
-description = "Pong, the second Omarcade title."
+name = "omarcade-volley"
+description = "Volley, the second Omarcade title."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

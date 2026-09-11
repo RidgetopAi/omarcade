@@ -147,6 +147,71 @@ impl ScoreFile {
         }
     }
 
+    /// Load, adopting an earlier id's file if this game has been renamed.
+    ///
+    /// A game's id names its score file, so renaming a game orphans every
+    /// score anyone ever set. Volley is the first to hit this for real —
+    /// it shipped as Pong and its records include runs the author cared
+    /// about — but renaming is a property of the CABINET rather than a
+    /// rule of any one game, so the migration lives here beside the file
+    /// format it rewrites. Game four gets it free.
+    ///
+    /// The new file wins whenever it exists. That is what makes this
+    /// idempotent: after the first launch there is a `<id>.json`, so the
+    /// legacy branch is never taken again, and a player who already has
+    /// real scores under the new name cannot have them replaced by a
+    /// stale file left behind on disk.
+    ///
+    /// The legacy file is REMOVED once its contents are safely published
+    /// under the new name. Leaving it would be a slow leak of exactly the
+    /// kind that has bitten this project before: a stale artefact from an
+    /// old name that the installer never cleans and the marquee may still
+    /// scan, showing the same game twice under two titles.
+    ///
+    /// Failure is swallowed, matching how games treat [`save`](Self::save):
+    /// a scoreboard that cannot be migrated is not a reason to refuse to
+    /// start. The worst case is an empty table, which is also exactly what
+    /// a fresh install looks like.
+    pub fn load_or_migrate(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        legacy_id: &str,
+    ) -> Self {
+        let id = id.into();
+        let name = name.into();
+
+        let new_exists = path_for(&id).is_some_and(|p| p.exists());
+        let legacy_path = path_for(legacy_id);
+        let legacy_raw = legacy_path
+            .as_ref()
+            .filter(|_| !new_exists)
+            .and_then(|p| fs::read_to_string(p).ok());
+
+        match migration_plan(new_exists, legacy_raw.as_deref()) {
+            MigrationPlan::LoadNormally => Self::load_or_new(id, name),
+            MigrationPlan::Carry(carried) => {
+                let mut carried = *carried;
+                // The code owns identity, exactly as load_or_new already
+                // asserts for the display name — the stored id is the OLD
+                // one by definition, and saving it unchanged would write
+                // straight back to the file we are migrating away from.
+                carried.id = id;
+                carried.name = name;
+
+                // Publish under the new name BEFORE removing the old one,
+                // so an interruption between the two leaves the scores
+                // readable somewhere rather than nowhere.
+                if carried.save().is_ok() {
+                    if let Some(p) = legacy_path {
+                        let _ = fs::remove_file(p);
+                    }
+                }
+
+                carried
+            }
+        }
+    }
+
     /// Load, then apply this game's ranking direction.
     ///
     /// The direction is a fact about the GAME, not about the file: a
@@ -278,6 +343,53 @@ impl ScoreFile {
         // The atomic publish. Readers see either the old file or the new one,
         // never a partial write.
         fs::rename(&tmp, &path)
+    }
+}
+
+/// What [`ScoreFile::load_or_migrate`] should do, decided WITHOUT touching
+/// the filesystem.
+///
+/// Split out for one reason: the decision is the part that can be wrong,
+/// and it cannot be tested through the real filesystem. `set_var` on
+/// `XDG_STATE_HOME` is unsafe in edition 2024 and would race every other
+/// test in this binary — which is why [`scores_dir`]'s own test asserts a
+/// shape rather than redirecting the directory. Keeping the rules pure
+/// means they can be exercised exhaustively, including the cases that
+/// only happen on someone else's machine.
+#[derive(Debug)]
+enum MigrationPlan {
+    /// Nothing to carry; take the ordinary load path.
+    LoadNormally,
+    /// Adopt this record under the new id.
+    Carry(Box<ScoreFile>),
+}
+
+/// Decide whether a rename should adopt an older file.
+///
+/// `legacy_raw` is the old file's contents, or `None` if it is absent or
+/// unreadable. It is only ever read when the new file does not exist, so
+/// passing `None` alongside `new_exists = true` is the normal steady state
+/// rather than a special case.
+fn migration_plan(new_exists: bool, legacy_raw: Option<&str>) -> MigrationPlan {
+    // The new file always wins. This is what makes migration idempotent
+    // after the first launch, and it is also the guard that stops a stale
+    // file left on disk from overwriting scores someone has actually set
+    // under the new name.
+    if new_exists {
+        return MigrationPlan::LoadNormally;
+    }
+
+    let Some(raw) = legacy_raw else {
+        return MigrationPlan::LoadNormally;
+    };
+
+    match serde_json::from_str::<ScoreFile>(raw) {
+        // A record from a newer release. Leave it alone rather than
+        // discarding what this version cannot understand — the same call
+        // load_or_new makes when it filters on the version.
+        Ok(f) if f.schema_version != SCHEMA_VERSION => MigrationPlan::LoadNormally,
+        Ok(f) => MigrationPlan::Carry(Box::new(f)),
+        Err(_) => MigrationPlan::LoadNormally,
     }
 }
 
@@ -533,7 +645,7 @@ mod tests {
 
     #[test]
     fn best_is_tracked_per_difficulty() {
-        let mut f = ScoreFile::new("omarcade-pong", "Pong");
+        let mut f = ScoreFile::new("omarcade-volley", "Volley");
         f.record_at(500, "easy");
         f.record_at(300, "hard");
 
@@ -544,7 +656,7 @@ mod tests {
 
     #[test]
     fn a_big_easy_score_is_not_a_new_best_on_hard() {
-        let mut f = ScoreFile::new("omarcade-pong", "Pong");
+        let mut f = ScoreFile::new("omarcade-volley", "Volley");
         f.record_at(300, "hard");
         // Outscores every hard run, but it was a different game.
         assert!(f.record_at(9000, "easy"), "still a best FOR EASY");
@@ -553,7 +665,7 @@ mod tests {
 
     #[test]
     fn difficulties_are_listed_without_duplicates() {
-        let mut f = ScoreFile::new("omarcade-pong", "Pong");
+        let mut f = ScoreFile::new("omarcade-volley", "Volley");
         f.record_at(10, "easy");
         f.record_at(30, "hard");
         f.record_at(20, "easy");
@@ -577,6 +689,100 @@ mod tests {
         f.higher_is_better = false;
         f.sort_entries();
         assert_eq!(f.best(), Some(2));
+    }
+
+    // ------------------------------------------------------------------
+    // Renaming a game. Volley shipped as Pong; its score file is named by
+    // the id, so the rename would otherwise orphan every run anyone had
+    // set. These exercise the DECISION, which is the part that can be
+    // wrong — see MigrationPlan for why it is separated from the I/O.
+    // ------------------------------------------------------------------
+
+    /// Brian's real omarcade-pong.json, trimmed to four entries. The two
+    /// leading scores are from the session where he confirmed the
+    /// difficulty fix; carrying them is the whole point of migrating.
+    const LEGACY_PONG: &str = r#"{
+      "schema_version": 1,
+      "id": "omarcade-pong",
+      "name": "Pong",
+      "higher_is_better": true,
+      "entries": [
+        {"score":59,"at":"2026-09-11T12:40:52Z","difficulty":"easy"},
+        {"score":44,"at":"2026-09-11T12:14:27Z","difficulty":"easy"},
+        {"score":36,"at":"2026-09-01T14:59:08Z","difficulty":"easy"},
+        {"score":29,"at":"2026-08-31T00:07:26Z","difficulty":"normal"}
+      ],
+      "updated_at": "2026-09-11T12:47:35Z"
+    }"#;
+
+    #[test]
+    fn a_rename_carries_the_old_file_when_the_new_one_is_absent() {
+        let plan = migration_plan(false, Some(LEGACY_PONG));
+        let MigrationPlan::Carry(f) = plan else {
+            panic!("expected the legacy file to be carried, got {plan:?}");
+        };
+        assert_eq!(f.best_for("easy"), Some(59), "today's run must survive");
+        assert_eq!(f.best_for("normal"), Some(29));
+        assert_eq!(f.entries.len(), 4);
+    }
+
+    #[test]
+    fn a_rename_is_idempotent_once_the_new_file_exists() {
+        // The second launch, and every launch after it. If this ever
+        // returned Carry, a real table could be replaced by a stale one.
+        let plan = migration_plan(true, Some(LEGACY_PONG));
+        assert!(
+            matches!(plan, MigrationPlan::LoadNormally),
+            "the new file must win outright, got {plan:?}"
+        );
+    }
+
+    #[test]
+    fn a_fresh_install_has_nothing_to_carry() {
+        let plan = migration_plan(false, None);
+        assert!(matches!(plan, MigrationPlan::LoadNormally), "{plan:?}");
+    }
+
+    #[test]
+    fn an_unreadable_legacy_file_is_left_alone() {
+        // Not carried, and — because nothing is carried — never deleted
+        // either. Discarding a record we failed to parse is worse than
+        // leaving it for a later release to understand.
+        let plan = migration_plan(false, Some("{ this is not json"));
+        assert!(matches!(plan, MigrationPlan::LoadNormally), "{plan:?}");
+    }
+
+    #[test]
+    fn a_legacy_file_from_a_newer_release_is_not_carried() {
+        let future = LEGACY_PONG.replace(
+            r#""schema_version": 1"#,
+            r#""schema_version": 2"#,
+        );
+        assert!(future.contains(r#""schema_version": 2"#), "fixture edit landed");
+        let plan = migration_plan(false, Some(&future));
+        assert!(matches!(plan, MigrationPlan::LoadNormally), "{plan:?}");
+    }
+
+    #[test]
+    fn the_carried_record_is_rewritten_to_the_new_identity() {
+        // The id is what names the file. Carrying it unchanged would save
+        // straight back over the file being migrated away from, which
+        // would leave the rename looking successful while changing
+        // nothing on disk.
+        let MigrationPlan::Carry(f) = migration_plan(false, Some(LEGACY_PONG)) else {
+            panic!("expected Carry");
+        };
+        let mut carried = *f;
+        assert_eq!(carried.id, "omarcade-pong", "as stored");
+
+        carried.id = "omarcade-volley".to_string();
+        carried.name = "Volley".to_string();
+
+        let round = serde_json::to_string(&carried).unwrap();
+        let back: ScoreFile = serde_json::from_str(&round).unwrap();
+        assert_eq!(back.id, "omarcade-volley");
+        assert_eq!(back.name, "Volley");
+        assert_eq!(back.best_for("easy"), Some(59), "scores survive the rewrite");
     }
 
     #[test]

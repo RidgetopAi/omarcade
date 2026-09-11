@@ -6,7 +6,7 @@ Not emulation and not clones of anyone's ROMs — small games written from
 scratch in Rust, drawing straight into a pixel buffer, that read your active
 Omarchy theme and idle at roughly nothing when you're not playing.
 
-**Status:** early, but real. Three games (Pixel Break, Pong and Omaprix, a
+**Status:** early, but real. Three games (Pixel Break, Volley and Omaprix, a
 pseudo-3D racer) are playable and tested, the shared engine underneath them
 is the actual work, and the cross-game marquee is live in the Omarchy bar.
 
@@ -14,9 +14,9 @@ is the actual work, and the cross-game marquee is live in the Omarchy bar.
 
 *Pixel Break, drawing itself in the active Omarchy theme.*
 
-![Omarcade Pong](docs/pong.png)
+![Omarcade Volley](docs/volley.png)
 
-*Pong, mid-rally. Both images were produced by the games' own headless
+*Volley, mid-rally. Both images were produced by the games' own headless
 renderers, not screenshotted from a window.*
 
 ---
@@ -68,10 +68,10 @@ paddle, so you steer it rather than just blocking it.
 
 ---
 
-## Pong
+## Volley
 
 ```bash
-omarcade-pong
+omarcade-volley
 ```
 
 | Key | Action |
@@ -101,7 +101,7 @@ scripted players of a fixed standard:
 | **Normal** | 100% | 65% | 0% |
 | **Hard** | 100% | 97% | 25% |
 
-Run it yourself: `cargo run --release -p omarcade-pong --example probe_ai`.
+Run it yourself: `cargo run --release -p omarcade-volley --example probe_ai`.
 
 ---
 
@@ -148,7 +148,7 @@ games/omarcade-pixel-break/src/
   physics.rs   fixed 240Hz timestep + collision — the only file that advances time
   render.rs    letterboxed viewport, bitmap-font HUD
   main.rs      wiring
-games/omarcade-pong/src/
+games/omarcade-volley/src/
   state.rs     world model, difficulty tiers, no behaviour
   physics.rs   fixed 240Hz timestep, paddle steering, the rally ramp
   ai.rs        the opponent: predict, then get it wrong on purpose
@@ -187,13 +187,13 @@ cargo run -p omarcade-pixel-break --example simulate -- 200000
 cargo run -p omarcade-pixel-break --example probe_tunnel
 cargo run -p omarcade-pixel-break --example probe_shallow
 
-# Measure how good the Pong opponent actually is, per difficulty
-cargo run --release -p omarcade-pong --example probe_ai
+# Measure how good the Volley opponent actually is, per difficulty
+cargo run --release -p omarcade-volley --example probe_ai
 
 # Render any game state straight to a PNG
 cargo run -p omarcade-pixel-break --example dump_frame -- midgame out.png
 #   scenes: ready | playing | midgame | won | lost
-cargo run -p omarcade-pong --example dump_frame -- rally out.png
+cargo run -p omarcade-volley --example dump_frame -- rally out.png
 #   scenes: select | serve | rally | matchpoint | won | lost
 ```
 

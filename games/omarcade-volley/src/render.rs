@@ -231,7 +231,7 @@ fn draw_rally(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Vi
 /// The difficulty select.
 fn draw_select(state: &GameState, canvas: &mut Canvas<'_>, theme: &Theme, vp: &Viewport) {
     let title_scale = vp.text_scale(5.0);
-    let title = "PONG";
+    let title = "VOLLEY";
     text(
         canvas,
         title,
@@ -405,7 +405,7 @@ mod tests {
 
         // The literal strings, including every generated one.
         let mut strings = vec![
-            "PONG".to_string(),
+            "VOLLEY".to_string(),
             "UP DOWN TO CHOOSE".to_string(),
             "SPACE TO START".to_string(),
             "SPACE TO SERVE".to_string(),

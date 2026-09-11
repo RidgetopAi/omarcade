@@ -4,7 +4,7 @@
 //! screenshotting a live window, which depends on the compositor, the
 //! active theme, and whatever the game happened to be doing.
 //!
-//!   cargo run -p omarcade-pong --example dump_frame -- <scene> <out.png> [w] [h]
+//!   cargo run -p omarcade-volley --example dump_frame -- <scene> <out.png> [w] [h]
 //!
 //! Scenes: select | serve | rally | matchpoint | won | lost
 //!

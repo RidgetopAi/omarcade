@@ -17,7 +17,7 @@ ICONDIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 # game is registered: the cabinet and the marquee discover games from
 # what is installed and what has written a score, never from a list of
 # their own.
-GAMES=(omarcade-pixel-break omarcade-pong omarcade-racer)
+GAMES=(omarcade-pixel-break omarcade-volley omarcade-racer)
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 say() { printf '  %s\n' "$*"; }
@@ -69,12 +69,32 @@ if [[ -f $old_scores && ! -f $new_scores ]]; then
   say "migrated Breakout scores -> $new_scores (entries marked legacy)"
 fi
 
-# Breakout's binary and launcher entry, left behind, are a second game on the
-# cabinet and a second entry in the app menu -- both launching a binary that no
-# longer exists. The uninstall loop cannot reach them: it iterates GAMES, which
-# now names pixel-break. Same reason as omarcade.desktop below.
-rm -f "$BINDIR/omarcade-breakout"
-rm -f "$APPDIR/omarcade-breakout.desktop"
+# --- Retired binary names ----------------------------------------------------
+# Every id this suite has shipped under and then renamed away from.
+#
+# A left-behind binary and launcher entry are a second game on the cabinet and
+# a second entry in the app menu -- both launching a build that no longer
+# matches the game it claims to be. The uninstall loop cannot reach them: it
+# iterates GAMES, which by definition names only current titles. Same reason as
+# omarcade.desktop below.
+#
+# This is a LIST because it is now the second rename rather than the first, and
+# the check that catches a missed one (find ~/.local/bin ~/.local/share/
+# applications ~/.local/state/omarcade -iname "*<oldname>*") only ever runs on
+# the machine doing the renaming. On everyone else's it is this loop or nothing.
+#
+# ⚠️ SCORE FILES ARE NOT LISTED HERE. Breakout's are migrated above because that
+# rename predates the support; Pong's are carried by ScoreFile::load_or_migrate
+# in core, which is typed, tested, and runs however the game was installed. Two
+# migrations racing for one file is a bug waiting to happen -- if a future
+# rename needs one, add it in core, not here.
+RETIRED=(omarcade-breakout omarcade-pong)
+for old in "${RETIRED[@]}"; do
+  [[ -e $BINDIR/$old ]] && say "removing retired $BINDIR/$old"
+  rm -f "$BINDIR/$old"
+  [[ -e $APPDIR/$old.desktop ]] && say "removing retired $APPDIR/$old.desktop"
+  rm -f "$APPDIR/$old.desktop"
+done
 
 echo "Building Omarcade (release)..."
 # Build one -p flag per game as separate argv entries. A pattern-substitution

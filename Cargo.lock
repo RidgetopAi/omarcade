@@ -1140,14 +1140,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "omarcade-pong"
+name = "omarcade-racer"
 version = "0.1.0"
 dependencies = [
  "omarcade-core",
 ]
 
 [[package]]
-name = "omarcade-racer"
+name = "omarcade-volley"
 version = "0.1.0"
 dependencies = [
  "omarcade-core",

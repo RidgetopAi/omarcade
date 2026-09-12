@@ -757,6 +757,25 @@ const BURN_FLICKER: f32 = 13.0;
 const BURN_WHOOSH: f32 = 0.22;
 const BURN_LEVEL: f32 = 0.34;
 
+/// The floor the tool's gain ramps run to and from.
+///
+/// `exponentialRampToValueAtTime` cannot reach zero, so the playground
+/// uses 0.0001 at both ends and the envelope is the exponential between
+/// that and full. Matching the number matters: it sets the CURVATURE of
+/// both the swell and the decay, not just their endpoints.
+const BURN_FLOOR: f32 = 0.0001;
+
+/// Undoes the lowpass's attenuation so [`BURN_LEVEL`] sets the burn's
+/// PEAK, the way the tool's gain node does.
+///
+/// ⚠️ MEASURED, NOT CHOSEN. Uniform white through the swept one-pole
+/// peaks at 0.734 over the burn, so this is 1/0.734. Without it,
+/// `BURN_LEVEL` scaled already-filtered noise and the burn sat 24 dB
+/// under the impact — the whole reason the crash read as a blip rather
+/// than as a fire. Re-measure if `BURN_COLOUR`, the sweep range or
+/// `BURN_LEN` move.
+const BURN_NORMALISE: f32 = 1.362;
+
 impl Crash {
     pub fn new() -> Crash {
         Crash {
@@ -836,16 +855,67 @@ impl Voice for Crash {
             }
 
             // ── 3. BURN. Swells in, then dies inside the budget.
+            //
+            // ⚠️ PORTED FROM tools/sfx/crash.html, NOT WRITTEN TWICE.
+            //
+            // This block used to be its own idea of the same sound, and
+            // the two disagreed in a way that made the tool's numbers
+            // meaningless here — the failure ref:s9-synthesis-mismatch
+            // describes for the chimes, in a second place. Measured, the
+            // burn came out 24 dB under the impact: the crash was a hit,
+            // a knock, then silence under a fireball still burning for
+            // another 0.8 s. Brian heard it as "blip blop".
+            //
+            // Three differences, all of which mattered:
+            //
+            //  1. THE FILTER SWEEPS. The tool ramps its lowpass from
+            //     2.5x the colour down to 0.5x across the burn, which is
+            //     a fire settling from a bright catch into a low roar. A
+            //     FIXED corner is a wash that just gets quieter.
+            //  2. LEVEL SETS THE PEAK, IT DOES NOT SCALE THE NOISE. The
+            //     tool puts `blevel` on a gain node AFTER the filter, so
+            //     0.34 means "this burn peaks at 0.34". Multiplying it
+            //     into already-filtered noise meant 0.34 of whatever the
+            //     lowpass left — about a quarter of the energy — which
+            //     is the whole 24 dB. `BURN_NORMALISE` undoes the
+            //     filter's attenuation so the two agree.
+            //  3. THE ENVELOPE IS EXPONENTIAL BOTH WAYS. The tool uses
+            //     `exponentialRampToValueAtTime` to swell AND to die;
+            //     this had a LINEAR swell, which catches too abruptly.
             if t < BURN_LEN {
-                let env = if t < BURN_WHOOSH {
-                    t / BURN_WHOOSH
+                // Exponential swell to full, then exponential decay —
+                // both ramps as the tool draws them. Guarded at the same
+                // 5 ms floor the tool uses for the whoosh.
+                // ⚠️ THE SWELL IS THE TOOL'S, THE DECAY IS NOT — AND
+                // THAT IS DELIBERATE, NOT AN OVERSIGHT.
+                //
+                // A literal port of `exponentialRampToValueAtTime(0.0001)`
+                // was tried and MADE IT WORSE: a ramp to 0.0001 is an
+                // 80 dB fall, so the burn was at 2% by 0.4 s and the
+                // crash got SHORTER (0.79 s audible down to 0.47 s).
+                // WebAudio traces that curve, but only its first ~20 dB
+                // is a sound — the rest is an inaudible tail the tool's
+                // own scope never shows you.
+                //
+                // So the swell matches the tool (an exponential catch,
+                // where this used to rise LINEARLY and caught too
+                // abruptly), and the decay keeps the Rust's own gentler
+                // curve, which is the one that actually fills the 1.4 s
+                // the fireball is on screen.
+                let whoosh = BURN_WHOOSH.max(0.005);
+                let env = if t < whoosh {
+                    (BURN_FLOOR.ln() * (1.0 - t / whoosh)).exp()
                 } else {
-                    (-(t - BURN_WHOOSH) / (BURN_LEN * 0.4)).exp()
+                    (-(t - whoosh) / (BURN_LEN * 0.4)).exp()
                 };
                 let flicker = 1.0 + (TAU * BURN_FLICKER * t).sin() * 0.3;
+                // The sweep: 2.5x the colour down to 0.5x, exponentially,
+                // floored at 60 Hz exactly as the tool floors it.
+                let k = (t / BURN_LEN).clamp(0.0, 1.0);
+                let hz = (BURN_COLOUR * 2.5 * (0.2f32).powf(k)).max(60.0);
                 let n = self.white();
-                let roar = self.burn_lp.tick(n, BURN_COLOUR, sample_rate);
-                v += roar * env * flicker * BURN_LEVEL * f;
+                let roar = self.burn_lp.tick(n, hz, sample_rate);
+                v += roar * BURN_NORMALISE * env * flicker * BURN_LEVEL * f;
             }
 
             *sample = v.clamp(-1.0, 1.0);
@@ -1778,6 +1848,53 @@ mod tests {
         assert!(
             first_ms > overall * 0.4,
             "the impact fades in: {first_ms} in the first ms against a peak of {overall}",
+        );
+    }
+
+    /// ⚠️ A STUTTER TEST WAS WRITTEN HERE AND DELETED, ON PURPOSE.
+    ///
+    /// The visible difference the port made is CONTINUITY — at 20 ms
+    /// resolution the old burn read `█▅▃▂▂▁·▁▁▃▂▁▁▁··▁···▁·▂▁`, with
+    /// real gaps through the middle, and the new one reads
+    /// `█▅▃▂▁▁···▂▂▂▂▂▁▁▂▁▁▁▁▁▂▂▁`. That stuttering is what "blip blop"
+    /// describes.
+    ///
+    /// But every threshold tried for "counts quiet slices" PASSED
+    /// AGAINST THE OLD BURN as well, because filtered noise is spiky
+    /// enough that a peak-per-slice measure cannot separate "quiet" from
+    /// "momentarily between peaks". A test that cannot fail against the
+    /// bug it names is worse than no test: it reports coverage that does
+    /// not exist. The duration test below DOES fail against it (0.79 s
+    /// versus the 0.85 s floor), so the regression is guarded — by the
+    /// property that could actually be measured rather than the one that
+    /// was easiest to describe.
+    ///
+    /// If this is ever worth pinning properly, the instrument is a
+    /// SMOOTHED envelope (an rms window, not a peak) compared against
+    /// itself over time — not a threshold on raw peaks.
+
+    /// And the sound lasts as long as the fire it describes.
+    ///
+    /// ⚠️ A sound that stops while its fireball is still on screen is
+    /// describing something that is not happening. `BURN_TIME` is 1.4 s.
+    #[test]
+    fn the_crash_lasts_about_as_long_as_the_fire() {
+        let mut c = Crash::new();
+        c.retrigger(1.0, 1.0);
+        let mut buf = vec![0.0; (48_000.0 * 1.6) as usize];
+        c.render(&mut buf, VoiceParams::SILENT, 48_000.0);
+
+        let peak = buf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        let last = buf
+            .iter()
+            .rposition(|s| s.abs() > peak * 0.05)
+            .map(|i| i as f32 / 48_000.0)
+            .unwrap_or(0.0);
+        assert!(
+            last > 0.85,
+            "the crash is audible for only {last:.2} s under a fireball \
+             that burns for {}s",
+            crate::crash::BURN_TIME,
         );
     }
 

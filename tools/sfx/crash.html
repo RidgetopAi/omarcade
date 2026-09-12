@@ -40,6 +40,24 @@
 
 <header>
   <h1>OMAPRIX · crash playground</h1>
+  <!--
+    ⚠️ THIS TOOL IS NOT A SAMPLE-ACCURATE PORT OF THE RUST.
+
+    It is a graph of WebAudio nodes; the game is hand-written DSP. They
+    agree on the BURN now (the swept lowpass and level-after-filter were
+    ported into sound.rs), but the impact and the crumple are still two
+    implementations of the same idea, which is the failure
+    ref:s9-synthesis-mismatch describes for chimes.html.
+
+    ⇒ Numbers here are a STARTING POINT, not a calibration. Change
+      something, then MEASURE THE RUST:
+        cargo run -p omarcade-racer --example probe_crash
+
+    ⚠️ The sliders were stale for months — they still held their original
+    defaults while the Rust carried Brian's approved tuning, so the tool
+    and the game disagreed on 9 of 14 values. They are synced now. If you
+    retune, update BOTH.
+  -->
   <span class="sub">a one-shot with a shape · the fireball burns for 1.4 s and the sound must fit it</span>
 </header>
 
@@ -90,16 +108,16 @@
       <div class="note">The hit. Sharp, broadband, over in a blink — this is the part that
         makes it a collision rather than an explosion.</div>
       <div class="row"><label>length</label>
-        <input type="range" id="ilen" min="0.01" max="0.25" step="0.005" value="0.08">
+        <input type="range" id="ilen" min="0.01" max="0.25" step="0.005" value="0.16">
         <span class="val" id="ilenv"></span></div>
       <div class="row"><label>tone</label>
-        <input type="range" id="ihz" min="40" max="400" step="5" value="150">
+        <input type="range" id="ihz" min="40" max="400" step="5" value="95">
         <span class="val" id="ihzv"></span></div>
       <div class="row"><label>crack (noise)</label>
-        <input type="range" id="icrack" min="0" max="1" step="0.02" value="0.7">
+        <input type="range" id="icrack" min="0" max="1" step="0.02" value="0.68">
         <span class="val" id="icrackv"></span></div>
       <div class="row"><label>brightness</label>
-        <input type="range" id="icol" min="500" max="12000" step="100" value="4200">
+        <input type="range" id="icol" min="500" max="12000" step="100" value="3300">
         <span class="val" id="icolv"></span></div>
       <div class="row"><label>level</label>
         <input type="range" id="ilevel" min="0" max="1" step="0.02" value="0.8">
@@ -111,13 +129,13 @@
       <div class="note">Metal deforming. A few uneven hits rather than one — this is what
         stops it sounding like a single drum.</div>
       <div class="row"><label>length</label>
-        <input type="range" id="clen" min="0.05" max="0.7" step="0.01" value="0.3">
+        <input type="range" id="clen" min="0.05" max="0.7" step="0.01" value="0.37">
         <span class="val" id="clenv"></span></div>
       <div class="row"><label>pieces</label>
-        <input type="range" id="cbits" min="0" max="10" step="1" value="4">
+        <input type="range" id="cbits" min="0" max="10" step="1" value="2">
         <span class="val" id="cbitsv"></span></div>
       <div class="row"><label>pitch</label>
-        <input type="range" id="chz" min="200" max="4000" step="50" value="1400">
+        <input type="range" id="chz" min="200" max="4000" step="50" value="850">
         <span class="val" id="chzv"></span></div>
       <div class="row"><label>level</label>
         <input type="range" id="clevel" min="0" max="1" step="0.02" value="0.42">
@@ -132,13 +150,13 @@
         <input type="range" id="blen" min="0.2" max="1.4" step="0.02" value="1.1">
         <span class="val" id="blenv"></span></div>
       <div class="row"><label>roar colour</label>
-        <input type="range" id="bcol" min="150" max="3000" step="50" value="700">
+        <input type="range" id="bcol" min="150" max="3000" step="50" value="1050">
         <span class="val" id="bcolv"></span></div>
       <div class="row"><label>flicker</label>
-        <input type="range" id="bflick" min="0" max="30" step="1" value="9">
+        <input type="range" id="bflick" min="0" max="30" step="1" value="13">
         <span class="val" id="bflickv"></span></div>
       <div class="row"><label>whoosh in</label>
-        <input type="range" id="bwhoosh" min="0" max="0.4" step="0.01" value="0.12">
+        <input type="range" id="bwhoosh" min="0" max="0.4" step="0.01" value="0.22">
         <span class="val" id="bwhooshv"></span></div>
       <div class="row"><label>level</label>
         <input type="range" id="blevel" min="0" max="1" step="0.02" value="0.34">

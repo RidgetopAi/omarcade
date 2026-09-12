@@ -92,17 +92,147 @@ pub struct WinitBackend {
     width: u32,
     height: u32,
     idle: Idle,
+    fixed: bool,
 }
 
 impl WinitBackend {
     pub fn new(title: impl Into<String>, width: u32, height: u32) -> Self {
-        WinitBackend { title: title.into(), width, height, idle: Idle::Wait }
+        WinitBackend { title: title.into(), width, height, idle: Idle::Wait, fixed: false }
     }
 
     /// Choose how the loop idles. See [`Idle`].
     pub fn idle(mut self, idle: Idle) -> Self {
         self.idle = idle;
         self
+    }
+
+    /// Render at a fixed resolution and scale the result to the window.
+    ///
+    /// ⚠️ OPT-IN, AND MOST GAMES SHOULD NOT TAKE IT. A game whose
+    /// renderer reads `canvas.width()`/`height()` already adapts to any
+    /// window, natively and at full sharpness; routing it through a
+    /// fixed buffer would throw that away and scale a picture that did
+    /// not need scaling. Pixel Break and Volley are in that group.
+    ///
+    /// This exists for a renderer that CANNOT adapt. The racer projects
+    /// a pseudo-3D road from compile-time constants, and its collision
+    /// geometry is derived from the renderer's own numbers — "the hitbox
+    /// is the art". Resizing its window used to stretch a 960x720
+    /// picture across the corner of a larger buffer. With this set the
+    /// game keeps drawing exactly the frame it was tuned for and the
+    /// BACKEND does the resizing, so the projection math and the
+    /// hitboxes never learn the window changed.
+    ///
+    /// The scale is nearest-neighbour and that is a MEASURED choice, not
+    /// a default — see `probe_scale`. Against the real wallpaper sky at
+    /// 1920x1440 nearest cost 0.97 ms and bilinear 10.41 ms, and nearest
+    /// also looked SHARPER: `backdrop.rs` box-filters the wallpaper once
+    /// at start-up, so the image reaching the frame is already smooth and
+    /// interpolating it again only blurs it.
+    pub fn fixed(mut self, fixed: bool) -> Self {
+        self.fixed = fixed;
+        self
+    }
+}
+
+/// Fits a fixed-size frame into a window and scales it there.
+///
+/// Owns the scratch buffer the game draws into, so the game's canvas is
+/// always exactly the size it asked for no matter what the compositor
+/// hands us.
+struct Scaler {
+    /// The resolution the game renders at. Never changes.
+    src_w: u32,
+    src_h: u32,
+    /// What the game draws into.
+    scratch: Vec<u32>,
+    /// Destination rect inside the window, and the window size it was
+    /// computed for.
+    win_w: u32,
+    win_h: u32,
+    dst_x: u32,
+    dst_y: u32,
+    dst_w: u32,
+    dst_h: u32,
+    /// `cols[i]` is the source column for destination column `i`.
+    ///
+    /// Precomputed per window size rather than per pixel: the inner loop
+    /// becomes an indexed copy instead of a multiply and a divide, and
+    /// the table only changes when someone drags the window edge.
+    cols: Vec<u32>,
+}
+
+impl Scaler {
+    fn new(src_w: u32, src_h: u32) -> Scaler {
+        Scaler {
+            src_w,
+            src_h,
+            scratch: vec![0; (src_w as usize) * (src_h as usize)],
+            win_w: 0,
+            win_h: 0,
+            dst_x: 0,
+            dst_y: 0,
+            dst_w: 0,
+            dst_h: 0,
+            cols: Vec::new(),
+        }
+    }
+
+    /// Recompute the fit, but only when the window size actually changed.
+    fn plan(&mut self, win_w: u32, win_h: u32) {
+        if self.win_w == win_w && self.win_h == win_h {
+            return;
+        }
+        self.win_w = win_w;
+        self.win_h = win_h;
+
+        // The largest source-aspect rect that fits. Integer math
+        // throughout: a float ratio can land a pixel wide of the window
+        // and panic the blit at exactly one window size, which is the
+        // kind of bug that only shows up on someone else's monitor.
+        let by_width = win_w * self.src_h / self.src_w.max(1);
+        let (dw, dh) = if by_width <= win_h {
+            (win_w, by_width)
+        } else {
+            (win_h * self.src_w / self.src_h.max(1), win_h)
+        };
+        self.dst_w = dw.max(1);
+        self.dst_h = dh.max(1);
+        // Centre it; the remainder goes to the right/bottom bar rather
+        // than being split, so the two bars can differ by one pixel and
+        // nothing overruns.
+        self.dst_x = (win_w - self.dst_w) / 2;
+        self.dst_y = (win_h - self.dst_h) / 2;
+
+        self.cols = (0..self.dst_w).map(|x| x * self.src_w / self.dst_w).collect();
+    }
+
+    /// Blit the scratch buffer into `out`, letterboxed.
+    fn present(&self, out: &mut [u32]) {
+        let win_w = self.win_w as usize;
+        let (dst_x, dst_y) = (self.dst_x as usize, self.dst_y as usize);
+        let (dst_w, dst_h) = (self.dst_w as usize, self.dst_h as usize);
+        let src_w = self.src_w as usize;
+
+        // The bars. Only the rows and columns outside the picture, so a
+        // window that already matches the aspect writes nothing extra.
+        let top = dst_y * win_w;
+        out[..top].fill(0);
+        let len = out.len();
+        let bottom = ((dst_y + dst_h) * win_w).min(len);
+        out[bottom..].fill(0);
+
+        for dy in 0..dst_h {
+            let sy = dy * self.src_h as usize / dst_h;
+            let srow = &self.scratch[sy * src_w..][..src_w];
+            let row = &mut out[(dst_y + dy) * win_w..][..win_w];
+            row[..dst_x].fill(0);
+            row[dst_x + dst_w..].fill(0);
+            let drow = &mut row[dst_x..][..dst_w];
+            for dx in 0..dst_w {
+                drow[dx] = srow[self.cols[dx] as usize];
+            }
+        }
     }
 }
 
@@ -128,6 +258,8 @@ impl super::Backend for WinitBackend {
         let mut audio = audio;
         audio.start();
 
+        let scaler = self.fixed.then(|| Scaler::new(self.width, self.height));
+
         let mut app = App {
             cfg: self,
             game,
@@ -136,6 +268,7 @@ impl super::Backend for WinitBackend {
             surface: None,
             last_frame: None,
             error: None,
+            scaler,
         };
 
         event_loop.run_app(&mut app)?;
@@ -164,6 +297,10 @@ struct App<G: Game> {
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
     last_frame: Option<Instant>,
     error: Option<Error>,
+    /// `Some` only for a game that asked for [`WinitBackend::fixed`].
+    /// `None` is the native path, byte-for-byte as it was before this
+    /// existed.
+    scaler: Option<Scaler>,
 }
 
 impl<G: Game> App<G> {
@@ -211,9 +348,27 @@ impl<G: Game> App<G> {
 
         let mut buffer = surface.buffer_mut()?;
 
-        {
-            let mut canvas = Canvas::new(&mut buffer, size.width, size.height);
-            self.game.render(&mut canvas);
+        match &mut self.scaler {
+            // Fixed resolution: the game draws into the scratch buffer at
+            // the size it was built for, and the backend scales that into
+            // the window. The game cannot tell the difference — `Canvas`
+            // wraps any slice, so it sees exactly the dimensions it asked
+            // for whatever the compositor gave us.
+            Some(scaler) => {
+                scaler.plan(size.width, size.height);
+                {
+                    let mut canvas =
+                        Canvas::new(&mut scaler.scratch, scaler.src_w, scaler.src_h);
+                    self.game.render(&mut canvas);
+                }
+                scaler.present(&mut buffer);
+            }
+            // Native: the game renders straight into the window at
+            // whatever size it is, full sharpness, no copy.
+            None => {
+                let mut canvas = Canvas::new(&mut buffer, size.width, size.height);
+                self.game.render(&mut canvas);
+            }
         }
 
         buffer.present()?;
@@ -273,10 +428,18 @@ impl<G: Game> ApplicationHandler for App<G> {
             }
 
             WindowEvent::Resized(size) => {
-                self.deliver(
-                    event_loop,
-                    InputEvent::Resized { width: size.width, height: size.height },
-                );
+                // ⚠️ A FIXED-RESOLUTION GAME IS NEVER RESIZED, so it is
+                // told its own size, not the window's. Reporting the
+                // window would hand it numbers its canvas never has — a
+                // game that laid anything out from this event would put
+                // it off-screen, and the bug would only appear once
+                // someone dragged the window. The backend absorbs the
+                // resize; the game's world is the size it always was.
+                let (width, height) = match &self.scaler {
+                    Some(s) => (s.src_w, s.src_h),
+                    None => (size.width, size.height),
+                };
+                self.deliver(event_loop, InputEvent::Resized { width, height });
             }
 
             WindowEvent::KeyboardInput {
@@ -366,6 +529,19 @@ fn window_attributes(cfg: &WinitBackend) -> WindowAttributes {
         .with_title(cfg.title.clone())
         .with_inner_size(winit::dpi::LogicalSize::new(cfg.width, cfg.height));
 
+    // A floor for a scaled game, so the picture cannot be dragged down
+    // to a few pixels. Quarter size still reads; below that the HUD text
+    // is gone and there is nothing to look at.
+    //
+    // No MAXIMUM: the scale is ~1 ms at 1920x1440 (measured, probe_scale)
+    // and the cost is in the destination pixels, which the compositor
+    // would have to push anyway.
+    let attrs = if cfg.fixed {
+        attrs.with_min_inner_size(winit::dpi::LogicalSize::new(cfg.width / 4, cfg.height / 4))
+    } else {
+        attrs
+    };
+
     #[cfg(all(unix, not(target_os = "macos")))]
     let attrs = {
         use winit::platform::wayland::WindowAttributesExtWayland;
@@ -433,5 +609,127 @@ mod tests {
     #[test]
     fn the_developer_key_is_delivered_in_debug() {
         assert_eq!(translate_key(KeyCode::F8), Some(Key::F8));
+    }
+
+    // ---- the fixed-resolution scaler -------------------------------
+    //
+    // ⚠️ These are about GEOMETRY, which is what actually broke: the old
+    // behaviour drew a 960x720 picture into the corner of a larger
+    // buffer. Whether the picture is pretty is a question for
+    // `probe_scale` and for playing it; these pin down where it lands
+    // and that nothing writes outside the window.
+
+    /// The picture keeps its aspect and is centred, at any window size.
+    #[test]
+    fn the_fit_keeps_aspect_and_centres() {
+        for (w, h) in [(960, 720), (1920, 1440), (1280, 720), (700, 1200), (241, 3001)] {
+            let mut s = Scaler::new(960, 720);
+            s.plan(w, h);
+
+            assert!(s.dst_w <= w && s.dst_h <= h, "{w}x{h}: picture escapes the window");
+
+            // 4:3 within a pixel of rounding.
+            let err = (s.dst_w as i64 * 720 - s.dst_h as i64 * 960).abs();
+            assert!(
+                err <= 960.max(720) as i64,
+                "{w}x{h}: aspect drifted — {}x{}",
+                s.dst_w,
+                s.dst_h
+            );
+
+            // Centred: the two bars differ by at most the odd pixel.
+            let left = s.dst_x;
+            let right = w - s.dst_w - s.dst_x;
+            assert!(right as i64 - left as i64 <= 1, "{w}x{h}: not centred horizontally");
+            let top = s.dst_y;
+            let bottom = h - s.dst_h - s.dst_y;
+            assert!(bottom as i64 - top as i64 <= 1, "{w}x{h}: not centred vertically");
+        }
+    }
+
+    /// It fills the window — every pixel written, none written twice,
+    /// none outside.
+    ///
+    /// ⚠️ THIS IS THE ONE THAT FAILS AGAINST THE OLD BEHAVIOUR. Drawing
+    /// the source into the corner leaves the rest of a larger buffer
+    /// untouched, which is exactly the symptom Brian reported.
+    #[test]
+    fn every_window_pixel_is_written() {
+        for (w, h) in [(960, 720), (1920, 1440), (1500, 900), (640, 900), (301, 227)] {
+            let mut s = Scaler::new(960, 720);
+            s.plan(w, h);
+            // A sentinel no scaled pixel can be, so "untouched" is visible.
+            let mut out = vec![0xDEAD_BEEF_u32; (w as usize) * (h as usize)];
+            s.scratch.fill(0x0011_2233);
+            s.present(&mut out);
+            assert!(
+                !out.contains(&0xDEAD_BEEF),
+                "{w}x{h}: left {} window pixels unpainted",
+                out.iter().filter(|p| **p == 0xDEAD_BEEF).count()
+            );
+        }
+    }
+
+    /// A window that is not 4:3 gets bars, and they are actually bars —
+    /// black, outside the picture, on the correct axis.
+    #[test]
+    fn the_margin_is_letterboxed_not_stretched() {
+        // Far too wide: pillars left and right, no bars top or bottom.
+        let mut s = Scaler::new(960, 720);
+        s.plan(2000, 750);
+        s.scratch.fill(0x00FF_FFFF);
+        let mut out = vec![0u32; 2000 * 750];
+        s.present(&mut out);
+        assert!(s.dst_x > 0, "expected pillars");
+        assert_eq!(s.dst_y, 0, "expected no letterbox on the short axis");
+        let mid = 375 * 2000;
+        assert_eq!(out[mid], 0, "the left pillar should be black");
+        assert_eq!(out[mid + s.dst_x as usize + 1], 0x00FF_FFFF, "the picture should be lit");
+        assert_eq!(out[mid + 1999], 0, "the right pillar should be black");
+    }
+
+    /// The plan is rebuilt when the window changes and not before —
+    /// the column table is per-size work, not per-frame work.
+    #[test]
+    fn the_plan_is_rebuilt_only_on_a_real_resize() {
+        let mut s = Scaler::new(960, 720);
+        s.plan(1280, 960);
+        let first = s.cols.as_ptr();
+        s.plan(1280, 960);
+        assert_eq!(s.cols.as_ptr(), first, "recomputed for an unchanged size");
+        s.plan(1281, 960);
+        assert_eq!(s.cols.len(), s.dst_w as usize, "table did not follow the new width");
+    }
+
+    /// Every source column the table names is in range.
+    ///
+    /// An off-by-one here indexes past the scratch row and panics mid
+    /// frame — on one particular window width, on someone else's monitor.
+    #[test]
+    fn the_column_table_stays_in_range() {
+        for (w, h) in [(960, 720), (1920, 1440), (3000, 2000), (100, 100), (7, 9)] {
+            let mut s = Scaler::new(960, 720);
+            s.plan(w, h);
+            assert_eq!(s.cols.len(), s.dst_w as usize);
+            for (i, c) in s.cols.iter().enumerate() {
+                assert!(*c < s.src_w, "{w}x{h}: column {i} samples {c}, outside {}", s.src_w);
+            }
+        }
+    }
+
+    /// At 1:1 the scaled path reproduces the source EXACTLY.
+    ///
+    /// The guarantee that turning this on costs a game nothing when the
+    /// window is left alone: same pixels, not merely similar ones.
+    #[test]
+    fn one_to_one_is_lossless() {
+        let mut s = Scaler::new(960, 720);
+        s.plan(960, 720);
+        for (i, px) in s.scratch.iter_mut().enumerate() {
+            *px = (i as u32).wrapping_mul(2_654_435_761) & 0x00FF_FFFF;
+        }
+        let mut out = vec![0u32; 960 * 720];
+        s.present(&mut out);
+        assert_eq!(out, s.scratch, "1:1 should be a copy");
     }
 }

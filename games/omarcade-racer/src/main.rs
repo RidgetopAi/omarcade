@@ -972,7 +972,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let whoosh = audio.register_sound(Box::new(sound::Pass::new()));
     let chime = audio.register_sound(Box::new(sound::Chime::new()));
 
+    // ⚠️ THE ONE GAME THAT RENDERS AT A FIXED SIZE.
+    //
+    // Pixel Break and Volley read the canvas and lay themselves out to
+    // fit any window. This renderer cannot: the pseudo-3D projection is
+    // built from WIDTH/HEIGHT as constants, and `post_span` derives the
+    // collision geometry from the renderer's own numbers — the hitbox is
+    // the art. Resizing used to draw a 960x720 picture into the corner
+    // of a bigger buffer.
+    //
+    // So the backend scales instead, and the game keeps drawing the
+    // exact frame it was tuned for.
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
+        .fixed(true)
         .idle(Idle::Animate { fps: 60 })
         .run(
             Racer::new(theme, engine, tyres, surface, bang, whoosh, chime),

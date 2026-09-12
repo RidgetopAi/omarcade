@@ -160,13 +160,41 @@ cargo_args=()
 for game in "${GAMES[@]}"; do
   cargo_args+=(-p "$game")
 done
+# ⚠️ NEVER BUILD INSIDE THE PLUGIN DIRECTORY. THE SHELL IS WATCHING IT.
+#
+# Omarchy's PluginRegistry runs, against ~/.config/omarchy/plugins:
+#
+#   inotifywait -m -r -e close_write,create,delete,move
+#
+# Recursive, with no exclusions. Every file cargo writes into target/
+# fires localPluginChanged, and shell.qml answers that by calling
+# Qt.clearComponentCache() and rebuilding the plugin — which DESTROYS
+# THE CABINET AND THE Process RUNNING THIS SCRIPT. A release build
+# writes thousands of files, so the cabinet tore itself down and
+# restarted over and over ("several blips", seven reloads in the shell
+# log) and the build was killed before it linked a single binary. It
+# left 268 MB of target/ and no games.
+#
+# So when this script is running from inside the plugin directory —
+# which is exactly where `omarchy plugin add` puts it — build into the
+# cache directory instead, where nothing is watching. Everywhere else
+# (a normal git clone) target/ stays put and nothing changes.
+if [[ $REPO_ROOT -ef $PLUGIN_DIR ]]; then
+  export CARGO_TARGET_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarcade/target"
+  say "building in $CARGO_TARGET_DIR (outside the watched plugin directory)"
+fi
+
 cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" "${cargo_args[@]}"
 
 mkdir -p "$BINDIR" "$APPDIR" "$ICONDIR"
 
 echo "Installing..."
 for game in "${GAMES[@]}"; do
-  built="$REPO_ROOT/target/release/$game"
+  # Wherever cargo was told to put it — CARGO_TARGET_DIR when we are
+  # building out of the watched plugin directory, $REPO_ROOT/target
+  # otherwise. Hardcoding the second would die("expected binary not
+  # found") on the marketplace path.
+  built="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release/$game"
   # Fail loudly rather than installing a stale binary from a previous build.
   [[ -x $built ]] || die "expected binary not found after build: $built"
   install -m 755 "$built" "$BINDIR/$game"

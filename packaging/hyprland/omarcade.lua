@@ -35,7 +35,20 @@ o.window(OMARCADE, { idle_inhibit = "always" })
 -- org.quickshell like every other Omarchy panel -- matching on class
 -- would float all of them. Match the title instead, which is ours.
 local CABINET = { class = "^(org\\.quickshell)$", title = "^(Omarcade)$" }
-o.window(CABINET, { float = true, center = true, size = { 560, 420 } })
+
+-- ⚠️ PORTRAIT, AND THIS RULE IS WHAT DECIDES IT.
+--
+-- The cabinet declares 640x880 in Cabinet.qml, but a Hyprland size rule
+-- OVERRIDES that outright -- it is not a hint the compositor weighs. This
+-- rule said 560x420 (the old landscape popout) long after the window
+-- became an upright cabinet, so the machine was being squashed into a
+-- shape it was not designed for: the measured window came out 560x720,
+-- the width from this rule and the height dragged back up by the QML
+-- minimumSize floor. Neither number was anyone's intent.
+--
+-- Keep these two in step with Cabinet.qml's implicit size. They are the
+-- same fact written in two places, and only this one wins.
+o.window(CABINET, { float = true, center = true, size = { 640, 880 } })
 
 -- Same opt-out the games need: Omarchy's default 0.985/0.96 makes the
 -- desktop bleed through the picker, which reads as a rendering fault

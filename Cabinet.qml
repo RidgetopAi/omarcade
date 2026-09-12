@@ -232,9 +232,20 @@ Item {
     color: root.background
     // ⚠️ PORTRAIT. A cabinet is taller than it is wide; the old 560x420
     // was landscape and fought the whole idea.
+    //
+    // ⚠️ A HYPRLAND SIZE RULE OVERRIDES THIS ENTIRELY — it is not a hint
+    // the compositor weighs against anything. packaging/hyprland/omarcade.lua
+    // pinned the cabinet to the old 560x420 for a while after the window
+    // became portrait, and the result was a 560x720 hybrid: the width
+    // from the rule, the height dragged back up by the minimum below.
+    // The rule and these numbers are the same fact in two places; change
+    // them together.
     implicitWidth: 640
     implicitHeight: 880
-    minimumSize: Qt.size(520, 720)
+    // Tall enough that the screen keeps its 4:3 and the control panel
+    // still has room for three difficulty rows. Below this the parts
+    // start competing for the same pixels.
+    minimumSize: Qt.size(480, 700)
 
     onVisibleChanged: if (!visible && !root.closingFromHost) root.requestClose()
 
@@ -279,15 +290,37 @@ Item {
         Column {
           id: stack
           anchors.fill: parent
-          spacing: Style.space(14)
           visible: root.games.length > 0
 
-          // What is left for the screen once the fixed furniture has
-          // taken its share. The screen is the ONLY part that flexes,
-          // because it is the only part whose content has an aspect.
+          // The fixed furniture, measured against the BASE spacing so
+          // this cannot depend on `spacing` — which depends on it.
+          readonly property int baseSpacing: Style.space(14)
           readonly property real furniture:
             marquee.height + titleRow.height + pips.height
-            + panel.height + prompt.height + spacing * 5
+            + panel.height + prompt.height + baseSpacing * 5
+
+          // ⚠️ THE SCREEN CANNOT ALWAYS EAT THE SURPLUS, so something
+          // else has to. It is capped at the art's 4:3, and once the
+          // window is taller than that cap allows the leftover has
+          // nowhere to go — it piled up as ~130px of dead space under
+          // the prompt and the whole machine sat in the top two-thirds
+          // of its window. Rendering at the true 640x880 showed it; at
+          // the wrong 560x720 there was no surplus and it was invisible.
+          //
+          // Spread it through the joints instead, so the parts breathe
+          // apart rather than the cabinet floating above a gap.
+          //
+          // ⚠️ `slack` is computed from the SCREEN'S CAP rather than from
+          // its live height, and from `baseSpacing` rather than from
+          // `spacing`. Both dodge a binding loop: spacing feeds furniture
+          // feeds slack feeds spacing, and QML would either loop or
+          // silently settle on whichever value it evaluated first.
+          readonly property real screenCap:
+            Math.min(Math.round(width * 3 / 4),
+                     Math.max(Style.space(120), height - furniture))
+          readonly property real slack:
+            Math.max(0, height - furniture - screenCap)
+          spacing: baseSpacing + Math.min(Style.space(22), slack / 6)
 
           // ---- THE MARQUEE ---------------------------------------------
           //

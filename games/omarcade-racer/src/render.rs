@@ -132,6 +132,19 @@ pub fn demo_track() -> Road {
 /// tall against the player's 233, and 27px a quarter second out. The
 /// projection is hyperbolic and the contact range is 1.6 segments, so
 /// everything a person could react to sits in the last few percent of the
+/// How strongly the desktop wallpaper shows through the sky, at the
+/// horizon.
+///
+/// ⚠️ MEASURED, NOT PICKED. The game's sky is dark and a wallpaper is
+/// usually bright, so the blend is badly asymmetric — rendered against
+/// the shipped Omarchy themes, 0.22 already reads as a photograph with a
+/// road drawn on it, and 0.35 buries the scene. 0.12 is where hills
+/// become distant shapes and the road still owns the frame.
+///
+/// This is the value AT THE HORIZON; it falls to zero at the top of the
+/// sky. See the blend in `draw_road_into_with`.
+const SKY_IMAGE: f32 = 0.30;
+
 /// road, at the horizon.
 ///
 /// This is the arcade lie Pole Position told: distant cars are drawn
@@ -282,9 +295,73 @@ pub fn draw_road_into_with(
 
     let x_offset = car.x_offset(road);
 
+    // ── THE SKY ───────────────────────────────────────────────────────
+    //
+    // A vertical gradient, and then — where the desktop has a wallpaper
+    // to lend — that picture blended faintly over it, so the horizon
+    // carries a silhouette of whatever theme the player is running.
+    //
+    // ⚠️ IT IS FAINT ON PURPOSE, AND FAINTER THAN IT SOUNDS. The game's
+    // sky is dark and a wallpaper is usually bright, so the blend is
+    // wildly asymmetric: measured on the shipped themes, 22% already
+    // reads as a photograph with a road drawn on it. Around 12% is where
+    // hills become distant shapes without fighting the road.
+    //
+    // ⚠️ AND IT FADES OUT TOWARD THE TOP. A wallpaper pasted flat across
+    // the band puts its own busiest part along the horizon line and its
+    // empty sky overhead — exactly backwards. Weighting toward the
+    // horizon lets the image settle behind the vanishing point, which is
+    // what makes it read as distance rather than as wallpaper.
+    //
+    // ⚠️ PER PIXEL, NOT PER ROW. `fill_rect` per scanline is how the
+    // plain gradient is drawn and it was the obvious shape to keep — but
+    // one colour per row turns a photograph into horizontal bands. An
+    // image needs both axes.
+    // ⚠️ ONE ALLOCATION FOR THE WHOLE BAND, NOT ONE PER ROW. This runs
+    // every frame; a `Vec` per scanline would be 360 allocations a frame
+    // on the hot path.
+    let mut row: Vec<Color> = Vec::new();
+    // ⚠️ AND THE COLUMN MAP IS BUILT ONCE TOO. `sx` depends only on `x`,
+    // so recomputing it inside the row loop did the same float divide
+    // and cast 345,600 times a frame to get 960 distinct answers.
+    let mut sx_of: Vec<u32> = Vec::new();
+    if let Some(bg) = &art.sky {
+        row.resize(w as usize, theme.background);
+        sx_of = (0..w)
+            .map(|x| ((x as f32 / w as f32) * bg.width() as f32) as u32)
+            .collect();
+    }
+
     for y in 0..horizon as u32 {
         let t = y as f32 / horizon;
-        c.fill_rect(ox as i32, (oy + y) as i32, w, 1, sky.lerp(theme.background, 1.0 - t * 0.7));
+        let base = sky.lerp(theme.background, 1.0 - t * 0.7);
+        match &art.sky {
+            None => {
+                c.fill_rect(ox as i32, (oy + y) as i32, w, 1, base);
+            }
+            Some(bg) => {
+                // ⚠️ THE FADE RUNS THE OTHER WAY FROM THE OBVIOUS ONE.
+                //
+                // Weighting toward the horizon was tried first, on the
+                // reasoning that distance belongs at the vanishing
+                // point. Rendered, it washed the picture out exactly
+                // where the picture is: a landscape keeps its HILLS in
+                // the upper part of the frame and its flat foreground at
+                // the bottom, so fading in toward the bottom hid every
+                // ridgeline and showed the ground — the one part that
+                // carries no silhouette at all.
+                //
+                // So it is strongest high and falls to nothing at the
+                // horizon line, which also keeps the join clean where
+                // the sky meets the grass.
+                let strength = SKY_IMAGE * (1.0 - t).powf(0.6);
+                let sy = ((t * bg.height() as f32) as u32).min(bg.height().saturating_sub(1));
+                for (px, &sx) in row.iter_mut().zip(sx_of.iter()) {
+                    *px = base.lerp(bg.at(sx, sy), strength);
+                }
+                c.blit_span(ox as i32, (oy + y) as i32, &row);
+            }
+        }
     }
     c.fill_rect(ox as i32, (oy + horizon as u32) as i32, w, h - horizon as u32, grass_flat);
 
@@ -552,6 +629,43 @@ pub fn draw_explosion_into(
 
 #[cfg(test)]
 mod tests {
+
+    /// ⚠️ THE WALLPAPER FADES IN TOWARD THE TOP OF THE SKY, NOT THE
+    /// HORIZON — and this is the guard on a mistake that a still frame
+    /// caught and reasoning did not.
+    ///
+    /// The obvious weighting is toward the vanishing point, because that
+    /// is where distance lives. Rendered, it washed the image out
+    /// exactly where the image is: a landscape keeps its ridgelines in
+    /// the UPPER part of the frame, so fading in at the bottom showed
+    /// the flat foreground and hid every silhouette. The effect only
+    /// works the other way round.
+    ///
+    /// Asserted on the curve rather than by rendering, because a render
+    /// test would need a wallpaper on the machine running it.
+    #[test]
+    fn the_sky_image_is_strongest_high_and_gone_at_the_horizon() {
+        let at = |t: f32| SKY_IMAGE * (1.0 - t).powf(0.6);
+
+        let top = at(0.0);
+        let middle = at(0.5);
+        let horizon = at(1.0);
+
+        assert!(
+            top > middle && middle > horizon,
+            "the image must fade DOWNWARD: top {top}, middle {middle}, horizon {horizon}",
+        );
+        assert!(
+            horizon.abs() < 1e-6,
+            "it must reach zero at the horizon line, or the join with \
+             the grass shows a seam — got {horizon}",
+        );
+        assert!(
+            top <= 0.5,
+            "the sky is a backdrop, not the subject: {top} would make a \
+             photograph with a road drawn on it",
+        );
+    }
     use super::*;
 
     /// The compression is anchored at the player: at the player's own

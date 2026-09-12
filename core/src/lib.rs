@@ -16,6 +16,7 @@
 //! lives in that game, so a title that wants none pays for none.
 
 pub mod audio;
+mod backdrop;
 pub mod backend;
 pub mod ease;
 pub mod geom;
@@ -28,6 +29,7 @@ pub mod volume;
 pub mod theme;
 
 pub use audio::{Audio, AudioSystem, SoundId, Voice, VoiceId, VoiceParams};
+pub use backdrop::Backdrop;
 pub use pause::Pause;
 pub use volume::VolumeIndicator;
 pub use backend::{Backend, Canvas, Color, Game, InputEvent, Key};

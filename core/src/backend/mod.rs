@@ -198,6 +198,39 @@ impl<'a> Canvas<'a> {
     /// part and nothing else. Games should not have to bounds-check
     /// before every draw, and a panic mid-frame is never the right
     /// answer to an object leaving the play field.
+    /// Write a run of already-computed colours along one scanline.
+    ///
+    /// ⚠️ EXISTS BECAUSE `fill_rect` IS THE WRONG TOOL FOR A PICTURE.
+    /// Drawing an image a pixel at a time through `fill_rect(x,y,1,1)`
+    /// re-does the whole clip-and-clamp setup per pixel; at 960x360 that
+    /// is 345,600 calls a frame and it measured 12.6 ms — most of a
+    /// 60 fps budget, for one background. This clips ONCE and then
+    /// writes, which is the difference between a feature and a frame
+    /// drop.
+    ///
+    /// Clipped like everything else here: a span starting off the left
+    /// edge or running past the right draws its visible part.
+    pub fn blit_span(&mut self, x: i32, y: i32, colors: &[Color]) {
+        if y < 0 || y >= self.height as i32 || colors.is_empty() {
+            return;
+        }
+        // How much of the span falls on canvas.
+        let skip = (-x).max(0) as usize;
+        if skip >= colors.len() {
+            return;
+        }
+        let x0 = x.max(0) as usize;
+        let room = (self.width as usize).saturating_sub(x0);
+        let n = (colors.len() - skip).min(room);
+        if n == 0 {
+            return;
+        }
+        let base = y as usize * self.width as usize + x0;
+        for i in 0..n {
+            self.buffer[base + i] = colors[skip + i].to_u32();
+        }
+    }
+
     pub fn fill_rect(&mut self, x: i32, y: i32, w: u32, h: u32, color: Color) {
         if w == 0 || h == 0 {
             return;
@@ -530,6 +563,33 @@ pub trait Backend {
 
 #[cfg(test)]
 mod tests {
+
+    /// A span writes its pixels, and clips like everything else.
+    #[test]
+    fn a_blit_span_writes_and_clips() {
+        let mut buf = vec![0u32; 4 * 2];
+        let mut c = Canvas::new(&mut buf, 4, 2);
+        let red = Color::rgb(255, 0, 0);
+        let blue = Color::rgb(0, 0, 255);
+
+        c.blit_span(1, 0, &[red, blue]);
+        assert_eq!(buf[0], 0, "untouched left of the span");
+        assert_eq!(buf[1], red.to_u32());
+        assert_eq!(buf[2], blue.to_u32());
+
+        // Starting off the left edge draws only the visible tail.
+        let mut buf = vec![0u32; 4 * 2];
+        let mut c = Canvas::new(&mut buf, 4, 2);
+        c.blit_span(-1, 1, &[red, blue]);
+        assert_eq!(buf[4], blue.to_u32(), "the clipped span starts at x=0");
+
+        // Fully off-canvas rows are silently dropped, never a panic.
+        let mut buf = vec![0u32; 4 * 2];
+        let mut c = Canvas::new(&mut buf, 4, 2);
+        c.blit_span(0, 99, &[red]);
+        c.blit_span(0, -1, &[red]);
+        assert!(buf.iter().all(|&p| p == 0));
+    }
 
     fn chroma(c: Color) -> f32 {
         let (r, g, b) = (c.r as f32, c.g as f32, c.b as f32);

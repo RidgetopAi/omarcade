@@ -28,6 +28,14 @@ toml = "1.1.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 
+# Decoding the Omarchy theme's background image for the racer's sky.
+# ⚠️ These two rather than the `image` crate: `image` pulls 26 transitive
+# crates to provide the same two decoders, where this is 6, all pure Rust
+# with no system libraries. The theme directory only ever holds JPEG and
+# PNG, so wider format support would be paying for reach nothing uses.
+zune-jpeg = "0.5.15"
+zune-png = "0.5.2"
+
 # Games are latency-sensitive; an unoptimized dep tree drops frames even
 # in a debug build. Optimize dependencies, keep our own crates debuggable.
 [profile.dev.package."*"]

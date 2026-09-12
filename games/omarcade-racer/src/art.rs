@@ -18,7 +18,18 @@
 //! rather than on top of it.
 
 use omarcade_core::sprite::{PaletteEntry, Sprite};
-use omarcade_core::{Color, Theme};
+use omarcade_core::{Backdrop, Color, Theme};
+
+/// The resolution the wallpaper is kept at for the sky.
+///
+/// The sky band is the top half of a 960x720 window, so this is exactly
+/// what is drawn — no scaling happens per frame, and the buffer is
+/// 960*360*4 bytes rather than the 77 MB the source decodes to.
+///
+/// ⚠️ If the window ever becomes resizable this has to follow it, or the
+/// sky stretches. Every title is fixed-size today.
+const SKY_W: u32 = 960;
+const SKY_H: u32 = 360;
 
 /// The player's car, seen from behind.
 ///
@@ -1049,6 +1060,16 @@ pub struct Art {
     pub billboard: Sprite,
     /// The billboard carrying the Omarchy wordmark.
     pub billboard_omarchy: Sprite,
+    /// The desktop's own wallpaper, scaled to the sky band, or `None`
+    /// where there is no readable one.
+    ///
+    /// ⚠️ LIVES HERE BECAUSE IT IS THEME ART. `Art::load` already takes
+    /// the theme and is already the once-per-launch place where every
+    /// themed asset is built; threading a backdrop through
+    /// `draw_road_into` instead would have added a parameter to two
+    /// entry points and every caller, to carry something that changes
+    /// exactly as often as the palettes beside it.
+    pub sky: Option<Backdrop>,
     /// The four generated signs. See the block comment above their art.
     pub billboard_ridgetop: Sprite,
     pub billboard_mandrel: Sprite,
@@ -1116,6 +1137,13 @@ impl Art {
     pub fn load(theme: &Theme) -> Art {
         let player_pal = car_palette(theme, PLAYER_BODY, PLAYER_ACCENT);
 
+        // The wallpaper, at the resolution the sky band is drawn at.
+        // ⚠️ Decoded ONCE, here, and never on the frame path: the shipped
+        // Omarchy images run to 7680x3215 and cost tens to hundreds of
+        // milliseconds. `None` is a normal outcome — no wallpaper, an
+        // unreadable one, a theme mid-swap — and means the plain sky.
+        let sky = Backdrop::load(SKY_W, SKY_H);
+
         let rivals = RIVAL_LIVERIES
             .iter()
             .map(|&(body, accent)| {
@@ -1137,6 +1165,7 @@ impl Art {
             post: Sprite::new(MARKER_POST, &post_palette(theme)),
             gantry: Sprite::new(GANTRY, &gantry_palette(theme)),
             billboard: Sprite::new(BILLBOARD, &billboard_palette(theme)),
+            sky,
             billboard_omarchy: Sprite::new(
                 BILLBOARD_OMARCHY,
                 &billboard_omarchy_palette(theme),

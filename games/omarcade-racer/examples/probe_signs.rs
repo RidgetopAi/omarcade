@@ -48,6 +48,7 @@ const COLS: usize = 92;
 const ROWS: usize = 30;
 
 fn main() {
+
     let road = track::grand_prix().build();
     let length = road.length();
     let reach = road.draw_distance() as f32 * road.segment_length();

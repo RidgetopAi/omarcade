@@ -4,7 +4,7 @@
   "name": "Omarcade",
   "version": "0.1.0",
   "author": "Brian Ridgetopai",
-  "description": "High scores from the Omarcade arcade suite, live in your bar",
+  "description": "Three original arcade games and a cabinet to keep them in — Pixel Break, Volley and Omaprix, native to Omarchy.",
   "homepage": "https://github.com/RidgetopAi/omarcade",
   "issues": "https://github.com/RidgetopAi/omarcade/issues",
   "kinds": [
@@ -17,7 +17,7 @@
   },
   "barWidget": {
     "displayName": "Omarcade",
-    "description": "Best score across every Omarcade game",
+    "description": "Your last score, and the cabinet behind it",
     "category": "Games",
     "allowMultiple": false,
     "defaultSection": "right"

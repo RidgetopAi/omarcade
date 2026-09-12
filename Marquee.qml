@@ -55,6 +55,8 @@ BarWidget {
 
   readonly property int bestScore: latestRecord ? latestRecord.best : 0
   readonly property string bestGame: latestRecord ? latestRecord.label : ""
+  // Empty for a game that records no times; see ScoreRecord.bestSeconds.
+  readonly property string bestTime: latestRecord ? latestRecord.bestTimeLabel : ""
 
   // Which difficulty that best was set on, shown only when the game
   // actually has tiers — a label reading "normal" on a single-tier
@@ -198,6 +200,11 @@ BarWidget {
         tip = root.bestGame + " — best: " + root.bestScore
         if (root.bestDifficulty !== "")
           tip += " (" + root.bestDifficulty + ")"
+        // Only where a game records one. The bar itself stays a single
+        // number — it is shared with every other Omarchy widget, and a
+        // time column would be blank for two of the three games.
+        if (root.bestTime !== "")
+          tip += " — best time: " + root.bestTime
       }
       root.bar.showTooltip(root, tip)
     }

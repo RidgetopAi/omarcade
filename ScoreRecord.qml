@@ -56,6 +56,43 @@ Item {
     return out
   }
 
+  // The fastest COMPLETED run, in seconds, or -1 if this game does not
+  // record times.
+  //
+  // ⚠️ FOUND BY SEARCHING, NOT READ OFF THE TOP ROW. The table is sorted
+  // by SCORE, so entries[0] is the highest scorer and not necessarily
+  // the quickest — reading its time would quietly report the wrong
+  // number whenever those differ.
+  //
+  // ⚠️ AND THE FIELD IS OPTIONAL BY DESIGN. Pixel Break and Volley never
+  // write it, so this stays -1 for them and the marquee shows nothing.
+  // That is what keeps this widget generic: it learns that a game has
+  // times by FINDING them, not by knowing which game it is looking at.
+  readonly property real bestSeconds: {
+    if (!record || !Array.isArray(record.entries))
+      return -1
+    var best = -1
+    for (var i = 0; i < record.entries.length; i++) {
+      var e = record.entries[i]
+      if (!e || typeof e.seconds !== "number")
+        continue
+      if (best < 0 || e.seconds < best)
+        best = e.seconds
+    }
+    return best
+  }
+
+  // A time as M:SS.s, the way a race clock reads.
+  readonly property string bestTimeLabel: {
+    if (bestSeconds < 0)
+      return ""
+    var m = Math.floor(bestSeconds / 60)
+    var s = bestSeconds - m * 60
+    // Pad the seconds so 2:04.3 does not render as 2:4.3.
+    var ss = (s < 10 ? "0" : "") + s.toFixed(1)
+    return m + ":" + ss
+  }
+
   // Difficulty labels this game has scores for.
   //
   // Ordered easy-to-hard where the names are ones we recognise, then

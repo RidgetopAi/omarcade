@@ -36,7 +36,11 @@ pub const KEEP: usize = 10;
 pub const DEFAULT_DIFFICULTY: &str = "normal";
 
 /// One scoring run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// ⚠️ `PartialEq` but NOT `Eq`, since `seconds` is a float and a float
+/// has no total equality. Nothing compares entries for identity; they
+/// are ranked by score through [`ScoreFile::beats`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub score: u32,
     /// RFC 3339 UTC, e.g. `2026-08-29T02:31:00Z`. A string rather than a
@@ -58,6 +62,25 @@ pub struct Entry {
     /// [`best`]: ScoreFile::best
     #[serde(default = "default_difficulty")]
     pub difficulty: String,
+    /// How long the run took, in seconds, for a game where that is a
+    /// result rather than a side effect.
+    ///
+    /// ⚠️ OPTIONAL, AND THAT IS THE WHOLE DESIGN. The marquee is generic
+    /// on purpose — `ScoreRecord.qml` says it "never learns how a score
+    /// was made", which is what lets a fourth game appear on the bar
+    /// without the widget being edited. A mandatory time field would
+    /// make every game carry a number only one of them means.
+    ///
+    /// So: Omaprix writes it, Pixel Break and Volley write nothing, the
+    /// key is absent from their files, and the marquee shows a time only
+    /// where it finds one. Existing records deserialize to `None`.
+    ///
+    /// ⚠️ ONLY A COMPLETED RACE HAS ONE. A run that ends at a missed cut
+    /// or an empty clock still banks a SCORE, with no time — Brian's
+    /// call, and the honest one: "best time" has to mean a race someone
+    /// actually finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<f32>,
 }
 
 fn default_difficulty() -> String {
@@ -79,7 +102,7 @@ fn default_higher_is_better() -> bool {
 }
 
 /// One game's score file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoreFile {
     pub schema_version: u32,
     /// Matches the filename stem, mirroring how Omarchy names its own state
@@ -265,6 +288,15 @@ impl ScoreFile {
     /// "Best" here means best on that same difficulty — an easy run does
     /// not become the new best simply by outscoring every hard one.
     pub fn record_at(&mut self, score: u32, difficulty: &str) -> bool {
+        self.record_run(score, difficulty, None)
+    }
+
+    /// Add a score, optionally with how long the run took.
+    ///
+    /// `seconds` is `None` for a game that has no notion of a run
+    /// length, and for a run that ended without finishing — see
+    /// [`Entry::seconds`].
+    pub fn record_run(&mut self, score: u32, difficulty: &str, seconds: Option<f32>) -> bool {
         let is_best = self
             .best_for(difficulty)
             .is_none_or(|b| self.beats(score, b));
@@ -273,6 +305,7 @@ impl ScoreFile {
             score,
             at: now_rfc3339(),
             difficulty: difficulty.to_string(),
+            seconds,
         });
         self.sort_entries();
         self.entries.truncate(KEEP);
@@ -299,6 +332,30 @@ impl ScoreFile {
             .iter()
             .find(|e| e.difficulty == difficulty)
             .map(|e| e.score)
+    }
+
+    /// The fastest recorded time for a difficulty, in seconds.
+    ///
+    /// ⚠️ FASTEST, NOT "the time of the best-scoring run". Those are
+    /// different questions and the table is sorted by SCORE, so the top
+    /// entry is not the quickest one. A best time has to be found by
+    /// searching, or it silently reports whatever the highest scorer
+    /// happened to take.
+    ///
+    /// Entries with no time — every run that did not finish, and every
+    /// game that does not record one — are skipped rather than counted
+    /// as zero.
+    pub fn best_time_for(&self, difficulty: &str) -> Option<f32> {
+        self.entries
+            .iter()
+            .filter(|e| e.difficulty == difficulty)
+            .filter_map(|e| e.seconds)
+            .fold(None, |best: Option<f32>, t| {
+                Some(match best {
+                    Some(b) if b <= t => b,
+                    _ => t,
+                })
+            })
     }
 
     /// Every difficulty this record holds a score for, best-first
@@ -798,5 +855,79 @@ mod tests {
             .ok()
             .filter(|f| f.schema_version == SCHEMA_VERSION);
         assert!(parsed.is_none());
+    }
+
+    /// ⚠️ THE ONE THAT PROTECTS BRIAN'S REAL SCORES. Every record on
+    /// disk predates `seconds`, so the field MUST be optional in the
+    /// deserialising sense, not merely defaulted — a required field
+    /// would make every existing file fail to parse and silently reset
+    /// three games' history to empty.
+    #[test]
+    fn a_record_written_before_times_existed_still_loads() {
+        // Byte-for-byte the shape of the shipped files, including the
+        // real top entry from Omaprix.
+        let json = r#"{
+            "schema_version": 1,
+            "id": "omarcade-racer",
+            "name": "Omaprix",
+            "higher_is_better": true,
+            "entries": [
+                { "score": 2873649, "at": "2026-09-12T01:18:57Z", "difficulty": "grand-prix" }
+            ],
+            "updated_at": "2026-09-12T01:18:57Z"
+        }"#;
+        let f: ScoreFile = serde_json::from_str(json).expect("an old record must still parse");
+        assert_eq!(f.best_for("grand-prix"), Some(2873649));
+        assert_eq!(
+            f.best_time_for("grand-prix"),
+            None,
+            "a record with no times must report none, not zero",
+        );
+    }
+
+    /// And a game that records no times writes no key at all, so the
+    /// other two games' files do not grow a null they never use.
+    #[test]
+    fn a_run_without_a_time_writes_no_seconds_key() {
+        let mut f = ScoreFile::new("omarcade-pixel-break", "Pixel Break");
+        f.record(65_150);
+        let json = serde_json::to_string(&f).expect("serialises");
+        assert!(
+            !json.contains("seconds"),
+            "a game with no times should not carry the key: {json}",
+        );
+    }
+
+    /// ⚠️ THE FASTEST RUN IS NOT THE HIGHEST-SCORING ONE.
+    ///
+    /// The table is sorted by score, so reading the top entry's time
+    /// answers "how long did the best scorer take" — a different
+    /// question that happens to agree often enough to hide the bug.
+    #[test]
+    fn the_best_time_is_the_fastest_not_the_top_scorers() {
+        let mut f = ScoreFile::new("omarcade-racer", "Omaprix");
+        // The high scorer took a long time; a lower score was quicker.
+        f.record_run(3_000_000, "grand-prix", Some(180.0));
+        f.record_run(1_000_000, "grand-prix", Some(120.5));
+
+        assert_eq!(f.best_for("grand-prix"), Some(3_000_000));
+        assert_eq!(
+            f.best_time_for("grand-prix"),
+            Some(120.5),
+            "the best TIME must be the fastest run, not the top scorer's",
+        );
+    }
+
+    /// A run that did not finish banks a score and no time.
+    #[test]
+    fn an_unfinished_run_contributes_no_time() {
+        let mut f = ScoreFile::new("omarcade-racer", "Omaprix");
+        f.record_run(500_000, "grand-prix", None);
+        assert_eq!(f.best_for("grand-prix"), Some(500_000));
+        assert_eq!(f.best_time_for("grand-prix"), None);
+
+        // And once a race IS finished, that one counts.
+        f.record_run(400_000, "grand-prix", Some(143.2));
+        assert_eq!(f.best_time_for("grand-prix"), Some(143.2));
     }
 }

@@ -197,6 +197,11 @@ struct Racer {
     /// The best on this track, for the end banner. Refreshed when a run
     /// is banked.
     best: Option<u32>,
+    /// The fastest COMPLETED race on this track, in seconds.
+    ///
+    /// `None` until someone takes the flag: a run that ends at a missed
+    /// cut or an empty clock banks a score and no time.
+    best_time: Option<f32>,
     /// Whether this run has been banked, so an end event cannot write
     /// twice. A restart builds a new `Racer`, which clears it.
     recorded: bool,
@@ -246,6 +251,7 @@ impl Racer {
         // or unreadable file is an empty table, never an error.
         let scores = ScoreFile::load_or_new(GAME_ID, TITLE);
         let best = scores.best_for(GRAND_PRIX_ID);
+        let best_time = scores.best_time_for(GRAND_PRIX_ID);
 
         // The signs, and how big one is. Both fixed for the run, so both
         // are computed once here rather than per frame.
@@ -299,6 +305,7 @@ impl Racer {
             ledger: Ledger::new(),
             scores,
             best,
+            best_time,
             recorded: false,
             new_best: false,
         }
@@ -312,14 +319,15 @@ impl Racer {
     /// Save failures are swallowed on purpose, as in Pong: a scoreboard
     /// that cannot be written is not a reason to interrupt the end of a
     /// race.
-    fn bank_score(&mut self) {
+    fn bank_score(&mut self, seconds: Option<f32>) {
         if self.recorded {
             return;
         }
         self.recorded = true;
         let total = self.ledger.total();
-        self.new_best = self.scores.record_at(total, GRAND_PRIX_ID);
+        self.new_best = self.scores.record_run(total, GRAND_PRIX_ID, seconds);
         self.best = self.scores.best_for(GRAND_PRIX_ID);
+        self.best_time = self.scores.best_time_for(GRAND_PRIX_ID);
         // Never interrupt the player, but never fail silently either: a
         // score that did not reach the marquee is a bug report, and
         // stderr is where it goes.
@@ -375,8 +383,15 @@ impl Racer {
             Event::Qualified { .. } | Event::Over(_) => {}
         }
 
-        if matches!(event, Event::Finished { .. } | Event::Over(_)) {
-            self.bank_score();
+        // ⚠️ ONLY A FINISHED RACE CARRIES A TIME, and the event types
+        // already say so: `Finished` has one, `Over` does not. So the
+        // rule "a best time means a race you actually completed" needs
+        // no extra flag to enforce — a DNQ or an empty clock banks its
+        // score with `None` because there is no time to pass.
+        match event {
+            Event::Finished { time, .. } => self.bank_score(Some(time)),
+            Event::Over(_) => self.bank_score(None),
+            _ => {}
         }
 
         if let Some(flash) = flash_for(event) {

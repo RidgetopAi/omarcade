@@ -72,10 +72,36 @@ BarWidget {
   readonly property string icon: setting("icon", "🕹")
   readonly property bool showWhenEmpty: setting("showWhenEmpty", false)
 
-  // Nothing to say before the first game is played, and a vertical bar
-  // has no room for a score. Both stay out of the way rather than
-  // rendering a stub.
-  visible: !vertical && (bestScore > 0 || showWhenEmpty)
+  // ⚠️ THE MARQUEE IS THE ONLY DOOR TO THE CABINET, so it cannot hide
+  // itself on a machine where nothing is installed yet.
+  //
+  // Hiding until a score existed was right when this was only a
+  // scoreboard: nothing to say before the first game is played. It
+  // became wrong the moment the cabinet learned to INSTALL the games.
+  // `omarchy plugin add` delivers the QML and no binaries, so a new
+  // user's bar showed nothing at all — no icon, no widget, no way to
+  // reach the cabinet that would have offered to build them. The plugin
+  // installed correctly and appeared to do nothing.
+  //
+  // Found by wiping this machine to a genuinely empty state. It cannot
+  // be seen on a developer's box, where a score file has existed since
+  // session one.
+  //
+  // So: visible whenever there is a score to show, or nothing has been
+  // played at all. A vertical bar has no room for a score either way.
+  visible: !vertical && (bestScore > 0 || nothingPlayedYet || showWhenEmpty)
+
+  // ⚠️ NO SCORE FILES — which is NOT the same as "no games installed",
+  // however much it looks like it here. `scan` walks scoresDir, not
+  // ~/.local/bin: a game that has never been played writes no file, so
+  // this is true both on a fresh plugin-only install AND on a machine
+  // where all three games are installed but untouched.
+  //
+  // That is exactly the behaviour the door needs. Both cases want the
+  // marquee visible — one so the games can be installed, the other so
+  // they can be launched — and the cabinet itself tells the two apart,
+  // because IT scans the binaries.
+  readonly property bool nothingPlayedYet: gameIds.length === 0
 
   implicitWidth: visible
     ? label.implicitWidth + Style.spacing.controlPaddingX * 2
@@ -178,6 +204,12 @@ BarWidget {
 
       Text {
         anchors.verticalCenter: parent.verticalCenter
+        // ⚠️ THE ICON STANDS ALONE WHEN THERE IS NOTHING TO SCORE.
+        // A dash beside the joystick reads as a broken widget, which is
+        // the opposite of what an empty bar needs to say — the icon by
+        // itself reads as something to click, and clicking is exactly
+        // what gets the games installed.
+        visible: !root.nothingPlayedYet
         text: root.bestScore > 0 ? String(root.bestScore) : "—"
         font.family: root.bar ? root.bar.fontFamily : Style.font.family
         font.pixelSize: Style.font.body
@@ -195,7 +227,11 @@ BarWidget {
 
     onEntered: {
       if (!root.bar) return
-      var tip = "Omarcade — no scores yet"
+      // Three states, three different things worth saying. Nothing
+      // installed is an invitation, because a click is all it takes.
+      var tip = root.nothingPlayedYet
+        ? "Omarcade — click to install the games"
+        : "Omarcade — no scores yet"
       if (root.bestScore > 0) {
         tip = root.bestGame + " — best: " + root.bestScore
         if (root.bestDifficulty !== "")

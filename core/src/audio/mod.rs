@@ -54,7 +54,24 @@ use ring::Ring;
 
 /// Steps the volume keys move, and the floor/ceiling they respect.
 const VOLUME_STEP: f32 = 0.1;
-const DEFAULT_VOLUME: f32 = 0.7;
+
+/// Where a player who has never touched the volume starts.
+///
+/// ⚠️ THIS IS ONLY EVER SEEN ONCE PER MACHINE. The volume persists to
+/// `audio.toml` the moment anyone presses a key, so this number is the
+/// FIRST IMPRESSION and nothing else — by the second launch it has been
+/// overwritten by whatever that player chose.
+///
+/// Which is exactly why it is 0.5 and not higher. A first run that is
+/// too loud makes someone reach for the system mixer or quit; a first
+/// run that is slightly quiet makes them press `=`, which is on screen
+/// and takes a second. The failure modes are not symmetric, so the
+/// default sits below the middle of the range rather than at the top of
+/// it — and 0.5 leaves five steps of headroom above, which is room to
+/// climb rather than a ceiling to bump into.
+///
+/// Brian's call, after seeing 0.7 in play: "make default at 50%".
+const DEFAULT_VOLUME: f32 = 0.5;
 
 /// The quietest the volume KEYS will go.
 ///
@@ -481,6 +498,36 @@ mod backend;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A first-time player starts at half, not at seven tenths.
+    ///
+    /// ⚠️ THE DEFAULT WAS UNGUARDED UNTIL THIS EXISTED. `DEFAULT_VOLUME`
+    /// had exactly one reader and no test, so changing it broke nothing
+    /// and therefore nothing would have told anyone it had changed —
+    /// including a change made by accident.
+    ///
+    /// It is pinned by VALUE deliberately. A test asserting "the default
+    /// is whatever the constant says" restates the code and cannot fail;
+    /// the number is a product decision (Brian's: "make default at 50%")
+    /// and belongs written down somewhere that argues back.
+    #[test]
+    fn a_first_run_starts_at_half_volume() {
+        assert_eq!(
+            DEFAULT_VOLUME, 0.5,
+            "the first-launch volume is a product decision, not an \
+             implementation detail — see the constant's docs before moving it",
+        );
+        // And it must be reachable by the keys from both directions, or
+        // a player cannot get back to it after experimenting.
+        assert!(DEFAULT_VOLUME > MIN_KEY_VOLUME);
+        assert!(DEFAULT_VOLUME < 1.0);
+        let steps = (DEFAULT_VOLUME - MIN_KEY_VOLUME) / VOLUME_STEP;
+        assert!(
+            (steps - steps.round()).abs() < 1e-5,
+            "the default must sit ON a key step ({steps} steps from the \
+             floor), or `-` then `=` cannot return a player to it",
+        );
+    }
 
     struct Quiet;
     impl Voice for Quiet {

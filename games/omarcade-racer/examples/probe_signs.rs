@@ -262,7 +262,11 @@ fn describe(k: Structure) -> (&'static str, &'static str) {
     match k {
         Structure::Gantry => ("Start/finish gantry", "spans"),
         Structure::Billboard { side } => ("Billboard (blank)", side_name(side)),
-        Structure::BillboardOmarchy { side } => ("Billboard (Omarchy)", side_name(side)),
+        Structure::BillboardOmarchy { side } => ("Billboard: OMARCHY", side_name(side)),
+        Structure::BillboardRidgetop { side } => ("Billboard: RIDGETOPAI", side_name(side)),
+        Structure::BillboardMandrel { side } => ("Billboard: MANDREL", side_name(side)),
+        Structure::BillboardOmarcade { side } => ("Billboard: OMARCADE", side_name(side)),
+        Structure::BillboardNextLap { side } => ("Sign: NEXT LAP", side_name(side)),
     }
 }
 

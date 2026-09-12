@@ -99,8 +99,29 @@ MARK = [
 # different places, rather than as four differently-sized signs. The cost
 # is a little empty face on the narrower ones, which is what a real
 # billboard looks like anyway.
-PANEL_W = 106  # inner face width in cells
-PANEL_H = 30   # inner face height
+# ⚠️ MEASURED FROM BILLBOARD_OMARCHY, NOT CHOSEN. That sign's panel face
+# (the K run) is 87 cells wide and 30 tall, and its frame, border and
+# posts are exactly where they are because Brian approved them there.
+# These signs are the SAME OBJECT with a different face painted on, so
+# every number here is read off that sprite rather than invented.
+# ⚠️ AND THEN WIDENED AGAIN, FOR THE SAME REASON OMARCHY WAS.
+#
+# The Omarchy sign grew from the blank sign's 58-cell face to 87 because
+# its mark would not fit otherwise, and downscaling drops strokes. The
+# widest content here is "OMARCADE" / "NEXT LAP" at scale 2, which needs
+# 94 cells of ink — 7 more than 87 holds with any padding worth having.
+#
+# So the face grows to 104 and ALL FOUR share it. The alternative was
+# setting those two at scale 1 while MANDREL stayed at 2, which makes
+# four signs that are visibly not the same kind of thing.
+PANEL_W = 104  # inner face width, widened from Omarchy's 87
+PANEL_H = 26   # inner face height — the K rows, 15..40 inclusive
+
+# The full sprite grid. Everything outside the face — frame, border,
+# posts — is copied from BILLBOARD_OMARCHY unchanged; only the face is
+# wider, so the widening inserts columns and moves nothing else.
+OMARCHY_FACE_W = 87
+WIDEN = PANEL_W - OMARCHY_FACE_W
 
 
 def text_rows(s, scale=1, spacing=1):
@@ -173,15 +194,19 @@ def sign2_ridgetop(g):
     44 the mountain sat narrower than its own wordmark and read as a
     small picture with a big caption. A logo's mark should lead.
     """
-    mark = scaled(MARK, 2)          # 88 x 32 — taller than the panel
-    mark = mark[4:26]               # crop the thin outer flanks, keep the peaks
+    # ⚠️ The doubled mark is 32 rows and the face is 26, so it cannot be
+    # used whole. Crop the thin outer flanks — the long shallow skirts
+    # that carry no shape — and keep the peaks, which are the logo.
+    mark = scaled(MARK, 2)[4:20]
     centre(g, mark, 0)
-    centre(g, text_rows("RIDGETOPAI", scale=1), 23)
+    # One clear row between the mark and the words: they are two things,
+    # and a logo that touches its own wordmark reads as one smudge.
+    centre(g, text_rows("RIDGETOPAI", scale=1), 17)
 
 
 def sign3_mandrel(g):
     """Sign 3 — Mandrel. Set big: one word, so it gets the whole panel."""
-    centre(g, text_rows("MANDREL", scale=2), 8)
+    centre(g, text_rows("MANDREL", scale=2), (PANEL_H - 14) // 2)
 
 
 def sign4_omarcade(g):
@@ -191,7 +216,7 @@ def sign4_omarcade(g):
     5x7 font gives a 2-cell stroke, which is the closest this font comes
     to that weight without redrawing letterforms by hand.
     """
-    centre(g, text_rows("OMARCADE", scale=2), 8)
+    centre(g, text_rows("OMARCADE", scale=2), (PANEL_H - 14) // 2)
 
 
 def sign6_choice(g):
@@ -203,17 +228,101 @@ def sign6_choice(g):
     chequer reads at distance where a word does not, so it still carries
     something once the text has shrunk past legibility.
     """
-    centre(g, text_rows("NEXT LAP", scale=2), 4)
-    # A chequered band under the words: 3-cell squares, two rows deep.
-    band_top, sq = 22, 3
-    for r in range(sq * 2):
+    centre(g, text_rows("NEXT LAP", scale=2), 2)
+    # A chequered band under the words: 3-cell squares, two deep, placed
+    # against the BOTTOM of the face rather than at a typed-in row, so it
+    # follows the panel instead of falling off it when the face resizes.
+    sq = 3
+    band_h = sq * 2
+    band_top = PANEL_H - band_h - 1
+    for r in range(band_h):
         for c in range(PANEL_W):
             if ((c // sq) + (r // sq)) % 2 == 0:
                 g[band_top + r][c] = 'O'
 
 
+# ---------------------------------------------------------------------
+# Emitting the full sprite
+# ---------------------------------------------------------------------
+
+def omarchy_rows():
+    """The shipped Omarchy sign, read straight out of art.rs.
+
+    ⚠️ READ, NEVER RETYPED. The frame, the border, the posts and the one
+    stray 'J' pixel are all exactly where Brian approved them. Copying
+    them by hand is how a sign quietly stops matching its neighbours.
+    """
+    import re
+    src = open('games/omarcade-racer/src/art.rs').read()
+    m = re.search(r'pub const BILLBOARD_OMARCHY: &\[&str\] = &\[(.*?)\n\];', src, re.S)
+    return re.findall(r'"([^"]*)"', m.group(1))
+
+
+def full_sprite(face):
+    """Wrap a 104x30 face in the real sign: frame, border, posts.
+
+    Built by taking the Omarchy sprite and widening it — every row gets
+    WIDEN extra columns inserted INSIDE the panel field, so the frame
+    stays a frame and the posts stay under the ends of it.
+    """
+    base = omarchy_rows()
+    out = []
+    for line in base:
+        # ⚠️ INSERT INSIDE THE PANEL, NOT AT THE MIDDLE OF THE ROW. The
+        # posts sit at columns 56-58 and 130-132; splitting at the row's
+        # midpoint (94) lands between them and pushes the right-hand post
+        # outward by WIDEN while the left stays put, so the sign ends up
+        # standing on legs of different spacing than its own frame.
+        #
+        # Column 94 is inside the panel field on EVERY row — for frame
+        # and border rows it repeats that row's own character, for post
+        # rows it repeats the blank between the posts — so duplicating it
+        # widens the panel and leaves the frame, the border and both
+        # posts exactly as drawn, which is the whole construction rule
+        # the Omarchy sign was built by.
+        cut = 94
+        out.append(list(line[:cut] + line[cut] * WIDEN + line[cut:]))
+
+    # Paint the face over the K field. Row 15 is the first face row and
+    # column 51 its left edge, both measured off the sprite.
+    for r in range(PANEL_H):
+        for c in range(PANEL_W):
+            # '.' on the face means "panel colour", not "transparent" —
+            # the sign has a solid face and the art is painted onto it.
+            out[15 + r][51 + c] = 'O' if face[r][c] == 'O' else 'K'
+    return [''.join(row) for row in out]
+
+
+def emit_rust(const_name, doc, face_rows):
+    rows = full_sprite(face_rows)
+    print(f"pub const {const_name}: &[&str] = &[")
+    for r in rows:
+        print(f'    "{r}",')
+    print("];")
+    print()
+
+
+SIGNS = [
+    ("BILLBOARD_RIDGETOP", sign2_ridgetop,
+     "A billboard carrying the RidgetopAi mark."),
+    ("BILLBOARD_MANDREL", sign3_mandrel,
+     "A billboard carrying the Mandrel wordmark."),
+    ("BILLBOARD_OMARCADE", sign4_omarcade,
+     "A billboard carrying the Omarcade wordmark."),
+    ("BILLBOARD_NEXTLAP", sign6_choice,
+     "A circuit sign: NEXT LAP over a chequered band."),
+]
+
+
 if __name__ == '__main__':
-    render("SIGN 2 — RIDGETOPAI", sign2_ridgetop)
-    render("SIGN 3 — MANDREL", sign3_mandrel)
-    render("SIGN 4 — OMARCADE", sign4_omarcade)
-    render("SIGN 6 — NEXT LAP", sign6_choice)
+    import sys
+    if '--preview' in sys.argv:
+        render("SIGN 2 — RIDGETOPAI", sign2_ridgetop)
+        render("SIGN 3 — MANDREL", sign3_mandrel)
+        render("SIGN 4 — OMARCADE", sign4_omarcade)
+        render("SIGN 6 — NEXT LAP", sign6_choice)
+    else:
+        for name, build, doc in SIGNS:
+            g = blank(PANEL_W, PANEL_H)
+            build(g)
+            emit_rust(name, doc, [''.join(r) for r in g])

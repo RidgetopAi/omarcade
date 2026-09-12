@@ -72,13 +72,14 @@ fn main() {
             "gantry" => draw_gantry(&mut c, &art, &theme),
             "heights" => draw_gantry_heights(&mut c, &theme),
             "structures" => draw_structures(&mut c, &art, &theme),
+            "signs" => draw_signs(&mut c, &art, &theme),
             "proportion" => draw_proportion(&mut c, &art, &theme),
             "lap" => draw_lap(&mut c, &art, &theme),
             "explosion" => draw_explosion(&mut c, &art, &theme),
             "crash" => draw_crash_scene(&mut c, &art, &theme),
             other => {
                 eprintln!(
-                    "unknown scene {other:?} — try: sheet | road | curve | lean | roll | drive | gantry | heights | structures | proportion | lap | explosion | crash"
+                    "unknown scene {other:?} — try: sheet | road | curve | lean | roll | drive | gantry | heights | structures | signs | proportion | lap | explosion | crash"
                 );
                 std::process::exit(2);
             }
@@ -1257,4 +1258,44 @@ fn draw_crash_scene(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
         c.fill_rect(0, (i * ph) as i32 - 1, W, 2, theme.foreground);
     }
     println!("\n    the fireball sits where the car it consumed was.\n");
+}
+
+
+/// Every generated sign, drawn through the REAL structure path.
+///
+/// ⚠️ NOT a sprite sheet. `draw_sheet` would show the art and prove
+/// nothing about how a sign LOOKS on the track — the panel is scaled by
+/// its own height, set out at a fixed offset from the verge, and shrinks
+/// with distance, and all three of those are where a sign goes wrong.
+///
+/// ⚠️ AND IT DRIVES THE SHIPPED COURSE, NOT A TEST FIXTURE. The first
+/// version of this placed its own signs down a straight road and drew
+/// them on top of `draw_road_into`, which ALREADY draws
+/// `structures::shipped()` — so the picture was the real signs with test
+/// ones painted over, and the near sign read OMARCHY while the caption
+/// said NEXT LAP. Rendering the actual course is the only way this scene
+/// can be evidence about the actual course.
+fn draw_signs(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
+    let road = track::grand_prix().build();
+    let tuning = Tuning::from_corner(&road, 1.5);
+    let mut car = Drive::new();
+
+    // Park just before the back-straight cluster, where OMARCADE,
+    // OMARCHY and NEXT LAP stand one draw-reach apart — the only place
+    // on the lap where three signs are in view at once.
+    let reach = road.draw_distance() as f32 * road.segment_length();
+    // Right on top of the OMARCADE sign: at 0.6 reaches it was a smudge
+    // near the horizon, which judges nothing. A sign is judged where a
+    // driver actually reads it — close.
+    car.z = 2.2 * reach - 2600.0;
+
+    render::draw_road_into(c, art, theme, &road, &tuning, &car, 0.0, &[], 0, 0, W, H);
+
+    println!("\n  the signs on the back straight, near to far\n");
+    for p in structures::shipped() {
+        let d = p.z - car.z;
+        if d > 0.0 && d < reach * 4.0 {
+            println!("    {:>6.0} units ahead ({:>4.1} reaches)   {:?}", d, d / reach, p.kind);
+        }
+    }
 }

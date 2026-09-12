@@ -62,6 +62,35 @@ pub enum Structure {
     /// resolution — and placement has to scale the one it is actually
     /// drawing.
     BillboardOmarchy { side: Side },
+    /// The RidgetopAi mark.
+    BillboardRidgetop { side: Side },
+    /// The Mandrel wordmark.
+    BillboardMandrel { side: Side },
+    /// The Omarcade wordmark.
+    BillboardOmarcade { side: Side },
+    /// A circuit sign — NEXT LAP over a chequer.
+    BillboardNextLap { side: Side },
+}
+
+impl Structure {
+    /// Which side of the road this stands on, if it stands beside the
+    /// road at all.
+    ///
+    /// The gantry SPANS the road and so has no side; everything else is
+    /// a roadside sign. Having one place that answers this keeps the
+    /// collision test from growing a second copy of the variant list
+    /// that could drift out of step with the drawing.
+    pub fn side(self) -> Option<Side> {
+        match self {
+            Structure::Gantry => None,
+            Structure::Billboard { side }
+            | Structure::BillboardOmarchy { side }
+            | Structure::BillboardRidgetop { side }
+            | Structure::BillboardMandrel { side }
+            | Structure::BillboardOmarcade { side }
+            | Structure::BillboardNextLap { side } => Some(side),
+        }
+    }
 }
 
 /// One structure at one place on the track.
@@ -169,6 +198,42 @@ pub fn draw(
             Structure::Billboard { side } => {
                 draw_roadside(c, &art.billboard, art.billboard_panel_rows(), &p, side, fx, fy)
             }
+            Structure::BillboardRidgetop { side } => draw_roadside(
+                c,
+                &art.billboard_ridgetop,
+                art.billboard_ridgetop_panel_rows(),
+                &p,
+                side,
+                fx,
+                fy,
+            ),
+            Structure::BillboardMandrel { side } => draw_roadside(
+                c,
+                &art.billboard_mandrel,
+                art.billboard_mandrel_panel_rows(),
+                &p,
+                side,
+                fx,
+                fy,
+            ),
+            Structure::BillboardOmarcade { side } => draw_roadside(
+                c,
+                &art.billboard_omarcade,
+                art.billboard_omarcade_panel_rows(),
+                &p,
+                side,
+                fx,
+                fy,
+            ),
+            Structure::BillboardNextLap { side } => draw_roadside(
+                c,
+                &art.billboard_nextlap,
+                art.billboard_nextlap_panel_rows(),
+                &p,
+                side,
+                fx,
+                fy,
+            ),
             Structure::BillboardOmarchy { side } => draw_roadside(
                 c,
                 &art.billboard_omarchy,
@@ -443,10 +508,15 @@ mod tests {
     fn billboards_stand_where_there_is_time_to_read_them() {
         let road = grand_prix().build();
         for p in shipped() {
-            if !matches!(
-                p.kind,
-                Structure::Billboard { .. } | Structure::BillboardOmarchy { .. }
-            ) {
+            // ⚠️ ASK WHETHER IT IS A ROADSIDE SIGN, DO NOT LIST THE
+            // VARIANTS. This was `matches!(Billboard | BillboardOmarchy)`
+            // and then four more signs were added — which this test
+            // silently SKIPPED, so it would have passed with a new sign
+            // planted in the middle of the must-brake left. A filter
+            // written as a variant list stops covering the type the
+            // moment the type grows; `side()` is None only for the
+            // gantry, and the gantry is the only thing exempt here.
+            if p.kind.side().is_none() {
                 continue;
             }
             // Straight where it stands, and still straight a little way
@@ -511,13 +581,13 @@ pub fn shipped() -> Vec<Placement> {
         // The wordmark gets the first slot after the line, where a real
         // circuit puts the sponsor that paid the most.
         Placement { z: 1.1 * reach, kind: Structure::BillboardOmarchy { side: Side::Right } },
-        Placement { z: 2.2 * reach, kind: Structure::Billboard { side: Side::Left } },
-        Placement { z: 3.3 * reach, kind: Structure::Billboard { side: Side::Right } },
+        Placement { z: 2.2 * reach, kind: Structure::BillboardRidgetop { side: Side::Left } },
+        Placement { z: 3.3 * reach, kind: Structure::BillboardMandrel { side: Side::Right } },
         // The long back straight before the Hard right — the one place on
         // the lap with real time to look around. Mile 1.70 in course
         // terms; expressed here as the reach count that lands there.
-        Placement { z: 34.0 * reach, kind: Structure::Billboard { side: Side::Left } },
+        Placement { z: 34.0 * reach, kind: Structure::BillboardOmarcade { side: Side::Left } },
         Placement { z: 35.1 * reach, kind: Structure::BillboardOmarchy { side: Side::Right } },
-        Placement { z: 36.2 * reach, kind: Structure::Billboard { side: Side::Left } },
+        Placement { z: 36.2 * reach, kind: Structure::BillboardNextLap { side: Side::Left } },
     ]
 }

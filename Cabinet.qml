@@ -828,8 +828,17 @@ Item {
               anchors.margins: Style.space(14)
               spacing: Style.space(9)
 
+              // ⚠️ THE HEADING CARRIES THE UNIT, because the tiered rows
+              // have nowhere else to put it. A per-row caption under
+              // every difficulty would repeat the same word three times
+              // and crowd rows that are already name-record-number.
               Text {
-                text: "HIGH SCORES"
+                text: {
+                  root.recordsRevision
+                  var r = root.recordFor(root.selected)
+                  var unit = r && r.scoreLabel ? r.scoreLabel : ""
+                  return unit.length ? "BEST " + unit.toUpperCase() : "HIGH SCORES"
+                }
                 color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.45)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
@@ -855,21 +864,59 @@ Item {
               // a row per difficulty, because an easy run and a hard run
               // are different games and collapsing them into one number
               // would quietly show whichever tier inflates it most.
-              Text {
+              Column {
                 visible: {
                   root.recordsRevision
                   var r = root.recordFor(root.selected)
                   return r && r.best > 0 && !r.isTiered
                 }
-                text: {
-                  root.recordsRevision
-                  var r = root.recordFor(root.selected)
-                  return r ? String(r.best) : ""
+                spacing: Style.space(3)
+
+                Text {
+                  text: {
+                    root.recordsRevision
+                    var r = root.recordFor(root.selected)
+                    return r ? String(r.best) : ""
+                  }
+                  color: root.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.displayLarge
+                  font.bold: true
                 }
-                color: root.foreground
-                font.family: Style.font.family
-                font.pixelSize: Style.font.displayLarge
-                font.bold: true
+
+                // What that number IS, and the match record beside it.
+                //
+                // ⚠️ BRIAN PLAYED A FULL MATCH, WON IT, SAW "40" AND HAD
+                // TO ASK WHAT IT MEANT — and he wrote the game. Volley
+                // banks the longest rally rather than the final score,
+                // because first-to-eleven is always "11" and says
+                // nothing about how the match went. That reasoning is
+                // sound and the game's own end screen says BEST RALLY,
+                // but the cabinet showed a bare number under a heading
+                // saying HIGH SCORES, next to Omaprix's 2.8 million.
+                // Two different quantities, one label, no way to tell.
+                //
+                // Empty for a game that declares neither, so nothing is
+                // invented for a title that just scores points.
+                Text {
+                  readonly property string caption: {
+                    root.recordsRevision
+                    var r = root.recordFor(root.selected)
+                    if (!r) return ""
+                    // Just the record: the heading above already names
+                    // the unit, and saying "Best rally" twice in six
+                    // lines reads as a template rather than a cabinet.
+                    var rec = r.overallRecordLabel
+                    return rec.length ? "Record " + rec : ""
+                  }
+                  visible: caption.length > 0
+                  text: caption
+                  color: Qt.rgba(root.foreground.r, root.foreground.g,
+                                 root.foreground.b, 0.5)
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.letterSpacing: Style.space(1)
+                }
               }
 
               Repeater {
@@ -892,6 +939,25 @@ Item {
                     font.family: Style.font.family
                     font.pixelSize: Style.font.body
                     font.letterSpacing: Style.space(1)
+                  }
+
+                  // The match record for THIS tier, between the name and
+                  // the number. Per difficulty rather than overall, for
+                  // the same reason the scores are: beating the easy
+                  // opponent four times is not the same claim as beating
+                  // the hard one four times.
+                  Text {
+                    anchors.centerIn: parent
+                    visible: text.length > 0
+                    text: {
+                      root.recordsRevision
+                      var r = root.recordFor(root.selected)
+                      return r ? r.recordLabel(modelData) : ""
+                    }
+                    color: Qt.rgba(root.foreground.r, root.foreground.g,
+                                   root.foreground.b, 0.45)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
                   }
 
                   Text {

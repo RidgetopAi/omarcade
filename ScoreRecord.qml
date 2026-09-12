@@ -93,6 +93,49 @@ Item {
     return m + ":" + ss
   }
 
+  // What this game's score measures — "Rally" for Volley — or "" for a
+  // game that just scores points and needs no explaining.
+  //
+  // Declared in the file by the game, never inferred here. The cabinet
+  // shows every game's number under one heading, so without this it
+  // cannot say that 40 and 2,873,649 are different quantities.
+  readonly property string scoreLabel:
+    record && record.score_label ? String(record.score_label) : ""
+
+  // Matches won and lost on one difficulty, as "4-2", or "" where the
+  // game keeps no record.
+  //
+  // ⚠️ READS `records`, NOT `entries`. The entry list is capped at ten
+  // and sorted by score, so it drops exactly the short losing matches a
+  // record needs to count — a W-L tallied from it climbs towards
+  // all-wins the longer someone plays. core writes counters for this
+  // reason; this only displays them.
+  //
+  // Absent for a game that has no notion of winning, the same way
+  // bestTimeLabel is empty for a game that records no times. Neither
+  // the marquee nor the cabinet learns which game is which.
+  function recordLabel(difficulty) {
+    if (!record || !record.records) return ""
+    var r = record.records[difficulty]
+    if (!r) return ""
+    var w = Number(r.wins || 0)
+    var l = Number(r.losses || 0)
+    if (w + l === 0) return ""
+    return w + "-" + l
+  }
+
+  // The record across every difficulty played, for a game shown as a
+  // single line rather than a row per tier.
+  readonly property string overallRecordLabel: {
+    if (!record || !record.records) return ""
+    var w = 0, l = 0
+    for (var k in record.records) {
+      w += Number(record.records[k].wins || 0)
+      l += Number(record.records[k].losses || 0)
+    }
+    return (w + l) === 0 ? "" : w + "-" + l
+  }
+
   // Difficulty labels this game has scores for.
   //
   // Ordered easy-to-hard where the names are ones we recognise, then

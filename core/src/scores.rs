@@ -13,6 +13,7 @@
 //! Nothing here is on the frame path. Games call [`ScoreFile::record`] at
 //! game-over and [`ScoreFile::save`] once, not per tick.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -115,10 +116,65 @@ pub struct ScoreFile {
     /// assumed. Absent in v1 records, which were all points-scored.
     #[serde(default = "default_higher_is_better")]
     pub higher_is_better: bool,
+    /// What the score MEASURES, for a game whose number is not simply
+    /// "points" — e.g. Volley's `"Rally"`.
+    ///
+    /// ⚠️ THE CABINET CANNOT GUESS THIS AND MUST NOT TRY. It shows every
+    /// game's number under one "HIGH SCORES" heading, so Volley's 40
+    /// sat beside Omaprix's 2,873,649 as though they were the same
+    /// quantity. They are not: one is the longest rally in a match, the
+    /// other is points. Brian played a full match, won, and had to ask
+    /// what the 40 meant — and he wrote the game.
+    ///
+    /// Declared by the game, like `higher_is_better`, so adding a title
+    /// never means editing the marquee. Absent for a game that really
+    /// does just score points, and the label is simply not drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_label: Option<String>,
     /// Best first, capped at [`KEEP`] — where "best" follows
     /// [`higher_is_better`](Self::higher_is_better), not the raw number.
     pub entries: Vec<Entry>,
+    /// Matches won and lost, per difficulty.
+    ///
+    /// ⚠️ COUNTERS, NOT DERIVED FROM [`entries`](Self::entries), and that
+    /// is the whole point. `entries` is capped at [`KEEP`] and sorted by
+    /// score, so a losing match with a short rally is DISCARDED by
+    /// `truncate`. Counting wins and losses across what survives would
+    /// read 4-0 for a player who had lost twenty times — it would be
+    /// wrong, and wrong in the flattering direction, which is worse.
+    ///
+    /// Keyed by the same difficulty string `entries` uses, because a
+    /// record on easy and a record on hard are different claims for the
+    /// same reason their scores are not comparable.
+    ///
+    /// Optional like [`Entry::seconds`]: a game with no notion of
+    /// winning writes nothing, the key is absent from its file, and
+    /// existing records deserialize to an empty map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub records: BTreeMap<String, Record>,
     pub updated_at: String,
+}
+
+/// Matches won and lost on one difficulty.
+///
+/// Separate from a score because they answer different questions: the
+/// score says how well a match went, the record says how many you have
+/// taken. Volley needs both — first-to-eleven means the final score is
+/// only ever "11", so the rally measures the play and this measures the
+/// result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Record {
+    #[serde(default)]
+    pub wins: u32,
+    #[serde(default)]
+    pub losses: u32,
+}
+
+impl Record {
+    /// Matches played on this difficulty.
+    pub fn played(&self) -> u32 {
+        self.wins + self.losses
+    }
 }
 
 impl ScoreFile {
@@ -130,8 +186,45 @@ impl ScoreFile {
             name: name.into(),
             higher_is_better: true,
             entries: Vec::new(),
+            score_label: None,
+            records: BTreeMap::new(),
             updated_at: now_rfc3339(),
         }
+    }
+
+    /// Declare what the score measures, for a game whose number is not
+    /// points — `"Rally"`, `"Depth"`, `"Waves"`.
+    ///
+    /// Set on the record each time it is loaded, not once at creation:
+    /// the code is the authority, the same way it already is for the
+    /// display name and the ranking direction, so a wording change in a
+    /// later release reaches players who already have a file.
+    pub fn labelled(mut self, label: impl Into<String>) -> Self {
+        self.score_label = Some(label.into());
+        self
+    }
+
+    /// Count a finished match on this difficulty.
+    ///
+    /// Call once per completed match, win or lose — not once per new
+    /// best. A record that only counted the matches worth remembering
+    /// would flatter its owner, which is the one thing a record must
+    /// not do.
+    pub fn note_result(&mut self, won: bool, difficulty: &str) {
+        let record = self.records.entry(difficulty.to_string()).or_default();
+        if won {
+            record.wins += 1;
+        } else {
+            record.losses += 1;
+        }
+        self.updated_at = now_rfc3339();
+    }
+
+    /// Matches won and lost on one difficulty, or `None` where none have
+    /// been played — which is what lets a caller show nothing at all
+    /// rather than an honest-looking 0-0.
+    pub fn record_for(&self, difficulty: &str) -> Option<Record> {
+        self.records.get(difficulty).copied()
     }
 
     /// Declare that a smaller number is the better result — strokes,
@@ -982,5 +1075,67 @@ mod tests {
         // And once a race IS finished, that one counts.
         f.record_run(400_000, "grand-prix", Some(143.2));
         assert_eq!(f.best_time_for("grand-prix"), Some(143.2));
+    }
+
+    /// ⚠️ THE REASON THE RECORD IS COUNTERS AND NOT A TALLY OF ENTRIES.
+    ///
+    /// `entries` is capped at KEEP and sorted by score, so losses with
+    /// short rallies are the first thing `truncate` throws away. Play
+    /// more than KEEP matches and a W-L derived from the surviving
+    /// entries drifts towards all-wins — wrong, and wrong in the
+    /// flattering direction.
+    ///
+    /// This plays twice KEEP matches, losing most of them, and asserts
+    /// the record still knows. It fails against any implementation that
+    /// reads the entry list.
+    #[test]
+    fn losses_survive_the_entry_cap() {
+        let mut f = ScoreFile::new("omarcade-volley", "Volley");
+
+        // 4 wins with long rallies, 16 losses with short ones. Only the
+        // top 10 scores can survive, and every one of them is a win.
+        for i in 0..4 {
+            f.record_at(100 + i, "easy");
+            f.note_result(true, "easy");
+        }
+        for _ in 0..16 {
+            f.record_at(3, "easy");
+            f.note_result(false, "easy");
+        }
+
+        assert_eq!(f.entries.len(), KEEP, "the cap still applies");
+
+        let record = f.record_for("easy").expect("a record after 20 matches");
+        assert_eq!(record.wins, 4, "wins");
+        assert_eq!(record.losses, 16, "losses — the entry list kept almost none of these");
+        assert_eq!(record.played(), 20);
+
+        // The counters survive a round trip, and a game that never calls
+        // note_result writes no `records` key at all.
+        let json = serde_json::to_string(&f).unwrap();
+        let back: ScoreFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.record_for("easy"), Some(record));
+
+        let quiet = ScoreFile::new("omarcade-pixel-break", "Pixel Break");
+        let quiet_json = serde_json::to_string(&quiet).unwrap();
+        assert!(
+            !quiet_json.contains("records"),
+            "a game with no matches must not write the key: {quiet_json}"
+        );
+        assert_eq!(quiet.record_for("normal"), None);
+    }
+
+    /// A record is per difficulty, for the same reason a score is: an
+    /// easy match and a hard match are different games.
+    #[test]
+    fn a_record_is_kept_per_difficulty() {
+        let mut f = ScoreFile::new("omarcade-volley", "Volley");
+        f.note_result(true, "easy");
+        f.note_result(true, "easy");
+        f.note_result(false, "hard");
+
+        assert_eq!(f.record_for("easy").map(|r| (r.wins, r.losses)), Some((2, 0)));
+        assert_eq!(f.record_for("hard").map(|r| (r.wins, r.losses)), Some((0, 1)));
+        assert_eq!(f.record_for("normal"), None, "never played, so nothing to show");
     }
 }

@@ -82,7 +82,12 @@ impl Volley {
     fn new(theme: Theme, audio: &mut AudioSystem) -> Self {
         // Longest rally is higher-is-better, so the default ranking is
         // the right one and no `lower_is_better()` is needed here.
-        let scores = ScoreFile::load_or_migrate(GAME_ID, GAME_NAME, LEGACY_GAME_ID);
+        // ★ "Rally", because the number is the longest rally and not the
+        // match score. Without this the cabinet shows a bare 40 under
+        // HIGH SCORES beside Omaprix's 2.8 million, which reads as a
+        // terrible score rather than a different quantity.
+        let scores =
+            ScoreFile::load_or_migrate(GAME_ID, GAME_NAME, LEGACY_GAME_ID).labelled("Rally");
         let state = GameState::new();
         let opponent = Opponent::new(Side::Right, state.difficulty);
 
@@ -131,8 +136,23 @@ impl Volley {
             return;
         }
         self.recorded = true;
-        self.scores
-            .record_at(self.state.longest_rally, self.state.difficulty.id());
+        let difficulty = self.state.difficulty.id();
+        self.scores.record_at(self.state.longest_rally, difficulty);
+
+        // The match result, counted separately from the rally.
+        //
+        // ⚠️ COUNTED, NOT DERIVED FROM THE ENTRIES. `record_at` keeps only
+        // the top KEEP scores, so a loss with a short rally is dropped by
+        // `truncate` — a W-L tallied from what survives would read 4-0
+        // for someone who had lost twenty times.
+        //
+        // `winner == Side::Left` is the player, the same test render.rs
+        // uses to decide whether the end screen says won or lost. One
+        // rule, read in both places, rather than two that can drift.
+        if let Phase::Over { winner } = self.state.phase {
+            self.scores.note_result(winner == Side::Left, difficulty);
+        }
+
         self.refresh_best();
         let _ = self.scores.save();
     }

@@ -13,28 +13,95 @@ BINDIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 APPDIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONDIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 
+# The bar plugin. Defined up here rather than beside the install step
+# because BOTH paths need it: an uninstall that cannot see this variable
+# is an uninstall that leaves the plugin behind, which is exactly the bug
+# this placement fixes.
+PLUGIN_ID="ridgetopai.omarcade"
+PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
+
 # Every shipped title, by binary name. This list is the ONE place a new
 # game is registered: the cabinet and the marquee discover games from
 # what is installed and what has written a score, never from a list of
 # their own.
 GAMES=(omarcade-pixel-break omarcade-volley omarcade-racer)
 
+# Every id this suite has shipped under and then renamed away from.
+#
+# Declared beside GAMES, and above the uninstall branch, because BOTH
+# paths iterate it: install removes a retired name so it cannot haunt the
+# cabinet, and uninstall removes it so the suite takes every name it has
+# ever used with it. A name that only the install path knows about is a
+# name the uninstall path leaves behind.
+#
+# ⚠️ SCORE FILES ARE NOT LISTED HERE. Breakout's are migrated below
+# because that rename predates the support; Pong's are carried by
+# ScoreFile::load_or_migrate in core, which is typed, tested, and runs
+# however the game was installed. Two migrations racing for one file is a
+# bug waiting to happen — if a future rename needs one, add it in core.
+RETIRED=(omarcade-breakout omarcade-pong)
+
 die() { echo "install.sh: $*" >&2; exit 1; }
 say() { printf '  %s\n' "$*"; }
+
+# Remove a file and report it ONLY if it was actually there.
+#
+# ⚠️ `rm -f X && say "removed X"` does NOT do this: rm -f exits 0 on a
+# missing file, so the report fires either way and an uninstall of a
+# partial install cheerfully lists things that never existed. Uninstall
+# is the moment a wary user is reading most closely; it must not lie.
+drop() {
+  [[ -e $1 || -L $1 ]] || return 0
+  rm -f "$1" && say "removed $1"
+}
 
 if [[ ${1:-} == --uninstall ]]; then
   echo "Removing Omarcade..."
   for game in "${GAMES[@]}"; do
-    rm -f "$BINDIR/$game" && say "removed $BINDIR/$game"
+    drop "$BINDIR/$game"
   done
   for game in "${GAMES[@]}"; do
-    rm -f "$APPDIR/$game.desktop" && say "removed $APPDIR/$game.desktop"
+    drop "$APPDIR/$game.desktop"
+  done
+  # Retired binaries and launchers, so removing the suite removes every
+  # name it has ever shipped under rather than only the current ones.
+  for old in "${RETIRED[@]}"; do
+    drop "$BINDIR/$old"
+    drop "$APPDIR/$old.desktop"
   done
   # The pre-suite entry, from when Breakout was the only title.
-  rm -f "$APPDIR/omarcade.desktop"
-  rm -f "$ICONDIR/omarcade.svg"    && say "removed $ICONDIR/omarcade.svg"
+  drop "$APPDIR/omarcade.desktop"
+  drop "$ICONDIR/omarcade.svg"
+
+  # ---------------------------------------------------------------------
+  # The bar plugin.
+  #
+  # ⚠️ THIS STEP DID NOT EXIST UNTIL THE SHIP REVIEW, and its absence was
+  # the one bug in this script that reached the user. The install path
+  # grew a plugin step; the uninstall path did not, so removing Omarcade
+  # left the marquee and cabinet installed in the bar. It did not even
+  # error — the cabinet shows "No games found" — which is worse than a
+  # failure: it is permanent, polite litter in the bar of someone who has
+  # already decided they do not want this.
+  #
+  # rm -rf is safe on exactly this path and no other: the directory is
+  # namespaced to our plugin id and we own every file in it. The parent
+  # plugins/ directory belongs to Omarchy and may house other people's
+  # plugins, so it is only removed when empty, and never forced.
+  # ---------------------------------------------------------------------
+  if [[ -d $PLUGIN_DIR ]]; then
+    rm -rf "$PLUGIN_DIR"
+    say "removed $PLUGIN_DIR"
+    rmdir "$(dirname "$PLUGIN_DIR")" 2>/dev/null || true
+  fi
+
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$APPDIR" || true
-  echo "Done. (Hyprland rules in ~/.config/hypr/omarcade.lua were left alone.)"
+  command -v gtk-update-icon-cache   >/dev/null 2>&1 && gtk-update-icon-cache -qtf "${ICONDIR%/scalable/apps}" 2>/dev/null || true
+  echo
+  echo "Done. Two things were deliberately left alone:"
+  echo "  - your high scores, in ${XDG_STATE_HOME:-\$HOME/.local/state}/omarcade/"
+  echo "  - Hyprland rules, if you added them to ~/.config/hypr/omarcade.lua"
+  echo "The bar needs a restart to drop the widget: omarchy-restart-shell"
   exit 0
 fi
 
@@ -70,30 +137,20 @@ if [[ -f $old_scores && ! -f $new_scores ]]; then
 fi
 
 # --- Retired binary names ----------------------------------------------------
-# Every id this suite has shipped under and then renamed away from.
+# Clear any name this suite has shipped under before (the list itself is
+# declared at the top, beside GAMES, because uninstall iterates it too).
 #
 # A left-behind binary and launcher entry are a second game on the cabinet and
 # a second entry in the app menu -- both launching a build that no longer
-# matches the game it claims to be. The uninstall loop cannot reach them: it
-# iterates GAMES, which by definition names only current titles. Same reason as
-# omarcade.desktop below.
+# matches the game it claims to be.
 #
-# This is a LIST because it is now the second rename rather than the first, and
-# the check that catches a missed one (find ~/.local/bin ~/.local/share/
-# applications ~/.local/state/omarcade -iname "*<oldname>*") only ever runs on
-# the machine doing the renaming. On everyone else's it is this loop or nothing.
-#
-# ⚠️ SCORE FILES ARE NOT LISTED HERE. Breakout's are migrated above because that
-# rename predates the support; Pong's are carried by ScoreFile::load_or_migrate
-# in core, which is typed, tested, and runs however the game was installed. Two
-# migrations racing for one file is a bug waiting to happen -- if a future
-# rename needs one, add it in core, not here.
-RETIRED=(omarcade-breakout omarcade-pong)
+# The check that catches a name missed from the list (find ~/.local/bin
+# ~/.local/share/applications ~/.local/state/omarcade -iname "*<oldname>*")
+# only ever runs on the machine doing the renaming. On everyone else's it is
+# this loop or nothing.
 for old in "${RETIRED[@]}"; do
-  [[ -e $BINDIR/$old ]] && say "removing retired $BINDIR/$old"
-  rm -f "$BINDIR/$old"
-  [[ -e $APPDIR/$old.desktop ]] && say "removing retired $APPDIR/$old.desktop"
-  rm -f "$APPDIR/$old.desktop"
+  drop "$BINDIR/$old"
+  drop "$APPDIR/$old.desktop"
 done
 
 echo "Building Omarcade (release)..."
@@ -150,9 +207,6 @@ command -v gtk-update-icon-cache   >/dev/null 2>&1 && gtk-update-icon-cache -qtf
 # than merged, so a file deleted from the repo does not survive in the
 # installed copy.
 # ---------------------------------------------------------------------
-PLUGIN_ID="ridgetopai.omarcade"
-PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
-
 mkdir -p "$PLUGIN_DIR"
 # Clear the QML the plugin owns before writing it, so a renamed or
 # removed component cannot linger and shadow its replacement.

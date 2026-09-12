@@ -101,7 +101,14 @@ if [[ ${1:-} == --uninstall ]]; then
   echo "Done. Two things were deliberately left alone:"
   echo "  - your high scores, in ${XDG_STATE_HOME:-\$HOME/.local/state}/omarcade/"
   echo "  - Hyprland rules, if you added them to ~/.config/hypr/omarcade.lua"
-  echo "The bar needs a restart to drop the widget: omarchy-restart-shell"
+  # ⚠️ NOT a shell restart. Omarchy watches the plugins directory and
+  # drops the widget on its own within a second or two — measured, by
+  # removing the plugin on a live bar and watching the icon go. Telling
+  # someone to restart their whole shell to finish an uninstall is both
+  # unnecessary and a bad last impression. A rescan is the nudge if the
+  # bar has not caught up.
+  echo "The bar drops the widget on its own. If it lingers:"
+  echo "  omarchy-shell shell rescanPlugins"
   exit 0
 fi
 

@@ -49,12 +49,21 @@ a desktop entry per game so they show up in your app launcher.
 ### Removing it
 
 ```bash
-omarchy plugin remove ridgetopai.omarcade   # the cabinet
-./packaging/install.sh --uninstall          # the games
+~/.config/omarchy/plugins/ridgetopai.omarcade/packaging/install.sh --uninstall
 ```
 
-Either way your high scores are left alone, in
-`~/.local/state/omarcade/`. Delete that directory if you want them gone too.
+That takes out the games, their launcher entries, the icon and the
+cabinet — everything Omarcade installed. Run it before
+`omarchy plugin remove`, not after: the uninstaller lives *inside* the
+plugin directory, so removing the plugin first leaves three binaries in
+`~/.local/bin` with nothing left to remove them.
+
+If you installed by cloning the repo yourself, run
+`./packaging/install.sh --uninstall` from wherever you cloned it.
+
+Your high scores are deliberately left alone, in
+`~/.local/state/omarcade/`. Delete that directory if you want them gone
+too.
 
 ### Hyprland window rules (recommended)
 

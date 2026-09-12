@@ -28,11 +28,30 @@
 #   volley       rally       mid-rally with a trail and an honest 4-6
 #   racer        drive       a rival close ahead, under the wallpaper sky
 #
-# ⚠️ THE RACER'S SKY IS THE LIVE OMARCHY WALLPAPER, so this render
-# depends on the theme set when it runs. Deliberate — the committed art
-# should look like the suite's own default — but it means a themed
-# machine produces slightly different art. Set OMARCADE_BACKGROUND to
-# pin it.
+# ⚠️ THE RACER'S SKY IS THE LIVE OMARCHY WALLPAPER, and for THIS image
+# that is pinned rather than inherited.
+#
+# The cabinet art in docs/cabinet deliberately follows whatever theme is
+# set — it is shown to the person whose desktop it is. The marketplace
+# card is shown to strangers, so it must not depend on whose machine
+# regenerated it. Rendered on Brian's Victorian theme it put an oil
+# painting of a woman by a river behind the cars, which is honestly how
+# the game looks on his desktop and reads on a card as a compositing
+# mistake.
+#
+# Ethereal's `1-cosmic` is a first-party Omarchy wallpaper and a nebula,
+# so it reads as a night sky and shows off the feature without hijacking
+# the frame. Chosen by rendering it against `2-meadow` and looking at
+# both: meadow's tree silhouette had the same pasted-photo problem.
+#
+# Override for a different look; fall back to the live wallpaper if the
+# pinned file is missing, so this never fails on a machine that has
+# themes somewhere else.
+PINNED_SKY=/usr/share/omarchy/themes/ethereal/backgrounds/1-cosmic.jpg
+if [[ -z ${OMARCADE_BACKGROUND:-} && -f $PINNED_SKY ]]; then
+  export OMARCADE_BACKGROUND="$PINNED_SKY"
+  echo "sky pinned to ethereal/1-cosmic (the card must not depend on your theme)"
+fi
 
 set -euo pipefail
 

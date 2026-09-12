@@ -749,7 +749,7 @@ impl Roll {
         // f32 loses sub-pixel precision. A car that has driven for an
         // hour must roll exactly as smoothly as one that just started.
         if self.phase.abs() > 4096.0 {
-            self.phase = self.phase % 1.0;
+            self.phase %= 1.0;
         }
     }
 

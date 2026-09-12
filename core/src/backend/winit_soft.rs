@@ -670,6 +670,65 @@ mod tests {
         }
     }
 
+    /// Every window size in a wide sweep presents without panicking and
+    /// paints the whole buffer.
+    ///
+    /// ⚠️ THE SIZES ABOVE ARE HAND-PICKED, AND THIS IS THE CLASS OF BUG
+    /// THAT HIDES BETWEEN THEM. `plan` warns in its own comment that a
+    /// float ratio "can land a pixel wide of the window and panic the
+    /// blit at exactly one window size" — and a handful of chosen sizes
+    /// is exactly how you fail to find that one. 210 combinations here,
+    /// including 1-pixel edges and primes that make integer division
+    /// land badly. It runs `present`, not just `plan`: the arithmetic
+    /// being right and the blit staying in bounds are different claims,
+    /// and it is the blit that panics (`row[dst_x..][..dst_w]`).
+    ///
+    /// ⚠️ WHAT THIS DOES AND DOES NOT GUARD, measured by mutation:
+    /// widening `dst_w` by one pixel FAILS it immediately. But making
+    /// the ratio a ceil'd float, dropping the `.max(1)` floor, and
+    /// centring with `div_ceil` all still PASS — not because the sweep
+    /// is blind, but because at a 4:3 source none of those can actually
+    /// overrun: `h * 960 / 720` is exact on every multiple of three and
+    /// cannot exceed the width otherwise. The integer math in `plan` is
+    /// still the right call, but it is belt-and-braces rather than the
+    /// only thing standing between us and a panic. Do not read a green
+    /// run here as proof that a float rewrite would be safe at some
+    /// other source aspect — re-run this sweep if `src` ever changes.
+    #[test]
+    fn no_window_size_panics_or_leaves_a_hole() {
+        let widths = [1u32, 2, 3, 7, 17, 97, 199, 317, 640, 641, 960, 1279, 1920, 2561, 3840];
+        let heights = [1u32, 2, 3, 5, 13, 101, 211, 359, 480, 721, 720, 1081, 1440, 2160];
+
+        for &w in &widths {
+            for &h in &heights {
+                let mut s = Scaler::new(960, 720);
+                s.plan(w, h);
+
+                // The picture never escapes the window it was fitted to.
+                assert!(
+                    s.dst_w <= w && s.dst_h <= h,
+                    "{w}x{h}: picture {}x{} escapes the window",
+                    s.dst_w,
+                    s.dst_h
+                );
+                assert!(
+                    s.dst_x + s.dst_w <= w && s.dst_y + s.dst_h <= h,
+                    "{w}x{h}: picture is offset out of the window"
+                );
+
+                // And the blit stays inside the buffer it is handed.
+                let mut out = vec![0xDEAD_BEEF_u32; (w as usize) * (h as usize)];
+                s.scratch.fill(0x0011_2233);
+                s.present(&mut out);
+                assert!(
+                    !out.contains(&0xDEAD_BEEF),
+                    "{w}x{h}: left {} window pixels unpainted",
+                    out.iter().filter(|p| **p == 0xDEAD_BEEF).count()
+                );
+            }
+        }
+    }
+
     /// A window that is not 4:3 gets bars, and they are actually bars —
     /// black, outside the picture, on the correct axis.
     #[test]

@@ -177,7 +177,7 @@ pub fn draw(state: &mut GameState, canvas: &mut Canvas<'_>, theme: &Theme) {
     // ⚠️ Kept through the cascade and dropped with the HUD once the tally
     // starts — the same rule, because they are the same decision: the
     // celebration is still the game, the tally is after it.
-    let tallying = state.victory.map_or(false, |v| v.lines > 0);
+    let tallying = state.victory.is_some_and(|v| v.lines > 0);
     if state.phase != Phase::Won && !tallying && !titling && !ended {
         vp.rect(state.paddle.rect(), canvas, theme.foreground);
     }

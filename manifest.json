@@ -5,6 +5,8 @@
   "version": "0.1.0",
   "author": "Brian Ridgetopai",
   "description": "High scores from the Omarcade arcade suite, live in your bar",
+  "homepage": "https://github.com/RidgetopAi/omarcade",
+  "issues": "https://github.com/RidgetopAi/omarcade/issues",
   "kinds": [
     "bar-widget",
     "panel"

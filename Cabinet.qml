@@ -69,6 +69,19 @@ Item {
   // unplayed cabinet in a dark arcade looks like anyway.
   readonly property string artDir: Qt.resolvedUrl("docs/cabinet")
 
+  // ---- where this plugin lives ---------------------------------------
+  //
+  // `omarchy plugin add` clones the WHOLE repo into the plugin directory,
+  // so packaging/install.sh, Cargo.toml and every line of Rust are
+  // sitting right next to this file. That is what makes the cabinet able
+  // to build the games itself: there is nothing to fetch.
+  //
+  // ⚠️ Qt.resolvedUrl returns a file:// URL and a shell command needs a
+  // path, so the scheme is stripped. Keep them separate — handing a URL
+  // to Process yields a command that silently never finds anything.
+  readonly property string pluginDir:
+    String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, "")
+
   // ---- lifecycle -----------------------------------------------------
 
   function open(payloadJson) {
@@ -113,6 +126,108 @@ Item {
 
   function scan() {
     if (!scanProc.running) scanProc.running = true
+  }
+
+  // ---- installing the games ------------------------------------------
+  //
+  // ⚠️ THIS IS THE FIRST EXPERIENCE, NOT AN EDGE CASE. `omarchy plugin
+  // add` clones files and runs nothing — no build, no install hooks, by
+  // design. So everyone who finds Omarcade through the plugin
+  // marketplace arrives here with a cabinet and no games. What used to
+  // sit in this spot was a line of grey text telling them to go and run
+  // a shell script, which is homework, not an arcade.
+  //
+  // The build takes minutes, so it reports as it goes: silence reads as
+  // a hang, and a hang reads as broken software.
+  //
+  // ⚠️ WE NEVER INSTALL RUST. If cargo is missing we say so and show the
+  // one command that fixes it. A game plugin that installs a system
+  // toolchain because you clicked a button on a cabinet is exactly the
+  // kind of surprise that costs a new project its reputation — and the
+  // audience here is entirely comfortable running one pacman line.
+
+  // idle | checking | needsRust | installing | failed
+  property string installState: "idle"
+  property string installLine: ""
+  property string installError: ""
+
+  readonly property string rustCommand: "sudo pacman -S rust"
+
+  // Does this machine have a Rust toolchain? Asked before anything is
+  // built, so the answer is "you need Rust" rather than 300 lines of
+  // cargo failing in a box the size of a postcard.
+  Process {
+    id: rustProc
+    running: false
+    command: ["sh", "-c", "command -v cargo >/dev/null 2>&1"]
+    onExited: function (code) {
+      if (code === 0) {
+        root.installState = "installing"
+        root.installLine = "Starting the build…"
+        installProc.running = true
+      } else {
+        root.installState = "needsRust"
+      }
+    }
+  }
+
+  // The build itself. install.sh is idempotent and refuses to install a
+  // stale binary, so a second click after a failure is safe.
+  //
+  // ⚠️ Process, not execDetached: we need the output to report progress
+  // and the exit code to know whether it worked. execDetached gives
+  // neither, and a build that cannot report failure is worse than no
+  // button at all.
+  Process {
+    id: installProc
+    running: false
+    workingDirectory: root.pluginDir
+    command: ["sh", "-c", "./packaging/install.sh 2>&1"]
+
+    stdout: SplitParser {
+      onRead: function (line) { root.noteInstallLine(line) }
+    }
+
+    onExited: function (code) {
+      if (code === 0) {
+        root.installState = "idle"
+        root.installLine = ""
+        root.installError = ""
+        root.scan()
+      } else {
+        root.installState = "failed"
+        if (root.installError.length === 0)
+          root.installError = "The build stopped with code " + code + "."
+      }
+    }
+  }
+
+  // Turn cargo's firehose into one honest line.
+  //
+  // ⚠️ Deliberately not a percentage. cargo reports "Compiling 118/342"
+  // for dependencies and then spends a long time on the final link, so a
+  // bar derived from it stalls at 97% and looks stuck. Naming the crate
+  // being built is both truthful and more reassuring.
+  function noteInstallLine(raw) {
+    var line = String(raw || "").trim()
+    if (line.length === 0) return
+
+    if (line.indexOf("error") === 0 || line.indexOf("error:") >= 0)
+      installError = line.substring(0, 300)
+
+    var m = line.match(/^\s*Compiling\s+(\S+)/)
+    if (m) { installLine = "Building " + m[1] + "…"; return }
+    if (line.indexOf("Building Omarcade") === 0) { installLine = "Compiling the games…"; return }
+    if (line.indexOf("Installing") === 0)        { installLine = "Installing…"; return }
+    if (line.indexOf("Finished") >= 0)           { installLine = "Finishing up…"; return }
+  }
+
+  function beginInstall() {
+    if (installState === "installing" || installState === "checking") return
+    installError = ""
+    installLine = ""
+    installState = "checking"
+    rustProc.running = true
   }
 
   function applyListing(output) {
@@ -266,19 +381,6 @@ Item {
         anchors.fill: parent
         anchors.margins: Style.space(18)
 
-        // Empty state. A fresh install has games but the directory may
-        // be missing entirely; say so rather than showing a dark box.
-        Text {
-          anchors.centerIn: parent
-          width: parent.width - Style.space(40)
-          visible: root.games.length === 0
-          text: "No games found in ~/.local/bin.\n\nRun ./packaging/install.sh from the Omarcade repo."
-          horizontalAlignment: Text.AlignHCenter
-          wrapMode: Text.WordWrap
-          color: Qt.darker(root.foreground, 1.4)
-          font.family: Style.font.family
-          font.pixelSize: Style.font.body
-        }
 
         // ⚠️ THE PARTS ARE SIZED AS FRACTIONS OF THE CABINET, NOT IN
         // PIXELS. A first version fixed the marquee at 58px and the
@@ -290,14 +392,46 @@ Item {
         Column {
           id: stack
           anchors.fill: parent
-          visible: root.games.length > 0
+
+          // ⚠️ THE MACHINE IS ALWAYS HERE, EVEN WITH NOTHING INSTALLED.
+          // A first version hid the whole cabinet until a game was found
+          // and drew a line of text in the middle of the window instead.
+          // Rendered, that was a black void with a sentence floating in
+          // it — no marquee, no machine, nothing that says "arcade". For
+          // anyone arriving from the plugin marketplace that void IS
+          // Omarcade, because `omarchy plugin add` installs no games.
+          // So the cabinet stands, and the OFFER GOES ON ITS SCREEN,
+          // which is where an arcade machine puts its attract mode.
 
           // The fixed furniture, measured against the BASE spacing so
           // this cannot depend on `spacing` — which depends on it.
           readonly property int baseSpacing: Style.space(14)
-          readonly property real furniture:
-            marquee.height + titleRow.height + pips.height
-            + panel.height + prompt.height + baseSpacing * 5
+
+          // ⚠️ ONLY WHAT IS ON SCREEN COUNTS. A hidden Item still reports
+          // its height, and a Column still drops it from the layout — so
+          // summing them unconditionally over-counts the furniture, the
+          // screen's cap shrinks to match, and the freed height reappears
+          // as dead space under the machine. That is exactly what an
+          // empty cabinet does: title, pips, panel and prompt are all
+          // hidden at once, and rendering it showed ~280px of nothing.
+          //
+          // ⚠️ AND THE GAPS ARE ONE FEWER THAN THE PARTS. A Column puts
+          // spacing BETWEEN its visible children, so n items have n-1
+          // gaps and a hidden child contributes none — measured, not
+          // assumed: a 4-child Column with 2 hidden and spacing 10
+          // reports implicitHeight 90, not 110. Counting one gap per
+          // part over-reserved a whole spacing and pushed the screen off
+          // the bottom of the window.
+          readonly property real furniture: {
+            var n = 1                       // the marquee is always here
+            var h = marquee.height
+            if (titleRow.visible) { h += titleRow.height; n += 1 }
+            if (pips.visible)     { h += pips.height;     n += 1 }
+            if (panel.visible)    { h += panel.height;    n += 1 }
+            if (prompt.visible)   { h += prompt.height;   n += 1 }
+            // n parts, plus the screen itself, gives n gaps between them.
+            return h + baseSpacing * n
+          }
 
           // ⚠️ THE SCREEN CANNOT ALWAYS EAT THE SURPLUS, so something
           // else has to. It is capped at the art's 4:3, and once the
@@ -387,12 +521,34 @@ Item {
             // window size — but it never grows past the art's own aspect,
             // or a tall window would letterbox the picture inside a
             // screen that is mostly empty bezel.
-            width: Math.min(parent.width, Math.round(available * 4 / 3))
-            height: Math.min(Math.round(parent.width * 3 / 4), available)
+            // ⚠️ THE 4:3 CAP EXISTS TO PROTECT THE ART, so it only
+            // applies when there is art. An empty cabinet has a screen
+            // full of text, which has no aspect to preserve — and
+            // capping it there left ~300px of dead space below the
+            // machine, because the parts that would have taken up the
+            // slack (title, pips, scores, prompt) are all hidden at once.
+            // Letting the screen run to the full height is what makes an
+            // empty cabinet look like a cabinet rather than a receipt.
+            width: root.games.length === 0
+                   ? parent.width
+                   : Math.min(parent.width, Math.round(available * 4 / 3))
+            height: root.games.length === 0
+                    ? available
+                    : Math.min(Math.round(parent.width * 3 / 4), available)
             anchors.horizontalCenter: parent.horizontalCenter
 
+            // ⚠️ MEASURED AGAINST THE COLUMN'S LIVE `spacing`, NOT
+            // `baseSpacing`. The empty cabinet has a lot of slack, so
+            // spacing grows well past the base — reserving only the base
+            // let the screen claim height the gaps had already taken and
+            // it ran off the bottom of the window. Reading `spacing`
+            // here is safe where `furniture` could not: furniture FEEDS
+            // spacing, so touching it there would be a binding loop;
+            // this is downstream of both.
             readonly property real available:
-              Math.max(Style.space(120), stack.height - stack.furniture)
+              Math.max(Style.space(120),
+                       stack.height - stack.furniture
+                       - (stack.spacing - stack.baseSpacing) * 2)
 
             radius: Style.space(6)
             color: root.bezel
@@ -425,18 +581,143 @@ Item {
               wrapMode: Text.WordWrap
               // Only when there is no art to show. A dark screen with the
               // title on it is what an unplayed cabinet looks like.
-              visible: artA.status !== Image.Ready
+              visible: artA.status !== Image.Ready && root.games.length > 0
               text: root.currentName
               color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.55)
               font.family: Style.font.family
               font.pixelSize: Style.font.title
               font.letterSpacing: Style.space(2)
             }
+
+            // ---- ATTRACT MODE FOR AN EMPTY CABINET --------------------
+            //
+            // The screen is where an arcade machine talks to you when
+            // nobody is playing, so the offer to install lives here
+            // rather than in place of the machine.
+            Column {
+              anchors.centerIn: parent
+              width: parent.width - Style.space(56)
+              spacing: Style.space(14)
+              visible: root.games.length === 0
+
+              Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: "THREE GAMES, ONE CABINET"
+                color: root.accent
+                font.family: Style.font.family
+                font.pixelSize: Style.font.subtitle
+                font.bold: true
+                font.letterSpacing: Style.space(2)
+              }
+
+              Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                color: Qt.rgba(root.foreground.r, root.foreground.g,
+                               root.foreground.b, 0.75)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                text: {
+                  switch (root.installState) {
+                  case "needsRust":
+                    return "Omarcade builds its games from source, which "
+                         + "needs Rust. Install it and come back:"
+                  case "checking":
+                    return "Looking for a Rust toolchain…"
+                  case "installing":
+                    return root.installLine.length ? root.installLine : "Working…"
+                  case "failed":
+                    return root.installError.length ? root.installError
+                                                    : "The build did not finish."
+                  default:
+                    return "Pixel Break, Volley and Omaprix aren't built "
+                         + "yet. It takes a couple of minutes, needs no "
+                         + "root, and writes nothing outside your home."
+                  }
+                }
+              }
+
+              // Selectable rather than a copy button: the clipboard is
+              // not ours to assume, and a command you cannot select is a
+              // command you have to retype.
+              TextEdit {
+                visible: root.installState === "needsRust"
+                anchors.horizontalCenter: parent.horizontalCenter
+                readOnly: true
+                selectByMouse: true
+                text: root.rustCommand
+                color: root.accent
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: installLabel.implicitWidth + Style.space(36)
+                height: installLabel.implicitHeight + Style.space(18)
+                radius: Style.space(4)
+                color: busy || root.installState === "needsRust"
+                       ? "transparent" : root.accent
+                border.width: color === "transparent" ? 1 : 0
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g,
+                                      root.foreground.b, 0.35)
+
+                readonly property bool busy:
+                  root.installState === "installing"
+                  || root.installState === "checking"
+
+                Text {
+                  id: installLabel
+                  anchors.centerIn: parent
+                  color: parent.color === "transparent"
+                         ? Qt.rgba(root.foreground.r, root.foreground.g,
+                                   root.foreground.b, 0.75)
+                         : root.background
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+                  font.letterSpacing: Style.space(1)
+                  text: {
+                    switch (root.installState) {
+                    case "checking":   return "CHECKING…"
+                    case "installing": return "BUILDING…"
+                    case "needsRust":  return "WAITING FOR RUST"
+                    case "failed":     return "TRY AGAIN"
+                    default:           return "INSTALL THE GAMES"
+                    }
+                  }
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  enabled: !parent.busy && root.installState !== "needsRust"
+                  cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  onClicked: root.beginInstall()
+                }
+              }
+
+              Text {
+                visible: root.installState === "failed"
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                color: Qt.rgba(root.foreground.r, root.foreground.g,
+                               root.foreground.b, 0.5)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                text: "github.com/RidgetopAi/omarcade/issues"
+              }
+            }
           }
 
           // ---- TITLE AND AISLE POSITION ---------------------------------
           Item {
             id: titleRow
+            // No title to show, and no aisle to walk, until games exist.
+            visible: root.games.length > 0
             width: parent.width
             height: titleText.implicitHeight + Style.space(10)
 
@@ -492,6 +773,8 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(6)
             height: Style.space(6)
+            // One pip per machine in the row. Nothing to track with a
+            // single game, and nothing at all with none.
             visible: root.games.length > 1
 
             Repeater {
@@ -525,6 +808,8 @@ Item {
           // would be. Flat — the marquee is the only thing that glows.
           Rectangle {
             id: panel
+            // No scores to show before anything has been played.
+            visible: root.games.length > 0
             width: parent.width
             // ⚠️ HEIGHT FROM ITS CONTENT, not a constant. A fixed 126px
             // was too tight for three difficulty rows at a readable size
@@ -633,6 +918,8 @@ Item {
           Text {
             id: prompt
             anchors.horizontalCenter: parent.horizontalCenter
+            // Nothing to press Enter for until something is installed.
+            visible: root.games.length > 0
             text: "▸  PRESS ENTER TO PLAY"
             color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.85)
             font.family: Style.font.family

@@ -809,6 +809,59 @@ mod tests {
         assert!(matches!(plan, MigrationPlan::LoadNormally), "{plan:?}");
     }
 
+    /// `load_or_new` promises that "a missing, unreadable, malformed, or
+    /// future-versioned file all yield an empty record rather than an
+    /// error: a corrupt scoreboard must never stop someone playing."
+    ///
+    /// ⚠️ THAT DOC CLAIMED FOUR CASES AND ONE WAS TESTED, and only for
+    /// the legacy path. The claim matters more than most: a score file
+    /// is the one thing this suite writes repeatedly, so it is the one
+    /// thing a crash or a full disk can leave half-written on a
+    /// stranger's machine — and the failure mode is a game that will not
+    /// start, reported by someone with no reason to trust us yet.
+    ///
+    /// This asserts the exact chain `load_or_new` runs — parse, then
+    /// require the current schema version — against every shape a broken
+    /// file actually takes. Filesystem-free for the same reason the
+    /// migration tests are: `set_var` on XDG_STATE_HOME is unsafe in
+    /// edition 2024 and would race every other test in this binary.
+    #[test]
+    fn no_shape_of_broken_score_file_survives_the_parse() {
+        let valid = serde_json::to_string(&ScoreFile::new("omarcade-x", "X")).unwrap();
+
+        // The control: this must parse, or the cases below prove nothing.
+        assert!(
+            serde_json::from_str::<ScoreFile>(&valid)
+                .ok()
+                .filter(|f| f.schema_version == SCHEMA_VERSION)
+                .is_some(),
+            "the fixture itself does not load — this test cannot fail meaningfully"
+        );
+
+        let broken = [
+            ("empty", String::new()),
+            ("truncated mid-token", r#"{"schema_version":1,"id":"x","entr"#.to_string()),
+            ("not json at all", "\u{1}\u{2}\u{3}not json".to_string()),
+            ("json but not an object", "[1,2,3]".to_string()),
+            ("right shape, wrong types", r#"{"schema_version":1,"id":42,"entries":"no"}"#.to_string()),
+            ("from a newer release", valid.replace(
+                &format!(r#""schema_version":{SCHEMA_VERSION}"#),
+                r#""schema_version":9999"#,
+            )),
+        ];
+
+        for (what, text) in broken {
+            let parsed = serde_json::from_str::<ScoreFile>(&text)
+                .ok()
+                .filter(|f| f.schema_version == SCHEMA_VERSION);
+            assert!(
+                parsed.is_none(),
+                "{what}: a broken file parsed as usable — the game would \
+                 load it and trust whatever it contains"
+            );
+        }
+    }
+
     #[test]
     fn a_legacy_file_from_a_newer_release_is_not_carried() {
         let future = LEGACY_PONG.replace(

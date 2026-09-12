@@ -86,6 +86,10 @@ Item {
 
   function open(payloadJson) {
     scan()
+    // Asked on every open, not once: a user can add the rule by hand
+    // between summons, and offering to do what they already did is
+    // worse than not offering at all.
+    if (!ruleCheck.running) ruleCheck.running = true
     window.visible = true
     Qt.callLater(function () { if (keys) keys.forceActiveFocus() })
   }
@@ -220,6 +224,72 @@ Item {
     if (line.indexOf("Building Omarcade") === 0) { installLine = "Compiling the games…"; return }
     if (line.indexOf("Installing") === 0)        { installLine = "Installing…"; return }
     if (line.indexOf("Finished") >= 0)           { installLine = "Finishing up…"; return }
+  }
+
+  // ---- the window rule ------------------------------------------------
+  //
+  // ⚠️ WITHOUT THIS THE CABINET IS TILED. Omarchy ships no default float
+  // rule for a plugin's FloatingWindow — its own hypr config only
+  // maximises the dev gallery — so on a tiling layout this window is
+  // stretched to whatever the layout gives it. The cabinet declares
+  // 640x880 and a 480x700 floor, but a Hyprland size rule overrides a
+  // window's own size and the absence of one lets the layout win.
+  // Session 14 found that testing at the wrong size hides layout bugs
+  // outright; shipping at the wrong size shows them to strangers.
+  //
+  // ⚠️ AND IT IS THE USER'S COMPOSITOR CONFIG, so this is OFFERED and
+  // never imposed — the same rule that keeps the installer out of
+  // ~/.config/hypr and keeps the install button away from rustup. It
+  // writes one new file and appends one line, shows both before it does,
+  // and does nothing else.
+  //
+  // The README documents the two commands, but someone who installed
+  // from the marketplace has never seen the README. This is the only
+  // route that reaches them.
+
+  readonly property string hyprDir:
+    (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/hypr"
+
+  // unknown | missing | present | writing | failed
+  property string ruleState: "unknown"
+
+  Process {
+    id: ruleCheck
+    running: false
+    // Present means BOTH halves: the file exists and hyprland.lua pulls
+    // it in. A file nobody requires is inert, and would leave the
+    // cabinet tiled while the check claimed everything was fine.
+    command: ["sh", "-c",
+      "test -f '" + root.hyprDir + "/omarcade.lua' && " +
+      "grep -q 'hypr.omarcade' '" + root.hyprDir + "/hyprland.lua'"]
+    onExited: function (code) {
+      root.ruleState = code === 0 ? "present" : "missing"
+    }
+  }
+
+  Process {
+    id: ruleWrite
+    running: false
+    workingDirectory: root.pluginDir
+    // Idempotent on both halves: install(1) overwrites the rule file,
+    // and the require line is appended only when grep does not find it,
+    // so a second click cannot produce a duplicate require.
+    command: ["sh", "-c",
+      "set -e; " +
+      "mkdir -p '" + root.hyprDir + "'; " +
+      "install -m 644 packaging/hyprland/omarcade.lua '" + root.hyprDir + "/omarcade.lua'; " +
+      "grep -q 'hypr.omarcade' '" + root.hyprDir + "/hyprland.lua' || " +
+      "printf '\\nrequire(\"hypr.omarcade\")\\n' >> '" + root.hyprDir + "/hyprland.lua'; " +
+      "hyprctl reload >/dev/null 2>&1 || true"]
+    onExited: function (code) {
+      root.ruleState = code === 0 ? "present" : "failed"
+    }
+  }
+
+  function addWindowRule() {
+    if (ruleState === "writing") return
+    ruleState = "writing"
+    ruleWrite.running = true
   }
 
   function beginInstall() {
@@ -429,6 +499,7 @@ Item {
             if (pips.visible)     { h += pips.height;     n += 1 }
             if (panel.visible)    { h += panel.height;    n += 1 }
             if (prompt.visible)   { h += prompt.height;   n += 1 }
+            if (ruleOffer.visible) { h += ruleOffer.height; n += 1 }
             // n parts, plus the screen itself, gives n gaps between them.
             return h + baseSpacing * n
           }
@@ -999,6 +1070,72 @@ Item {
               running: window.visible
               NumberAnimation { from: 0.45; to: 1.0; duration: 1400; easing.type: Easing.InOutSine }
               NumberAnimation { from: 1.0; to: 0.45; duration: 1400; easing.type: Easing.InOutSine }
+            }
+          }
+
+          // ---- THE WINDOW RULE OFFER ------------------------------------
+          //
+          // Quiet, and below the prompt: it matters, but not more than
+          // playing. Gone for good once the rule is in place.
+          Column {
+            id: ruleOffer
+            width: parent.width
+            spacing: Style.space(4)
+            visible: root.ruleState === "missing"
+                     || root.ruleState === "writing"
+                     || root.ruleState === "failed"
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+              color: Qt.rgba(root.foreground.r, root.foreground.g,
+                             root.foreground.b, 0.45)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              text: {
+                switch (root.ruleState) {
+                case "writing": return "Adding the window rule…"
+                case "failed":  return "Could not write the window rule."
+                default:
+                  return "Games and this cabinet will be tiled by your "
+                       + "layout. A window rule floats them at their own size."
+                }
+              }
+            }
+
+            Text {
+              anchors.horizontalCenter: parent.horizontalCenter
+              visible: root.ruleState === "missing"
+              text: "ADD THE WINDOW RULE"
+              color: root.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: Style.space(1)
+
+              MouseArea {
+                anchors.fill: parent
+                anchors.margins: -Style.space(8)
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.addWindowRule()
+              }
+            }
+
+            // Exactly what it will touch. A config edit offered without
+            // saying which files it writes is a config edit nobody
+            // should accept.
+            Text {
+              width: parent.width
+              visible: root.ruleState === "missing"
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+              color: Qt.rgba(root.foreground.r, root.foreground.g,
+                             root.foreground.b, 0.3)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              text: "writes ~/.config/hypr/omarcade.lua and one require "
+                  + "line in hyprland.lua"
             }
           }
         }

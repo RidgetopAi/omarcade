@@ -1224,8 +1224,8 @@ fn draw_crash_scene(c: &mut Canvas<'_>, art: &Art, theme: &Theme) {
     println!("\n  a crash, through the real collision path\n");
     match &hit {
         Some(h) => println!(
-            "    contact with car {} at z={:.0}, lane {:.2}, closing {:.0} u/s",
-            h.car, h.z, h.x, h.closing
+            "    contact with {:?} at z={:.0}, lane {:.2}, closing {:.0} u/s",
+            h.what, h.z, h.x, h.closing
         ),
         None => println!("    ⚠️  NO CONTACT DETECTED — the wiring is wrong, not the art"),
     }

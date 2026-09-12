@@ -19,6 +19,12 @@ mod road;
 mod drive;
 #[path = "../src/track.rs"]
 mod track;
+#[path = "../src/art.rs"]
+mod art;
+#[path = "../src/scenery.rs"]
+mod scenery;
+#[path = "../src/structures.rs"]
+mod structures;
 #[path = "../src/collide.rs"]
 mod collide;
 #[path = "../src/traffic.rs"]

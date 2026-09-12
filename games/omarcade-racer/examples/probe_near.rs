@@ -6,6 +6,12 @@
 #[path = "../src/road.rs"] mod road;
 #[path = "../src/drive.rs"] mod drive;
 #[path = "../src/pace.rs"] mod pace;
+#[path = "../src/art.rs"]
+mod art;
+#[path = "../src/scenery.rs"]
+mod scenery;
+#[path = "../src/structures.rs"]
+mod structures;
 #[path = "../src/collide.rs"] mod collide;
 #[path = "../src/traffic.rs"] mod traffic;
 #[path = "../src/sound.rs"] mod sound;

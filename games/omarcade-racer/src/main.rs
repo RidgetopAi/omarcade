@@ -162,6 +162,18 @@ struct Racer {
     /// point of contact, so reading it when the sound is played would
     /// make every shunt sound like a gentle nudge.
     impact: Option<f32>,
+    /// The signs, and how wide one is in half-widths.
+    ///
+    /// ⚠️ HELD RATHER THAN REBUILT PER FRAME. `structures::shipped()`
+    /// builds the whole grand-prix road to read its draw distance, which
+    /// is far too much work to do inside a collision check — and the
+    /// renderer calls it every frame already, which is its own thing to
+    /// look at some day.
+    signs: Vec<structures::Placement>,
+    /// A sign's ink width in half-widths, derived once from the art and
+    /// the renderer's own scale rule so the hitbox cannot disagree with
+    /// the drawing.
+    sign_width: f32,
     /// The run: qualifying, the grid, the clock, the laps. Every limit
     /// in it is derived from the reference driver at start-up.
     race: Race,
@@ -235,6 +247,22 @@ impl Racer {
         let scores = ScoreFile::load_or_new(GAME_ID, TITLE);
         let best = scores.best_for(GRAND_PRIX_ID);
 
+        // The signs, and how big one is. Both fixed for the run, so both
+        // are computed once here rather than per frame.
+        let signs = structures::shipped();
+        let sign_width = {
+            let sprite = &art.billboard_omarcade;
+            let panel = art.billboard_omarcade_panel_rows();
+            let panel_h = (panel.1 - panel.0 + 1) as f32;
+            match sprite.ink_bounds() {
+                Some((x0, _, x1, _)) => structures::sign_width_half_widths(
+                    (x1 - x0 + 1) as f32,
+                    panel_h,
+                ),
+                None => 0.0,
+            }
+        };
+
         Racer {
             theme,
             volume: VolumeIndicator::new(),
@@ -259,6 +287,8 @@ impl Racer {
             last_light: None,
             near: None,
             impact: None,
+            signs,
+            sign_width,
             race,
             grid_z: start_z,
             flash: None,
@@ -466,7 +496,21 @@ impl Racer {
         // rolling to a stop after the flag cannot crash. And not while
         // recovering from the last one.
         if self.race.driving() && self.recovering <= 0.0 {
-            if let Some(hit) = collide::check(&self.car, prev_z, &self.traffic, &self.road) {
+            // Traffic first, then the posts. The order is arbitrary —
+            // both produce the same crash — but it is stated rather than
+            // incidental: a car is the thing you hit on the road, and a
+            // post is the thing you hit having left it, so the commoner
+            // case is asked first.
+            let hit = collide::check(&self.car, prev_z, &self.traffic, &self.road).or_else(|| {
+                collide::check_posts(
+                    &self.car,
+                    prev_z,
+                    &self.road,
+                    &self.signs,
+                    self.sign_width,
+                )
+            });
+            if let Some(hit) = hit {
                 // ⚠️ REWIND THE PLAYER TO THE POINT OF CONTACT. The check
                 // is swept, so `car.update` has already carried the car
                 // PAST where the impact happened — up to a frame's travel,

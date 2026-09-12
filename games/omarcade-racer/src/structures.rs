@@ -148,6 +148,46 @@ const BILLBOARD_PANEL_HALF_WIDTHS: f32 = 0.95;
 /// than on its shoulder.
 const BILLBOARD_OFFSET_HALF_WIDTHS: f32 = 1.15;
 
+/// Where a sign's two posts stand, in half-widths from the centre line.
+///
+/// Returns `(near, far)` — the edges of the pair, both on the same side,
+/// `near` being the one closer to the road. `None` for the gantry, which
+/// spans the road rather than standing beside it.
+///
+/// ⚠️ DERIVED FROM THE SAME NUMBERS THE RENDERER DRAWS WITH, for the
+/// reason `collide.rs` states about the car: the hitbox is the art. The
+/// sign's near edge sits at [`BILLBOARD_OFFSET_HALF_WIDTHS`] and the
+/// posts are a fixed fraction along its ink, measured off the sprite.
+/// Anything hand-picked here drifts away from the drawing the first time
+/// a sign is redrawn, and the symptom is "I crashed into nothing".
+///
+/// The whole span from the near post to the far one is solid, because a
+/// car passing between the two posts is a car that has driven through
+/// the sign.
+pub fn post_span(kind: Structure, sign_width_half_widths: f32) -> Option<(f32, f32)> {
+    let side = kind.side()?;
+    // Where the posts sit across the sign's ink — measured from the art
+    // (columns 56..58 and 147..149 of a 49..160 ink span), not chosen.
+    const NEAR_POST: f32 = 0.0625;
+    const FAR_POST: f32 = 0.9018;
+    let a = BILLBOARD_OFFSET_HALF_WIDTHS + NEAR_POST * sign_width_half_widths;
+    let b = BILLBOARD_OFFSET_HALF_WIDTHS + FAR_POST * sign_width_half_widths;
+    Some(match side {
+        Side::Right => (a, b),
+        Side::Left => (-a, -b),
+    })
+}
+
+/// How wide a sign's ink is, in half-widths.
+///
+/// The renderer scales a sign so its PANEL is
+/// [`BILLBOARD_PANEL_HALF_WIDTHS`] tall, and the ink's width follows
+/// from the sprite's own aspect. Stated here so the collision and the
+/// drawing cannot disagree about how big a sign is.
+pub fn sign_width_half_widths(ink_w: f32, panel_h: f32) -> f32 {
+    ink_w * BILLBOARD_PANEL_HALF_WIDTHS / panel_h
+}
+
 /// Draw every structure that is currently visible.
 ///
 /// Called after the road and before the traffic, so a car can pass in

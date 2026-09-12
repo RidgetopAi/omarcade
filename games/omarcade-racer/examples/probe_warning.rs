@@ -133,7 +133,8 @@ fn main() {
         }
         if let Some(hit) = collide::check(&player, prev_z, &field, &road) {
             contacts += 1;
-            let h = &hist[hit.car];
+            let collide::What::Car(idx) = hit.what else { continue };
+            let h = &hist[idx];
             let n = h.len();
             let seen_s = h.iter().rev().take_while(|(on, _)| *on).count() as f32 * DT;
             let at = |secs: f32| {

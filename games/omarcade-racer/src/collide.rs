@@ -49,11 +49,27 @@ pub use crate::drive::CAR_WIDTH_HALF_WIDTHS;
 /// camera fill, the draw distance, or the car art changes.
 pub const CONTACT_SEGMENTS: f32 = 1.6;
 
+/// Which kind of thing the player hit.
+///
+/// ⚠️ A DISTINCTION THE CRASH DOES NOT MAKE. Both outcomes are the same
+/// fireball, the same stop, the same clock still running — Brian's call,
+/// and the right one: a player who has to learn two crash rules is
+/// learning bookkeeping, not driving. This exists so the cause is
+/// legible in a test failure and so scoring could tell them apart later
+/// without re-deriving it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum What {
+    /// A traffic car, by index into the field.
+    Car(usize),
+    /// A sign's post, by index into `structures::shipped()`.
+    Post(usize),
+}
+
 /// What the player hit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Hit {
-    /// Index of the traffic car that was struck.
-    pub car: usize,
+    /// What was struck.
+    pub what: What,
     /// Where it happened, in world units along the track. The fireball
     /// is lit here, so it stays put and recedes with the road.
     pub z: f32,
@@ -173,11 +189,110 @@ pub fn check(
         let player_z = prev_z + travelled_to_contact;
 
         return Some(Hit {
-            car: i,
+            what: What::Car(i),
             z: car.z,
             x: car.x,
             player_z,
             closing: player.speed - car.speed,
+        });
+    }
+
+    None
+}
+
+/// How much track a post occupies, in world units.
+///
+/// A post is a thin thing — three art columns — and if it were treated
+/// as thin along z as it is across x, a frame would step clean over it
+/// (1067 units at the clamped 15fps). So the check is SWEPT, exactly as
+/// the traffic one is, and this is the depth of the band that sweep has
+/// to cross rather than a claim about how thick a post looks.
+///
+/// Half a car length: a post you have driven half a car past is a post
+/// you have hit.
+pub fn post_depth(road: &Road) -> f32 {
+    CONTACT_SEGMENTS * road.segment_length() * 0.5
+}
+
+/// Has the player hit a sign's post?
+///
+/// ⚠️ THE POSTS, NEVER THE PANEL — Brian's call. The panel is a large
+/// flat thing well above the car, and colliding with it would mean
+/// crashing into air the car visibly passes under. The posts are the
+/// part of a billboard that is actually at car height.
+///
+/// ⚠️ AND REACHING ONE MEANS YOU HAD ALREADY LEFT THE ROAD. Posts stand
+/// at `BILLBOARD_OFFSET_HALF_WIDTHS` = 1.15 and grass starts at 1.0, so
+/// a car touching one is off the tarmac and already capped to 45% speed.
+/// That is deliberate: this is a punishment for a big mistake, not a
+/// clipping hazard on the racing line. Moving the signs inward to make
+/// them a live risk was offered and declined.
+///
+/// Swept for the same reason `check` is, and it shares that function's
+/// tunnelling guard by construction: `post_depth` is measured in the
+/// same segments.
+pub fn check_posts(
+    player: &Drive,
+    prev_z: f32,
+    road: &Road,
+    placements: &[crate::structures::Placement],
+    sign_width_half_widths: f32,
+) -> Option<Hit> {
+    let length = road.length();
+    let depth = post_depth(road);
+    let half_car = CAR_WIDTH_HALF_WIDTHS * 0.5;
+
+    let travelled = {
+        let d = player.z - prev_z;
+        if d < -length / 2.0 { d + length } else { d }
+    };
+    if travelled <= 0.0 {
+        return None;
+    }
+
+    for (i, p) in placements.iter().enumerate() {
+        let Some((near, far)) = crate::structures::post_span(p.kind, sign_width_half_widths)
+        else {
+            continue;
+        };
+
+        // Does the car overlap the post span laterally? The span is
+        // signed, so order it before comparing.
+        let (lo, hi) = if near <= far { (near, far) } else { (far, near) };
+        let car_lo = player.x - half_car;
+        let car_hi = player.x + half_car;
+        if car_hi < lo || car_lo > hi {
+            continue;
+        }
+
+        // And does the swept step cross the post's band along z?
+        let ahead = {
+            let d = p.z - prev_z;
+            if d < -length / 2.0 {
+                d + length
+            } else if d > length / 2.0 {
+                d - length
+            } else {
+                d
+            }
+        };
+        let band_near = ahead - depth;
+        let band_far = ahead + depth;
+        if band_far < 0.0 || band_near > travelled {
+            continue;
+        }
+
+        let player_z = prev_z + band_near.max(0.0);
+        return Some(Hit {
+            what: What::Post(i),
+            z: p.z,
+            // The impact is AT THE POST, not at the car: the fireball is
+            // lit where the thing that was hit stands, the same as a car
+            // crash lights it at the car.
+            x: player.x.clamp(lo.min(hi), hi.max(lo)),
+            player_z,
+            // A post does not move, so the closing speed is the car's.
+            closing: player.speed,
         });
     }
 
@@ -442,5 +557,114 @@ mod tests {
         // The same geometry with the player faster IS a hit.
         let catching = Drive { z: 1000.0, x: 0.0, speed: 9500.0 };
         assert!(check(&catching, 950.0, &field, &road).is_some(), "catching the car should hit it");
+    }
+
+    /// The posts can be hit at all.
+    ///
+    /// ⚠️ THE TEST THIS REPLACED WOULD HAVE PASSED ON AN UNREACHABLE
+    /// SIGN. Asserting only that `check_posts` returns `Some` for a car
+    /// placed exactly on a post proves the arithmetic and nothing about
+    /// the game — a sign parked beyond `MAX_STRAY` satisfies it while
+    /// being impossible to touch. So this asks the reachability question
+    /// first, in the units the driver steers in.
+    #[test]
+    fn a_post_is_somewhere_the_car_can_actually_reach() {
+        let road = course();
+        let w = 3.432; // the shipped sign width, from probe_posts
+        let placements = crate::structures::shipped();
+        let sign = placements
+            .iter()
+            .find(|p| p.kind.side().is_some())
+            .expect("there is a roadside sign");
+        let (near, _) = crate::structures::post_span(sign.kind, w).unwrap();
+
+        let reach = crate::drive::MAX_STRAY + CAR_WIDTH_HALF_WIDTHS * 0.5;
+        assert!(
+            reach >= near.abs(),
+            "the car reaches {reach:.3} but the near post starts at {:.3} — \
+             a sign nothing can touch is not an obstacle",
+            near.abs(),
+        );
+        let _ = road;
+    }
+
+    /// Driving into a post registers, and it registers as a POST.
+    #[test]
+    fn driving_into_a_post_is_a_crash() {
+        let road = course();
+        let tuning = crate::drive::Tuning::from_corner(&road, 1.5);
+        let w = 3.432;
+        let placements = crate::structures::shipped();
+        let sign = placements
+            .iter()
+            .find(|p| p.kind.side().is_some())
+            .expect("there is a roadside sign");
+        let (near, _) = crate::structures::post_span(sign.kind, w).unwrap();
+
+        let mut car = Drive { z: road.wrap(sign.z - 4000.0), x: near, ..Drive::new() };
+        car.speed = tuning.top_speed * 0.45;
+        let dt = 1.0 / 60.0;
+        let mut hit = None;
+        for _ in 0..600 {
+            let prev = car.z;
+            car.update(dt, 1.0, 0.0, 0.0, &road, &tuning);
+            if let Some(h) = check_posts(&car, prev, &road, &placements, w) {
+                hit = Some(h);
+                break;
+            }
+        }
+        let hit = hit.expect("drove onto a post and nothing registered");
+        assert!(
+            matches!(hit.what, What::Post(_)),
+            "hit the wrong kind of thing: {:?}",
+            hit.what,
+        );
+    }
+
+    /// Staying on the road never touches a sign.
+    ///
+    /// ⚠️ THE OTHER HALF, AND THE ONE THAT MATTERS MORE. A hitbox that
+    /// fires is easy; a hitbox that does not fire on the racing line is
+    /// what keeps the game playable. This drives a full lap holding the
+    /// centre and asserts total silence from the post check.
+    #[test]
+    fn a_lap_on_the_tarmac_never_touches_a_sign() {
+        let road = course();
+        let tuning = crate::drive::Tuning::from_corner(&road, 1.5);
+        let w = 3.432;
+        let placements = crate::structures::shipped();
+
+        // ⚠️ DRIVEN WIDE, ON PURPOSE, AND HELD THERE.
+        //
+        // The first version of this used the centre-seeking driver the
+        // other probes use, and it PASSED with the posts moved to 0.5 —
+        // half way onto the tarmac — because a car pinned near the
+        // centre line never reaches them. A test that cannot fail is not
+        // a guard.
+        //
+        // So this holds the car at the very edge of the road on
+        // ALTERNATING sides, which is where a fast line actually goes:
+        // wheels on the rumble strip, still legally on the track. If a
+        // sign can be hit from there, the sign is on the circuit.
+        let edge = 1.0 - CAR_WIDTH_HALF_WIDTHS * 0.5;
+        let dt = 1.0 / 60.0;
+        for side in [-1.0f32, 1.0] {
+            let mut car = Drive { x: side * edge, ..Drive::new() };
+            for _ in 0..(240.0 / dt) as usize {
+                let prev = car.z;
+                // Steer back toward the chosen edge, not the centre.
+                let target = side * edge;
+                let correction = ((target - car.x) * 3.0).clamp(-1.0, 1.0);
+                car.update(dt, 1.0, 0.0, correction, &road, &tuning);
+                assert!(
+                    check_posts(&car, prev, &road, &placements, w).is_none(),
+                    "a car at x {:+.3} — still on the road — hit a sign",
+                    car.x,
+                );
+                if car.z >= road.length() {
+                    break;
+                }
+            }
+        }
     }
 }

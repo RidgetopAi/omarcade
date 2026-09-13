@@ -127,6 +127,13 @@
     border-radius: 5px; padding: 10px; resize: vertical; white-space: pre;
   }
   .strip { display: flex; gap: 6px; flex-wrap: wrap; }
+  /* Zoom sits with the other modes: it changes what the pointer is
+     working on, so it belongs beside them rather than in a panel. */
+  .zoomer { display: flex; align-items: center; gap: 4px; }
+  .zoomer button { padding: 5px 9px; min-width: 30px; }
+  .zoomer b {
+    font-size: 11px; color: var(--muted); min-width: 34px; text-align: center;
+  }
 </style>
 
 <header>
@@ -138,6 +145,12 @@
     <button id="b-close" class="ghost">Finish outline</button>
     <label class="check"><input type="checkbox" id="snap" checked> snap ½</label>
     <label class="check"><input type="checkbox" id="mirror"> mirror X</label>
+    <span class="zoomer">
+      <button id="z-out" title="zoom out (-)">−</button>
+      <b id="z-level">4×</b>
+      <button id="z-in" title="zoom in (+)">+</button>
+      <button id="z-fit" class="ghost" title="frame the art (0)">fit</button>
+    </span>
   </div>
 </header>
 
@@ -251,7 +264,13 @@
 const STAGE = { w: 660, h: 400 };
 // World units per screen pixel in the editor. Art is authored at a
 // comfortable size and scaled down at draw time.
-const ZOOM = 4;
+// Editor pixels per world unit. NOT the game scale — this is the
+// work-surface magnification, exactly like zooming a browser: the art is
+// unchanged, there is just more room to place a point precisely. Drawing
+// small detail at a fixed 4x meant handles overlapped and could not be
+// pulled apart.
+const ZOOM_STEPS = [1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32];
+const ZOOM_DEFAULT = 4;
 
 const state = {
   layers: [],
@@ -261,6 +280,7 @@ const state = {
   drag: null,
   pan: { x: 0, y: 0 },
   panning: false,
+  zoom: ZOOM_DEFAULT,
 };
 
 let history = [];
@@ -298,16 +318,65 @@ function active() { return state.layers[state.active]; }
 
 function toWorld(px, py) {
   return {
-    x: (px - STAGE.w / 2 - state.pan.x) / ZOOM,
-    y: (py - STAGE.h / 2 - state.pan.y) / ZOOM,
+    x: (px - STAGE.w / 2 - state.pan.x) / state.zoom,
+    y: (py - STAGE.h / 2 - state.pan.y) / state.zoom,
   };
 }
 function toScreen(wx, wy) {
   return {
-    x: wx * ZOOM + STAGE.w / 2 + state.pan.x,
-    y: wy * ZOOM + STAGE.h / 2 + state.pan.y,
+    x: wx * state.zoom + STAGE.w / 2 + state.pan.x,
+    y: wy * state.zoom + STAGE.h / 2 + state.pan.y,
   };
 }
+/// Change magnification while keeping one screen point fixed.
+///
+/// Anchoring matters: zooming about the origin walks whatever you are
+/// working on off the stage, so you pan back after every step. Anchoring
+/// to the pointer (or the stage centre, for the buttons) means the detail
+/// under the cursor is still under the cursor afterwards.
+function setZoom(next, anchorX, anchorY) {
+  const z = Math.max(ZOOM_STEPS[0], Math.min(ZOOM_STEPS[ZOOM_STEPS.length - 1], next));
+  if (z === state.zoom) return;
+  const ax = anchorX === undefined ? STAGE.w / 2 : anchorX;
+  const ay = anchorY === undefined ? STAGE.h / 2 : anchorY;
+  const before = toWorld(ax, ay);
+  state.zoom = z;
+  const after = toWorld(ax, ay);
+  // Shift the pan by however far the anchor moved in world space.
+  state.pan.x += (after.x - before.x) * state.zoom;
+  state.pan.y += (after.y - before.y) * state.zoom;
+  renderAll();
+}
+
+function zoomStep(dir, ax, ay) {
+  const i = ZOOM_STEPS.findIndex(z => z >= state.zoom - 1e-6);
+  const next = ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, i + dir))];
+  setZoom(next, ax, ay);
+}
+
+/// Frame all visible art with a margin, picking the nearest step that fits.
+function zoomToFit() {
+  let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+  for (const l of state.layers) {
+    if (l.hidden) continue;
+    for (const p of effectivePoints(l)) {
+      minx = Math.min(minx, p.x); maxx = Math.max(maxx, p.x);
+      miny = Math.min(miny, p.y); maxy = Math.max(maxy, p.y);
+    }
+  }
+  if (minx === Infinity) { state.zoom = ZOOM_DEFAULT; state.pan = { x: 0, y: 0 }; renderAll(); return; }
+  const w = Math.max(1, maxx - minx), h = Math.max(1, maxy - miny);
+  const fit = Math.min((STAGE.w * 0.8) / w, (STAGE.h * 0.8) / h);
+  // Largest step that still fits, so the art never overflows the stage.
+  let z = ZOOM_STEPS[0];
+  for (const s of ZOOM_STEPS) if (s <= fit) z = s;
+  state.zoom = z;
+  const cx = (minx + maxx) / 2, cy = (miny + maxy) / 2;
+  state.pan.x = -cx * z;
+  state.pan.y = -cy * z;
+  renderAll();
+}
+
 function snapVal(v) {
   return document.getElementById('snap').checked ? Math.round(v * 2) / 2 : Math.round(v * 100) / 100;
 }
@@ -385,18 +454,25 @@ function drawStage() {
   ctx.fillRect(0, 0, STAGE.w, STAGE.h);
 
   // Grid, one line per world unit, brighter every 5.
-  const step = ZOOM;
+  // Minor lines are dropped once they would be closer than ~5px apart,
+  // where they stop reading as a grid and start reading as fog.
+  const step = state.zoom;
+  const showMinor = state.zoom >= 5;
   const ox = (STAGE.w / 2 + state.pan.x) % step;
   const oy = (STAGE.h / 2 + state.pan.y) % step;
   ctx.lineWidth = 1;
   for (let x = ox; x < STAGE.w; x += step) {
     const w = toWorld(x, 0).x;
-    ctx.strokeStyle = Math.abs(w % 5) < 0.01 ? 'rgba(131,192,146,.13)' : 'rgba(255,255,255,.04)';
+    const major = Math.abs(w % 5) < 0.01;
+    if (!major && !showMinor) continue;
+    ctx.strokeStyle = major ? 'rgba(131,192,146,.13)' : 'rgba(255,255,255,.04)';
     ctx.beginPath(); ctx.moveTo(x + .5, 0); ctx.lineTo(x + .5, STAGE.h); ctx.stroke();
   }
   for (let y = oy; y < STAGE.h; y += step) {
     const w = toWorld(0, y).y;
-    ctx.strokeStyle = Math.abs(w % 5) < 0.01 ? 'rgba(131,192,146,.13)' : 'rgba(255,255,255,.04)';
+    const major = Math.abs(w % 5) < 0.01;
+    if (!major && !showMinor) continue;
+    ctx.strokeStyle = major ? 'rgba(131,192,146,.13)' : 'rgba(255,255,255,.04)';
     ctx.beginPath(); ctx.moveTo(0, y + .5); ctx.lineTo(STAGE.w, y + .5); ctx.stroke();
   }
 
@@ -643,6 +719,16 @@ function renderLayers() {
 // Pointer handling
 // ---------------------------------------------------------------------
 
+/// A grab radius in world units that always feels the same on screen.
+///
+/// The radii below are quoted in SCREEN pixels and converted here. Left
+/// in world units they would scale with the zoom — a 2.5-unit grab is
+/// 40 screen px at 16x, which snaps a neighbouring handle instead of the
+/// one under the pointer, and 2.5 px at 1x, which cannot be hit at all.
+function grab(screenPx) {
+  return screenPx / state.zoom;
+}
+
 function nearestPoint(w, maxDist) {
   const l = active();
   if (!l) return -1;
@@ -676,11 +762,19 @@ function nearestEdge(w, maxDist) {
 function setupStage() {
   const c = document.getElementById('stage');
 
+  // Wheel zooms, anchored under the pointer. passive:false because the
+  // page must not scroll out from under the drawing.
+  c.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = c.getBoundingClientRect();
+    zoomStep(e.deltaY < 0 ? 1 : -1, e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+
   c.addEventListener('contextmenu', e => {
     e.preventDefault();
     const r = c.getBoundingClientRect();
     const w = toWorld(e.clientX - r.left, e.clientY - r.top);
-    const i = nearestPoint(w, 2.5);
+    const i = nearestPoint(w, grab(10));
     if (i >= 0) {
       pushHistory();
       active().points.splice(i, 1);
@@ -712,14 +806,14 @@ function setupStage() {
     }
 
     // Edit: grab a handle, or insert one on an edge.
-    const i = nearestPoint(w, 2.5);
+    const i = nearestPoint(w, grab(10));
     if (i >= 0) {
       state.sel = i;
       state.drag = { point: i };
       c.setPointerCapture(e.pointerId);
       pushHistory();
     } else {
-      const e2 = nearestEdge(w, 1.5);
+      const e2 = nearestEdge(w, grab(7));
       if (e2 >= 0) {
         pushHistory();
         l.points.splice(e2 + 1, 0, { x: snapVal(w.x), y: snapVal(w.y) });
@@ -780,6 +874,8 @@ function save() {
       name: document.getElementById('artname').value,
       scale: document.getElementById('gscale').value,
       mirror: document.getElementById('mirror').checked,
+      zoom: state.zoom,
+      pan: state.pan,
     }));
   } catch (_) { /* private window, quota, whatever — not worth failing over */ }
 }
@@ -794,6 +890,8 @@ function load() {
     document.getElementById('artname').value = d.name || '';
     if (d.scale) document.getElementById('gscale').value = d.scale;
     document.getElementById('mirror').checked = !!d.mirror;
+    if (d.zoom) state.zoom = d.zoom;
+    if (d.pan) state.pan = d.pan;
     return true;
   } catch (_) { return false; }
 }
@@ -801,6 +899,8 @@ function load() {
 // ---------------------------------------------------------------------
 
 function renderAll() {
+  const zl = document.getElementById('z-level');
+  if (zl) zl.textContent = `${state.zoom}×`;
   drawStage();
   drawPreviews();
   renderLayers();
@@ -890,6 +990,9 @@ function init() {
     document.getElementById('gscale-n').textContent = parseFloat(e.target.value).toFixed(1);
     renderAll();
   };
+  document.getElementById('z-in').onclick = () => zoomStep(1);
+  document.getElementById('z-out').onclick = () => zoomStep(-1);
+  document.getElementById('z-fit').onclick = zoomToFit;
   document.getElementById('snap').onchange = renderAll;
   document.getElementById('mirror').onchange = renderAll;
 
@@ -903,6 +1006,10 @@ function init() {
       document.getElementById('stage').style.cursor = 'grab';
       e.preventDefault();
     }
+    // The browser-zoom idiom, because that is the thing this is like.
+    if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomStep(1); }
+    if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomStep(-1); }
+    if (e.key === '0') { e.preventDefault(); zoomToFit(); }
     if ((e.metaKey || e.ctrlKey) && e.key === 'z') { e.preventDefault(); undo(); }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (state.sel >= 0 && active()) {

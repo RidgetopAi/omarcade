@@ -86,18 +86,26 @@ pub struct Transform {
     /// Uniform scale. Art is authored at a convenient size and scaled here,
     /// so the same shape serves a HUD icon and a hero ship.
     pub scale: f32,
+    /// Mirror across the shape's own vertical axis, before rotation.
+    ///
+    /// A side-on ship facing the other way is a MIRROR, not a half turn.
+    /// Rotating it by π rolls it inverted — canopy underneath, fin pointing
+    /// down — which a symmetric placeholder hides and real art does not.
+    /// Kept separate from `scale` so it cannot be smuggled in as a negative
+    /// one, which would also flip the winding and the y axis.
+    pub flip_x: bool,
 }
 
 impl Default for Transform {
     fn default() -> Self {
-        Transform { x: 0.0, y: 0.0, angle: 0.0, scale: 1.0 }
+        Transform { x: 0.0, y: 0.0, angle: 0.0, scale: 1.0, flip_x: false }
     }
 }
 
 impl Transform {
     /// Unrotated, unscaled, at a position.
     pub const fn at(x: f32, y: f32) -> Self {
-        Transform { x, y, angle: 0.0, scale: 1.0 }
+        Transform { x, y, angle: 0.0, scale: 1.0, flip_x: false }
     }
 
     /// The same placement, facing `angle` radians.
@@ -110,6 +118,14 @@ impl Transform {
         Transform { scale, ..self }
     }
 
+    /// The same placement, mirrored left-to-right.
+    ///
+    /// This is how a side-on ship turns around. Use it rather than
+    /// `.facing(PI)`, which rolls the art upside down.
+    pub const fn flipped(self, flip_x: bool) -> Self {
+        Transform { flip_x, ..self }
+    }
+
     /// Map a point from shape space to canvas space.
     ///
     /// Scale, then rotate, then translate — the order that lets a shape be
@@ -117,6 +133,9 @@ impl Transform {
     /// dragging it off-centre.
     pub fn apply(&self, x: f32, y: f32) -> (f32, f32) {
         let (sin, cos) = self.angle.sin_cos();
+        // Mirror first, in the shape's own space, so a flipped ship still
+        // banks the way it is steered rather than the other way.
+        let x = if self.flip_x { -x } else { x };
         let (sx, sy) = (x * self.scale, y * self.scale);
         (self.x + sx * cos - sy * sin, self.y + sx * sin + sy * cos)
     }
@@ -689,6 +708,40 @@ mod vector_tests {
         let tilted = ink(std::f32::consts::FRAC_PI_4) as f32;
         let drift = (tilted - flat).abs() / flat;
         assert!(drift < 0.02, "area drifted {:.1}% when rotated", drift * 100.0);
+    }
+
+    #[test]
+    fn flipping_mirrors_rather_than_rolling() {
+        // A side-on ship facing the other way must be a MIRROR. Rotating it
+        // by PI rolls it inverted, which a vertically symmetric placeholder
+        // hides and real art exposes immediately: canopy underneath, fin
+        // pointing down. This asserts the difference so the two cannot be
+        // confused again.
+        //
+        // An asymmetric mark ABOVE the axis must stay above it when
+        // flipped, and must end up BELOW it when rotated.
+        let t_flip = Transform::at(0.0, 0.0).flipped(true);
+        let (fx, fy) = t_flip.apply(3.0, -2.0);
+        assert!((fx - -3.0).abs() < 1e-5, "flip must mirror x, got {fx}");
+        assert!((fy - -2.0).abs() < 1e-5, "flip must NOT move y, got {fy}");
+
+        let t_rot = Transform::at(0.0, 0.0).facing(std::f32::consts::PI);
+        let (rx, ry) = t_rot.apply(3.0, -2.0);
+        assert!((rx - -3.0).abs() < 1e-5, "a half turn also mirrors x");
+        assert!((ry - 2.0).abs() < 1e-5, "but a half turn INVERTS y, got {ry}");
+    }
+
+    #[test]
+    fn a_flipped_shape_keeps_its_area() {
+        let ship = Shape::new(&[(14.0, 0.0), (-6.0, -7.0), (-2.0, 0.0), (-6.0, 7.0)]);
+        let ink = |flip: bool| {
+            let (mut buf, w, h) = canvas(64, 64);
+            let mut c = Canvas::new(&mut buf, w, h);
+            ship.fill(&mut c, &Transform::at(32.0, 32.0).scaled(1.5).flipped(flip), WHITE);
+            buf.iter().map(|p| Color::from_u32(*p).r as u32).sum::<u32>()
+        };
+        let (a, b) = (ink(false) as f32, ink(true) as f32);
+        assert!((a - b).abs() / a < 0.02, "mirroring must not change how much ink lands");
     }
 
     #[test]

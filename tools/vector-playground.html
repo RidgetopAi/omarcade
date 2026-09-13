@@ -184,9 +184,16 @@
     <div class="panel">
       <h2>Layers <button id="b-addlayer" class="ghost">+ add</button></h2>
       <div id="layers"></div>
+      <!-- The swatch leads the row deliberately. A native colour picker
+           anchors to its input and opens to the RIGHT, so an input sitting
+           at the far edge of a sidebar that is itself against the viewport
+           edge puts the whole panel off screen. Nothing here can move a
+           native popup — the browser owns it — so the input is moved
+           instead, which gives the picker the sidebar's full width to
+           open into. -->
       <div class="row">
-        <input type="text" id="layername" placeholder="layer name" style="flex:1">
         <input type="color" id="layercolor" value="#d3c6aa">
+        <input type="text" id="layername" placeholder="layer name" style="flex:1">
       </div>
       <p class="hint">
         Painted <b>bottom to top</b>, the way the engine draws them: one fill

@@ -540,6 +540,7 @@ pub trait Game {
     fn render(&mut self, canvas: &mut Canvas<'_>);
 }
 
+pub mod vector;
 pub mod winit_soft;
 
 /// A platform that can host a [`Game`].

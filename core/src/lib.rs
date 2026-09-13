@@ -32,6 +32,7 @@ pub use audio::{Audio, AudioSystem, SoundId, Voice, VoiceId, VoiceParams};
 pub use backdrop::Backdrop;
 pub use pause::Pause;
 pub use volume::VolumeIndicator;
+pub use backend::vector::{Shape, Transform};
 pub use backend::{Backend, Canvas, Color, Game, InputEvent, Key};
 pub use geom::{Axis, Rect, Vec2};
 pub use particles::{Particle, ParticlePool};

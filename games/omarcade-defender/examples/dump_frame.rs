@@ -14,6 +14,8 @@ use std::path::Path;
 
 use omarcade_core::{Canvas, Theme};
 
+#[path = "../src/art.rs"]
+mod art;
 #[path = "../src/flight.rs"]
 mod flight;
 #[path = "../src/render.rs"]

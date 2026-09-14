@@ -17,6 +17,7 @@
 //! adding it there would put an unfinished title in front of anyone who
 //! installed the suite.
 
+mod art;
 mod flight;
 mod render;
 mod world;

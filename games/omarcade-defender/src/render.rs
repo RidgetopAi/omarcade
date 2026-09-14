@@ -5,14 +5,13 @@
 //! unused until the flying is settled — a ship that handles badly does
 //! not handle better with a glow on it.
 //!
-//! ⚠️ AND THE SHIP IS A PLACEHOLDER. The smooth-vector work (antialiased
-//! primitives in core) is a separate piece, deliberately not started:
-//! there is no point polishing the shape of something whose handling is
-//! still being tuned. What is here is a recognisable arrowhead built
-//! from the rectangles the engine already has.
+//! The ship is vector art now, drawn through core's antialiased
+//! primitives and authored in `tools/vector-playground.html`. The shape
+//! lives in [`crate::art`]; this module only places it.
 
-use omarcade_core::{Canvas, Color, Theme};
+use omarcade_core::{Canvas, Color, Theme, Transform};
 
+use crate::art;
 use crate::flight::{Camera, Ship};
 use crate::world::{self, Terrain};
 
@@ -78,41 +77,22 @@ const RIDGE_LINE_PX: u32 = 2;
 
 /// The ship.
 ///
-/// A placeholder arrowhead: a nose, a body, and a tail, mirrored by
-/// facing. Built from rects because that is what the engine draws today.
-/// ⚠️ THIS IS THE SHAPE THE VECTOR WORK WILL REPLACE — do not invest in
-/// it, and do not let its blockiness be read as the game's look.
-fn draw_ship(canvas: &mut Canvas<'_>, ship: &Ship, camera: &Camera, theme: &Theme) {
+/// The art is vector, authored in `tools/vector-playground.html` and
+/// living in [`crate::art`]. Nothing about the shape is decided here —
+/// this only says where it goes and which way it faces.
+fn draw_ship(canvas: &mut Canvas<'_>, ship: &Ship, camera: &Camera, _theme: &Theme) {
     let sx = camera.to_screen(ship.x);
     let sy = canvas.height() as f32 - ship.y;
-    let dir = ship.facing.sign();
 
-    let hull = theme.foreground;
-    let trim = theme.accent;
+    // ⚠️ FACING IS A MIRROR, NOT A HALF TURN. `.facing(PI)` would roll the
+    // ship inverted — canopy underneath, fin pointing down. The old
+    // placeholder was symmetric about its long axis and so could not show
+    // the difference; this art can.
+    let t = Transform::at(sx, sy)
+        .scaled(art::SCALE)
+        .flipped(ship.facing.sign() < 0.0);
 
-    // Body: a wedge, each row a different length so it tapers toward
-    // the nose and reads as pointing somewhere.
-    //
-    // ⚠️ SIZED FROM A RENDER, NOT A GUESS. The first version was 26px
-    // across and vanished on a 960-wide screen — at a glance it was a
-    // speck, and a speck cannot show which way it is facing or whether
-    // the camera is leading it. Roughly double, which is close to the
-    // proportion Defender's own ship had against its screen.
-    for (i, (len, thick)) in [(30.0, 5.0), (46.0, 5.0), (34.0, 5.0), (16.0, 5.0)]
-        .into_iter()
-        .enumerate()
-    {
-        let row = i as f32 - 1.5;
-        let y = sy + row * 5.0;
-        // The nose leads in the facing direction; the tail trails behind.
-        let x = if dir > 0.0 { sx - len * 0.35 } else { sx - len * 0.65 };
-        canvas.fill_rect_f(x, y, len, thick, hull);
-    }
-
-    // A nose flash, so which way it is pointing is legible at a glance
-    // even when it is stationary.
-    let nose_x = if dir > 0.0 { sx + 24.0 } else { sx - 32.0 };
-    canvas.fill_rect_f(nose_x, sy - 2.5, 8.0, 5.0, trim);
+    art::draw_ship(canvas, &t);
 }
 
 /// The minimum a pilot needs: how fast, and where in the world.

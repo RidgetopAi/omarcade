@@ -247,6 +247,18 @@
         so what you draw is what it draws.
       </p>
     </div>
+
+    <div class="panel">
+      <h2>Import <button id="b-import" class="ghost">load</button></h2>
+      <textarea id="in" spellcheck="false"
+                placeholder="Paste an exported .rs here — points, colours and layer order all come back."></textarea>
+      <p class="hint" id="in-note">
+        Opens a finished piece for editing, so a variant starts from the
+        original instead of a redraw — <b>which is how the Mutant keeps the
+        Lander's size and layout</b>. Replaces every layer; <b>undo</b> puts
+        your work back.
+      </p>
+    </div>
   </div>
 </main>
 
@@ -663,6 +675,146 @@ function emit() {
 }
 
 // ---------------------------------------------------------------------
+// Import — the exact inverse of emit()
+//
+// Export was a one-way door: a finished piece could only be redrawn, so
+// every variant of an existing shape started from nothing and drifted in
+// size. Reading the export back closes the loop, and it is reliable
+// precisely because emit() writes a regular format — the consts carry the
+// points, the draw fn carries the colours AND the painter order, and the
+// doc comment carries the layer's original lower-case name.
+// ---------------------------------------------------------------------
+
+function rgbToHex(r, g, b) {
+  const h = (n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0');
+  return `#${h(r)}${h(g)}${h(b)}`;
+}
+
+/// Longest shared prefix of the const names, which is emit()'s art name.
+///
+/// Taken back to the last underscore so a shared first letter between two
+/// layer names cannot bleed into the prefix.
+function commonPrefix(names) {
+  if (!names.length) return '';
+  let p = names[0];
+  for (const n of names.slice(1)) {
+    let i = 0;
+    while (i < p.length && i < n.length && p[i] === n[i]) i++;
+    p = p.slice(0, i);
+  }
+  const cut = p.lastIndexOf('_');
+  return cut > 0 ? p.slice(0, cut) : '';
+}
+
+/// Parse an exported .rs into layers. Returns {layers, name} or null.
+function parseExport(src) {
+  // Points: every `pub const NAME: Shape = Shape::new(&[ ... ]);`, with the
+  // preceding `/// name — authored in …` comment picked up when it is there.
+  //
+  // ⚠️ That comment must match emit()'s exact wording, not merely contain an
+  // em-dash. art.rs has been hand-edited since, and a prose line reading
+  // "The engine. Small on purpose — it is drawn as light" parsed as a layer
+  // named "The engine. Small on purpose". Hand-written art has no layer
+  // names to recover, so it correctly falls through to the const name.
+  const shapes = new Map();
+  const order = [];
+  const block = /(?:\/\/\/[ \t]*([^\n]*?)[ \t]*—[ \t]*authored in[^\n]*\n[ \t]*)?pub const[ \t]+(\w+)[ \t]*:[ \t]*Shape[ \t]*=[ \t]*Shape::new\(&\[([\s\S]*?)\]\s*\);/g;
+  let m;
+  while ((m = block.exec(src)) !== null) {
+    const [, docName, constName, body] = m;
+    const points = [];
+    const pt = /\(\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*\)/g;
+    let p;
+    while ((p = pt.exec(body)) !== null) {
+      points.push({ x: parseFloat(p[1]), y: parseFloat(p[2]) });
+    }
+    if (points.length < 3) continue; // not a fillable outline
+    shapes.set(constName, { docName: (docName || '').trim(), points });
+    order.push(constName);
+  }
+  if (!shapes.size) return null;
+
+  // Colours and painter order come from the draw fn. A const the draw fn
+  // never mentions is still imported — it just keeps its declared position
+  // and a neutral colour, because a shape in the file is work that exists.
+  const colors = new Map();
+  const drawn = [];
+  const call = /(\w+)\s*\.fill\(\s*canvas\s*,\s*t\s*,\s*Color::rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*\)/g;
+  while ((m = call.exec(src)) !== null) {
+    const [, name, r, g, b] = m;
+    if (!shapes.has(name)) continue;
+    if (!colors.has(name)) drawn.push(name);
+    colors.set(name, rgbToHex(+r, +g, +b));
+  }
+
+  const seq = drawn.length ? drawn.concat(order.filter(n => !colors.has(n))) : order;
+  const prefix = commonPrefix(seq);
+
+  const layers = seq.map((constName) => {
+    const s = shapes.get(constName);
+    // Prefer the doc comment's name: it is what was typed in the layer
+    // list, so a round trip gives back `lander-body`, not LANDER_BODY.
+    let name = s.docName;
+    if (!name) {
+      name = constName;
+      if (prefix && name.startsWith(prefix + '_')) name = name.slice(prefix.length + 1);
+      name = name.toLowerCase();
+    }
+    // Every field newLayer() sets must be set here too: these objects go
+    // straight into localStorage, and a missing one is a corrupt WIP on
+    // the next visit rather than a visible failure now.
+    return {
+      name,
+      color: colors.get(constName) || '#d3c6aa',
+      points: s.points,
+      closed: true, // anything that was exported was a closed outline
+      hidden: false,
+    };
+  });
+
+  return { layers, name: prefix };
+}
+
+function importSource() {
+  const note = document.getElementById('in-note');
+  const parsed = parseExport(document.getElementById('in').value);
+
+  if (!parsed) {
+    // Change nothing. A paste that yielded no shapes is far more likely to
+    // be a truncated copy than an instruction to clear the stage.
+    note.innerHTML =
+      '<b>Nothing to load.</b> No <code>Shape::new</code> block with three or ' +
+      'more points was found — check the paste is complete.';
+    return;
+  }
+
+  pushHistory();
+  state.layers = parsed.layers;
+  state.active = state.layers.length - 1;
+  state.sel = -1;
+  if (parsed.name) document.getElementById('artname').value = parsed.name;
+
+  // ⚠️ Mirror must go OFF. effectivePoints() bakes the mirrored half into
+  // the export, so importing with mirror still on would mirror an already
+  // mirrored outline and fold the art back over itself. The imported
+  // points are the whole shape.
+  const mirror = document.getElementById('mirror');
+  const wasMirrored = mirror.checked;
+  mirror.checked = false;
+
+  renderAll();
+
+  const n = parsed.layers.length;
+  note.innerHTML =
+    `<b>Loaded ${n} layer${n === 1 ? '' : 's'}</b>` +
+    (parsed.name ? ` as <code>${parsed.name}</code>` : '') + '. ' +
+    (wasMirrored
+      ? '<b>Mirror turned off</b> — the export already contains both halves. '
+      : '') +
+    '<b>undo</b> restores what was here before.';
+}
+
+// ---------------------------------------------------------------------
 // Layer list
 // ---------------------------------------------------------------------
 
@@ -978,6 +1130,8 @@ function init() {
     }
     setTimeout(() => { btn.textContent = 'copy'; }, 1200);
   };
+
+  document.getElementById('b-import').onclick = importSource;
 
   document.getElementById('layername').oninput = e => {
     if (active()) { active().name = e.target.value || 'piece'; renderAll(); }

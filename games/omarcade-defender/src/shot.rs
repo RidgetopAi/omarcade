@@ -44,11 +44,37 @@ pub const SHOT_LENGTH: f32 = 34.0;
 /// practice — it only bounds the memory.
 pub const MAX_SHOTS: usize = 24;
 
+/// How many enemy bolts may exist on top of the player's own.
+///
+/// Separate headroom so a screen full of Mutant fire can never starve
+/// the player's gun — running out of ammunition because the enemy is
+/// shooting at you would be a maddening bug to diagnose.
+pub const MAX_ENEMY_SHOTS: usize = 40;
+
+/// How fast an enemy bolt travels.
+///
+/// ★ SLOWER THAN YOURS, DELIBERATELY. A Mutant's shot has to be
+/// dodgeable on sight; yours has to feel instant. Same speed for both
+/// would make one of those two things false.
+pub const ENEMY_SHOT_SPEED: f32 = 900.0;
+
 /// The minimum gap between shots, in seconds.
 ///
 /// Unlimited ammunition, not unlimited rate — without this, one frame of
 /// a held key would empty the pool and the laser would be a solid beam.
 pub const FIRE_INTERVAL: f32 = 0.16;
+
+/// Who fired a bolt.
+///
+/// ⚠️ A BOLT MUST KNOW WHOSE IT IS, or the collision code has to guess
+/// from its direction — and a Mutant firing west at a ship flying west
+/// makes that guess wrong. S7 is the first stage where anything shoots
+/// back, so this is the first stage where it matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    Player,
+    Enemy,
+}
 
 /// One laser bolt in flight.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -59,8 +85,15 @@ pub struct Shot {
     pub y: f32,
     /// World units per second, signed: positive is east.
     pub vx: f32,
+    /// Vertical speed, positive is UP (world y grows upward).
+    ///
+    /// ★ ZERO FOR THE PLAYER'S LASER, which is deliberately horizontal
+    /// exactly as the arcade's is. It exists for the Mutants, who are
+    /// required never to fire level.
+    pub vy: f32,
     /// How far this shot still has left to travel.
     pub remaining: f32,
+    pub owner: Owner,
 }
 
 impl Shot {
@@ -69,8 +102,9 @@ impl Shot {
     /// The shot wraps with the world, so it is never "off the end" —
     /// only ever out of range.
     fn step(&mut self, dt: f32) -> bool {
-        let travel = self.vx.abs() * dt;
+        let travel = (self.vx * self.vx + self.vy * self.vy).sqrt() * dt;
         self.x = world::wrap(self.x + self.vx * dt);
+        self.y += self.vy * dt;
         self.remaining -= travel;
         self.remaining > 0.0
     }
@@ -83,6 +117,10 @@ impl Shot {
     /// something travelling.
     pub fn tail(&self) -> f32 {
         world::wrap(self.x - self.vx.signum() * SHOT_LENGTH)
+    }
+
+    pub fn is_enemy(&self) -> bool {
+        self.owner == Owner::Enemy
     }
 }
 
@@ -133,10 +171,46 @@ impl Shots {
             x: world::wrap(x),
             y,
             vx: SHOT_SPEED * direction.signum(),
+            vy: 0.0,
             remaining: SHOT_RANGE,
+            owner: Owner::Player,
         });
         self.cooldown = FIRE_INTERVAL;
         true
+    }
+
+    /// An enemy bolt, travelling along `(dx, dy)`.
+    ///
+    /// ⚠️ NOT RATE-LIMITED HERE. Each Mutant owns its own cooldown, and
+    /// running enemy fire through the PLAYER's gun timer would mean one
+    /// Mutant shooting stopped the others — a bug that would look like
+    /// the enemies politely taking turns.
+    pub fn fire_enemy(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+        if self.live.len() >= MAX_SHOTS + MAX_ENEMY_SHOTS {
+            return;
+        }
+        let len = (dx * dx + dy * dy).sqrt().max(0.001);
+        self.live.push(Shot {
+            x: world::wrap(x),
+            y,
+            vx: ENEMY_SHOT_SPEED * dx / len,
+            vy: ENEMY_SHOT_SPEED * dy / len,
+            remaining: SHOT_RANGE,
+            owner: Owner::Enemy,
+        });
+    }
+
+    /// The first ENEMY bolt overlapping the box at `(x, y)`.
+    ///
+    /// ⚠️ ENEMY ONLY. Without the owner check your own laser would kill
+    /// you the instant it left the muzzle, since it spawns inside your
+    /// own hitbox.
+    pub fn enemy_hit(&self, x: f32, y: f32, half_w: f32, half_h: f32) -> Option<usize> {
+        self.live.iter().position(|s| {
+            s.is_enemy()
+                && world::delta(s.x, x).abs() <= half_w
+                && (s.y - y).abs() <= half_h
+        })
     }
 
     /// Advance every shot and retire the ones that have run out.

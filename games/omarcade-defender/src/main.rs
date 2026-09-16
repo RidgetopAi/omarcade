@@ -13,12 +13,16 @@
 //! it, and carries it upward — and you can shoot the carrier and catch
 //! the person as they fall.
 //!
-//! ⚠️ WHAT IS STILL DELIBERATELY MISSING, so the stages stay honest:
-//! Landers do NOT shoot back, nothing MUTATES at the top of the world,
-//! and the world cannot END yet — that is S7, which spends the Mutant
-//! art already sitting unused in `art`. There is also no wave structure
-//! and no score file; the score is drawn so a kill is visible, and S9
-//! owns the real thing.
+//! ★★ S7 MADE IT POSSIBLE TO LOSE. A Humanoid carried off the top fuses
+//! with its captor into a MUTANT, which does not want your civilians —
+//! it wants you, and it never shoots straight. You have three lives.
+//! And if every person is taken, THE WORLD EXPLODES: the mountains are
+//! gone and every surviving Lander mutates. The difficulty does not fall
+//! when there is nothing left to protect; it spikes.
+//!
+//! ⚠️ STILL DELIBERATELY MISSING: waves, a score file, the scanner, and
+//! the other five enemy types. S9 owns scoring and waves; the score on
+//! screen exists only so a kill is visible.
 //!
 //! ⚠️ NOT YET REGISTERED IN packaging/install.sh. A game with no name,
 //! no score file and no title screen has no business in the cabinet, and
@@ -30,6 +34,7 @@ mod effects;
 mod enemy;
 mod flight;
 mod humanoid;
+mod lives;
 mod render;
 mod shot;
 mod sound;
@@ -43,6 +48,7 @@ use effects::Effects;
 use enemy::Landers;
 use flight::{Camera, Facing, Input, Ship};
 use humanoid::Humanoids;
+use lives::Lives;
 use shot::Shots;
 use world::Terrain;
 
@@ -93,6 +99,15 @@ const MUZZLE_FORWARD: f32 = 20.0 * art::SCALE;
 /// finished at the catch, it is finished at the delivery.
 const DROP_OFF_HEIGHT: f32 = 90.0;
 
+/// The ship's hitbox, in world units.
+///
+/// ★ FROM THE ART, and deliberately TIGHTER than it. The ship draws 70
+/// wide, and a hitbox that matched would make the long tail count as a
+/// hit — a shot that visibly misses the cockpit but clips the fin reads
+/// as unfair, and the arcade was generous here too.
+const SHIP_HALF_W: f32 = 22.0;
+const SHIP_HALF_H: f32 = 10.0;
+
 struct Defender {
     theme: Theme,
     terrain: Terrain,
@@ -104,7 +119,11 @@ struct Defender {
     landers: Landers,
     people: Humanoids,
     effects: Effects,
+    lives: Lives,
     score: u32,
+    /// ★ Whether the surface has already been destroyed, so the world
+    /// ends exactly once rather than every frame the population is zero.
+    world_ended: bool,
 
     laser: SoundId,
     boom: SoundId,
@@ -131,6 +150,9 @@ struct Defender {
     fired_this_frame: bool,
     killed_this_frame: bool,
     rescued_this_frame: bool,
+    enemy_fired_this_frame: bool,
+    died_this_frame: bool,
+    world_ended_this_frame: bool,
 }
 
 impl Defender {
@@ -159,6 +181,8 @@ impl Defender {
             landers,
             people,
             effects: Effects::new(),
+            lives: Lives::new(),
+            world_ended: false,
             score: 0,
             laser,
             boom,
@@ -170,6 +194,9 @@ impl Defender {
             fired_this_frame: false,
             killed_this_frame: false,
             rescued_this_frame: false,
+            enemy_fired_this_frame: false,
+            died_this_frame: false,
+            world_ended_this_frame: false,
         }
     }
 
@@ -183,10 +210,22 @@ impl Defender {
 
     /// One physics step: the ship, then everything it can interact with.
     fn step(&mut self, input: Input, dt: f32) {
-        self.ship.step(input, &self.terrain, dt);
-        self.camera.follow(&self.ship, dt);
+        self.lives.step(dt);
 
-        if self.fire_held && self.shots.ready() {
+        // ⚠️ A DEAD SHIP DOES NOT FLY, AND MUTANTS MUST NOT TRACK IT.
+        // Handing them a position while the player cannot move means
+        // they converge on the respawn point and kill the next life
+        // instantly — the exact death loop the invulnerability exists to
+        // prevent, reintroduced by an oversight.
+        let ship_pos = if self.lives.is_flying() {
+            self.ship.step(input, &self.terrain, dt);
+            self.camera.follow(&self.ship, dt);
+            Some((self.ship.x, self.ship.y))
+        } else {
+            None
+        };
+
+        if self.fire_held && self.lives.is_flying() && self.shots.ready() {
             let (mx, my) = self.muzzle();
             if self.shots.fire(mx, my, self.ship.facing.sign()) {
                 self.fired_this_frame = true;
@@ -194,12 +233,69 @@ impl Defender {
         }
 
         self.shots.step(dt);
-        self.landers.step(&self.terrain, &mut self.people, dt);
+
+        // Mutants that want to shoot say so; the bolts are built here,
+        // because `Landers` does not know what a Shot is.
+        let wants = self.landers.step(&self.terrain, &mut self.people, ship_pos, dt);
+        if let Some((sx, sy)) = ship_pos {
+            for (index, mx, my) in wants {
+                let mut noise = self.landers.next_noise();
+                let (dx, dy) = match self.landers.get(index) {
+                    Some(m) => m.aim_at(sx, sy, &mut noise),
+                    None => continue,
+                };
+                self.shots.fire_enemy(mx, my, dx, dy);
+                self.enemy_fired_this_frame = true;
+            }
+        }
+
         self.people.step(&self.terrain, dt);
         self.effects.update(dt);
 
         self.resolve_hits();
         self.resolve_catches();
+        self.resolve_ship_hit();
+        self.check_world_end();
+    }
+
+    /// An enemy bolt finding the ship.
+    fn resolve_ship_hit(&mut self) {
+        if !self.lives.is_vulnerable() {
+            return;
+        }
+        if self
+            .shots
+            .enemy_hit(self.ship.x, self.ship.y, SHIP_HALF_W, SHIP_HALF_H)
+            .is_some()
+            && self.lives.hit()
+        {
+            self.effects.explode_ship(self.ship.x, self.ship.y, self.ship.vx);
+            self.died_this_frame = true;
+            // ⚠️ THE PASSENGER GOES WITH YOU. A rescued Humanoid riding
+            // under a ship that explodes cannot simply carry on hovering
+            // in mid-air, and silently deleting it would be worse.
+            for i in 0..self.people.len() {
+                if let Some(h) = self.people.get_mut(i) {
+                    if h.state == humanoid::State::Rescued {
+                        h.kill();
+                    }
+                }
+            }
+        }
+    }
+
+    /// ★★ THE WORLD ENDING. Every person gone means the surface goes too.
+    fn check_world_end(&mut self) {
+        if self.world_ended || self.people.alive() > 0 {
+            return;
+        }
+        self.world_ended = true;
+        self.terrain.destroy();
+        // Every surviving Lander turns — the arcade's own spike in
+        // difficulty at the exact moment there is nothing left to save.
+        self.landers.mutate_all();
+        self.effects.explode_world(&self.terrain, self.camera.x);
+        self.world_ended_this_frame = true;
     }
 
     /// The ship flying into a falling Humanoid.
@@ -356,6 +452,9 @@ impl Game for Defender {
         self.fired_this_frame = false;
         self.killed_this_frame = false;
         self.rescued_this_frame = false;
+        self.enemy_fired_this_frame = false;
+        self.died_this_frame = false;
+        self.world_ended_this_frame = false;
 
         // Fixed-step accumulation. Clamped so a stalled frame — a
         // debugger, a laptop waking — does not spend a second of
@@ -372,8 +471,16 @@ impl Game for Defender {
         if self.fired_this_frame {
             audio.play(self.laser);
         }
-        if self.killed_this_frame {
+        if self.killed_this_frame || self.died_this_frame {
             audio.play(self.boom);
+        }
+        if self.enemy_fired_this_frame {
+            // Quieter than your own gun, so a busy screen does not drown
+            // out the shot you actually fired.
+            audio.play_with(self.laser, 0.55, 1.0);
+        }
+        if self.world_ended_this_frame {
+            audio.play_with(self.boom, 1.0, 1.0);
         }
     }
 
@@ -387,6 +494,7 @@ impl Game for Defender {
             people: &self.people,
             effects: &self.effects,
             score: self.score,
+            lives: &self.lives,
         };
         render::draw(canvas, &scene, &self.theme);
         self.pause.draw(canvas, &self.theme);

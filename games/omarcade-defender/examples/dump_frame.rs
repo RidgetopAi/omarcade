@@ -22,6 +22,8 @@ mod effects;
 mod enemy;
 #[path = "../src/humanoid.rs"]
 mod humanoid;
+#[path = "../src/lives.rs"]
+mod lives;
 #[path = "../src/shot.rs"]
 mod shot;
 #[path = "../src/flight.rs"]
@@ -34,6 +36,7 @@ mod world;
 use effects::Effects;
 use enemy::Landers;
 use humanoid::Humanoids;
+use lives::Lives;
 use flight::{Camera, Facing, Input, Ship};
 use shot::Shots;
 use world::Terrain;
@@ -46,7 +49,7 @@ fn main() {
     let scene = args.next().unwrap_or_else(|| "rest".to_string());
     let path = args.next().unwrap_or_else(|| "out.png".to_string());
 
-    let terrain = Terrain::generate(1024, 0x0DEF_E4DE);
+    let mut terrain = Terrain::generate(1024, 0x0DEF_E4DE);
     let mut ship = Ship::new(0.0);
     let mut camera = Camera::new(ship.x);
     // S5's entities. Most scenes are about the flight model and leave
@@ -55,6 +58,7 @@ fn main() {
     let mut landers = Landers::new();
     let mut effects = Effects::new();
     let mut people = Humanoids::new();
+    let lives = Lives::new();
 
     // Fly the ship into the state the scene names, using the real
     // physics rather than posing it by hand — a posed frame can show a
@@ -74,6 +78,61 @@ fn main() {
         // Sitting still, facing east. The baseline the others are read
         // against.
         "rest" => camera.snap_to(&ship),
+
+        // ★ S7: Mutants hunting, firing at angles, and a life lost.
+        "mutants" => {
+            camera.snap_to(&ship);
+            let base = ship.x;
+
+            for (dx, dy) in [(240.0f32, 60.0f32), (420.0, -90.0), (600.0, 140.0)] {
+                let x = world::wrap(base + dx);
+                landers.spawn(enemy::Lander::mutant(x, ship.y + dy));
+            }
+            // One Lander still doing its job, for contrast.
+            let lx = world::wrap(base + 780.0);
+            let mut l = enemy::Lander::new(lx, terrain.height_at(lx) + enemy::HOVER_HEIGHT, 46.0);
+            l.phase = enemy::Phase::Hovering;
+            landers.spawn(l);
+
+            // Their fire, at angles, on its way in.
+            let mut noise = 0xC0FF_EE01u32;
+            for i in 0..3 {
+                if let Some(m) = landers.get(i) {
+                    let (dx, dy) = m.aim_at(ship.x, ship.y, &mut noise);
+                    shots.fire_enemy(m.x, m.y, dx, dy);
+                }
+            }
+            shots.step(0.14);
+
+            // And one of yours going the other way.
+            shots.fire(ship.x + 60.0, ship.y, 1.0);
+            shots.step(0.03);
+
+            let px = world::wrap(base + 150.0);
+            people.spawn(humanoid::Humanoid::new(px, terrain.height_at(px), 18.0));
+        }
+
+        // ★ S7: the world after it has ended. No mountains, all Mutants.
+        "apocalypse" => {
+            camera.snap_to(&ship);
+            let base = ship.x;
+            terrain.destroy();
+
+            for (dx, dy) in [(180.0f32, 120.0f32), (360.0, -60.0), (560.0, 200.0), (700.0, 20.0)] {
+                let x = world::wrap(base + dx);
+                landers.spawn(enemy::Lander::mutant(x, ship.y + dy));
+            }
+            let mut noise = 0xBEEF_0007u32;
+            for i in 0..4 {
+                if let Some(m) = landers.get(i) {
+                    let (dx, dy) = m.aim_at(ship.x, ship.y, &mut noise);
+                    shots.fire_enemy(m.x, m.y, dx, dy);
+                }
+            }
+            shots.step(0.18);
+            effects.explode_world(&terrain, camera.x);
+            effects.update(0.55);
+        }
 
         // ★ S6: the abduction, mid-act. A Lander with its beam on and a
         // person being lifted, another walking, one falling, and one
@@ -210,6 +269,7 @@ fn main() {
             landers: &landers,
             people: &people,
             effects: &effects,
+            lives: &lives,
             score: 0,
         };
         render::draw(&mut canvas, &scene, &Theme::load());

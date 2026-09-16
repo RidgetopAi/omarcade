@@ -6,11 +6,16 @@
 //! difference between a shooting gallery and Defender, because a Lander
 //! you ignore now costs you something.
 //!
-//! ⚠️ MUTATION IS STILL S7. A Lander that reaches the top of the world
-//! with a Humanoid should fuse into a Mutant and, when the last person
-//! is taken, end the world. Here it simply keeps climbing — the art is
-//! in [`crate::art`] waiting, and the loss condition is a stage of its
-//! own rather than a footnote to this one.
+//! ★★ S7 MADE THE THREAT REAL. A Lander that carries a Humanoid off the
+//! top of the world FUSES WITH IT into a Mutant, and a Mutant does not
+//! want your civilians — it wants you. That is the arcade's cruellest
+//! trick: every person you fail to save comes back as something hunting
+//! you, so falling behind compounds.
+//!
+//! ⚠️ AND A MUTANT NEVER SHOOTS STRAIGHT. Brian's spec is explicit about
+//! it, and it is the whole reason Mutants are frightening rather than
+//! merely fast: a straight shot from a thing you are flying toward is
+//! dodged by moving; an angled one has to be read.
 
 use crate::humanoid::Humanoids;
 use crate::world::{self, Terrain};
@@ -21,6 +26,36 @@ use crate::world::{self, Terrain};
 /// Brian checked the machine and corrected it (ref:defender-points).
 /// Where the plan and the chart disagree, the chart wins.
 pub const LANDER_POINTS: u32 = 100;
+
+/// What a Mutant is worth. Also from the arcade's chart.
+pub const MUTANT_POINTS: u32 = 150;
+
+/// How fast a Mutant chases, in world units per second.
+///
+/// ★ FAST ENOUGH TO BE FRIGHTENING, SLOWER THAN THE SHIP AT FULL
+/// THROTTLE. A Mutant that could outrun you would make fleeing
+/// pointless, and fleeing is the only answer to several of them at once.
+pub const MUTANT_SPEED: f32 = 290.0;
+
+/// How erratically a Mutant moves, as a fraction of its speed.
+///
+/// The arcade's Mutants jitter rather than sliding along a clean vector,
+/// which is most of why they are hard to shoot.
+pub const MUTANT_JITTER: f32 = 0.55;
+
+/// How often a Mutant fires, in seconds.
+pub const MUTANT_FIRE_INTERVAL: f32 = 1.6;
+
+/// How far away a Mutant will bother shooting from, in world units.
+pub const MUTANT_FIRE_RANGE: f32 = world::VIEW_W * 0.75;
+
+/// ★ THE MINIMUM ANGLE OF A MUTANT'S SHOT, in radians off horizontal.
+///
+/// ⚠️ BRIAN'S SPEC: "NEVER SHOOT STRAIGHT — always at an angle." This is
+/// that rule as a number, and it is enforced rather than hoped for: the
+/// fire code pushes the angle out to at least this far from level, so
+/// there is no alignment of ship and Mutant that produces a flat shot.
+pub const MUTANT_MIN_ANGLE: f32 = 0.30;
 
 /// How wide a Lander is for the purposes of being hit, in world units.
 ///
@@ -112,8 +147,25 @@ pub enum Phase {
     Dying,
 }
 
+/// What kind of enemy this is.
+///
+/// ⚠️ ONE TYPE, NOT TWO. A Mutant IS a Lander that has fused with a
+/// person — it keeps the same position, the same death, the same
+/// hitbox, and only its behaviour and its art differ. Splitting them
+/// into separate structs would duplicate all of that to express a
+/// difference that is really one field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Lander,
+    Mutant,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Lander {
+    /// Lander or Mutant.
+    pub kind: Kind,
+    /// Seconds until this one can fire again. Mutants only.
+    pub fire_cooldown: f32,
     /// World x, always wrapped.
     pub x: f32,
     /// Height above the world floor, matching the ship's convention.
@@ -135,12 +187,54 @@ pub struct Lander {
 impl Lander {
     pub fn new(x: f32, y: f32, vx: f32) -> Self {
         Self {
+            kind: Kind::Lander,
+            fire_cooldown: MUTANT_FIRE_INTERVAL * 0.5,
             x: world::wrap(x),
             y,
             vx,
             phase: Phase::Warping,
             elapsed: 0.0,
             target: None,
+        }
+    }
+
+    /// A Mutant, already formed — used when the world ends and every
+    /// surviving Lander turns.
+    pub fn mutant(x: f32, y: f32) -> Self {
+        Self {
+            kind: Kind::Mutant,
+            fire_cooldown: MUTANT_FIRE_INTERVAL,
+            x: world::wrap(x),
+            y,
+            vx: 0.0,
+            phase: Phase::Hovering,
+            elapsed: 0.0,
+            target: None,
+        }
+    }
+
+    /// Fuse with the Humanoid this one is carrying.
+    ///
+    /// ★ THE TRANSFORMATION THE WHOLE STAGE IS NAMED FOR. It keeps its
+    /// position, so on screen the Lander you failed to stop simply
+    /// becomes the thing that is now hunting you.
+    pub fn mutate(&mut self) {
+        self.kind = Kind::Mutant;
+        self.phase = Phase::Hovering;
+        self.elapsed = 0.0;
+        self.target = None;
+        self.fire_cooldown = MUTANT_FIRE_INTERVAL;
+    }
+
+    pub fn is_mutant(&self) -> bool {
+        self.kind == Kind::Mutant
+    }
+
+    /// What killing this one is worth.
+    pub fn points(&self) -> u32 {
+        match self.kind {
+            Kind::Lander => LANDER_POINTS,
+            Kind::Mutant => MUTANT_POINTS,
         }
     }
 
@@ -186,10 +280,11 @@ impl Lander {
     /// The caller is responsible for dropping any passenger — this type
     /// does not own the Humanoid list and must not pretend to.
     pub fn kill(&mut self) -> u32 {
+        let worth = self.points();
         self.phase = Phase::Dying;
         self.elapsed = 0.0;
         self.target = None;
-        LANDER_POINTS
+        worth
     }
 
     /// Advance this Lander. `prey` is where its target is, if it has one
@@ -200,9 +295,26 @@ impl Lander {
     /// while that list was being mutated, and the borrow checker would
     /// push the whole thing into a shared-mutable shape it does not need.
     /// The owner resolves the target and hands over a position.
-    fn step(&mut self, terrain: &Terrain, prey: Option<(f32, f32)>, dt: f32) -> Outcome {
+    fn step(
+        &mut self,
+        terrain: &Terrain,
+        prey: Option<(f32, f32)>,
+        ship: Option<(f32, f32)>,
+        noise: &mut u32,
+        dt: f32,
+    ) -> Outcome {
         self.elapsed += dt;
         let mut outcome = Outcome::None;
+
+        // ★ A MUTANT IGNORES THE ABDUCTION MACHINE ENTIRELY. It has
+        // nothing left to abduct with — it already ate its Humanoid —
+        // and its only goal is the ship. Handled before the phase match
+        // rather than as another phase, because "which of these two
+        // creatures am I" is a different question from "how far through
+        // an abduction am I".
+        if self.kind == Kind::Mutant && self.phase != Phase::Dying {
+            return self.step_mutant(ship, noise, dt);
+        }
 
         match self.phase {
             Phase::Warping => {
@@ -311,6 +423,82 @@ impl Lander {
     }
 }
 
+impl Lander {
+    /// A Mutant's whole behaviour: chase the ship, and shoot at it.
+    fn step_mutant(&mut self, ship: Option<(f32, f32)>, noise: &mut u32, dt: f32) -> Outcome {
+        let Some((sx, sy)) = ship else {
+            // No ship to hunt — it is dead or between lives. Drift, so a
+            // respawning player is not instantly surrounded by Mutants
+            // that tracked them while they could not move.
+            self.x = world::wrap(self.x + self.vx * dt);
+            return Outcome::None;
+        };
+
+        // ⚠️ delta, NOT SUBTRACTION. A Mutant at x = 5 chasing a ship at
+        // WORLD_W - 5 must go ten units west, not four screens east.
+        let gap_x = world::delta(self.x, sx);
+        let gap_y = sy - self.y;
+
+        // Jitter, so the approach is not a clean interception line. The
+        // arcade's Mutants shudder toward you, which is most of why they
+        // are hard to hit.
+        let jx = (next01(noise) - 0.5) * 2.0 * MUTANT_JITTER;
+        let jy = (next01(noise) - 0.5) * 2.0 * MUTANT_JITTER;
+
+        let len = (gap_x * gap_x + gap_y * gap_y).sqrt().max(1.0);
+        let dir_x = gap_x / len + jx;
+        let dir_y = gap_y / len + jy;
+        let dl = (dir_x * dir_x + dir_y * dir_y).sqrt().max(0.001);
+
+        self.x = world::wrap(self.x + (dir_x / dl) * MUTANT_SPEED * dt);
+        self.y += (dir_y / dl) * MUTANT_SPEED * dt;
+        self.vx = (dir_x / dl) * MUTANT_SPEED;
+
+        // Stay in the world vertically — a Mutant that chased a climbing
+        // ship forever would leave the playfield and never come back.
+        self.y = self.y.clamp(20.0, world::VIEW_H * 1.5);
+
+        self.fire_cooldown -= dt;
+        if self.fire_cooldown <= 0.0 && gap_x.abs() < MUTANT_FIRE_RANGE {
+            self.fire_cooldown = MUTANT_FIRE_INTERVAL * (0.7 + 0.6 * next01(noise));
+            return Outcome::Fires;
+        }
+
+        Outcome::None
+    }
+
+    /// Where a Mutant's shot should go, aimed at `(sx, sy)`.
+    ///
+    /// ⚠️⚠️ NEVER STRAIGHT. Brian's spec is explicit and this is where it
+    /// is ENFORCED rather than hoped for: the aim is computed, and then
+    /// the angle is PUSHED OUT to at least [`MUTANT_MIN_ANGLE`] off
+    /// horizontal. There is no alignment of ship and Mutant that yields
+    /// a flat shot, including the obvious one where both sit at exactly
+    /// the same altitude — which is precisely the case a naive "aim at
+    /// the player" would fire dead level.
+    pub fn aim_at(&self, sx: f32, sy: f32, noise: &mut u32) -> (f32, f32) {
+        let dx = world::delta(self.x, sx);
+        let dy = sy - self.y;
+
+        let mut angle = dy.atan2(dx.abs().max(1.0));
+
+        if angle.abs() < MUTANT_MIN_ANGLE {
+            // Level or nearly level: kick it off horizontal. Which way
+            // is chosen from the noise so a player cannot learn to sit
+            // in one place and always duck the same direction.
+            let up = if angle.abs() < 1e-4 {
+                next01(noise) < 0.5
+            } else {
+                angle < 0.0
+            };
+            angle = if up { -MUTANT_MIN_ANGLE } else { MUTANT_MIN_ANGLE };
+        }
+
+        let dir = if dx < 0.0 { -1.0 } else { 1.0 };
+        (angle.cos() * dir, angle.sin())
+    }
+}
+
 /// What a Lander's step needs its owner to do.
 ///
 /// The Lander cannot reach the Humanoid list, so it says what happened
@@ -322,9 +510,11 @@ pub enum Outcome {
     WantsTarget,
     /// The beam has taken hold of its target.
     Grabbed,
-    /// Carried a Humanoid off the top of the world. ⚠️ S7 owns what
-    /// happens next; S6 just stops it climbing forever.
+    /// Carried a Humanoid off the top of the world — time to fuse into
+    /// a Mutant.
     ReachedTop,
+    /// A Mutant wants to shoot at the ship.
+    Fires,
 }
 
 /// Every Lander in the world.
@@ -334,11 +524,14 @@ pub struct Landers {
     /// Humanoid indices already spoken for, so two Landers never hunt
     /// the same person and end up stacked on the same spot.
     claimed: Vec<usize>,
+    /// Noise for Mutant jitter and fire timing. On the collection so a
+    /// whole world of Mutants shares one deterministic stream.
+    noise: u32,
 }
 
 impl Landers {
     pub fn new() -> Self {
-        Self { live: Vec::new(), claimed: Vec::new() }
+        Self { live: Vec::new(), claimed: Vec::new(), noise: 0x4D07_A17E }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Lander> {
@@ -407,8 +600,16 @@ impl Landers {
     /// rather than in `main` because it is the one place that can see
     /// both lists at once. A Lander asks for a target; this resolves it,
     /// hands over a position, and applies whatever the step reports.
-    pub fn step(&mut self, terrain: &Terrain, people: &mut Humanoids, dt: f32) {
-        for l in &mut self.live {
+    pub fn step(
+        &mut self,
+        terrain: &Terrain,
+        people: &mut Humanoids,
+        ship: Option<(f32, f32)>,
+        dt: f32,
+    ) -> Vec<(usize, f32, f32)> {
+        let mut shots_wanted = Vec::new();
+        let mut noise = self.noise;
+        for (index, l) in self.live.iter_mut().enumerate() {
             // Resolve the target's position, and drop a target that has
             // stopped being valid — shot while carried, or already taken.
             let prey = match l.target {
@@ -428,8 +629,14 @@ impl Landers {
                 None => None,
             };
 
-            match l.step(terrain, prey, dt) {
+            match l.step(terrain, prey, ship, &mut noise, dt) {
                 Outcome::None => {}
+
+                Outcome::Fires => {
+                    // The owner builds the bolt — this type does not
+                    // know what a Shot is, and should not learn.
+                    shots_wanted.push((index, l.x, l.y));
+                }
 
                 Outcome::WantsTarget => {
                     if let Some(i) = people.nearest_grabbable(l.x) {
@@ -455,18 +662,21 @@ impl Landers {
                 }
 
                 Outcome::ReachedTop => {
-                    // ⚠️ S7 OWNS MUTATION AND THE WORLD ENDING. For now
-                    // the passenger is simply gone — taken — which is
-                    // honest about the stakes without pretending to
-                    // implement the loss condition.
+                    // ★★ THE FUSION. The person is gone and the Lander
+                    // that took them becomes the thing that now hunts
+                    // you — which is the arcade's cruellest arithmetic:
+                    // every rescue you miss makes the next minute
+                    // harder, not merely poorer.
                     if let Some(i) = l.target.take() {
                         if let Some(h) = people.get_mut(i) {
                             h.kill();
                         }
                         self.claimed.retain(|&c| c != i);
                     }
-                    l.phase = Phase::Hovering;
-                    l.elapsed = 0.0;
+                    l.mutate();
+                    // Come back down into the playfield rather than
+                    // hunting from somewhere the player cannot reach.
+                    l.y = world::VIEW_H * 0.9;
                 }
             }
 
@@ -493,7 +703,24 @@ impl Landers {
             self.live.iter().filter_map(|l| l.target).collect();
         self.claimed.retain(|c| live_claims.contains(c));
 
+        self.noise = noise;
         self.live.retain(|l| l.is_alive());
+        shots_wanted
+    }
+
+    /// ★ THE WORLD HAS ENDED: every surviving Lander becomes a Mutant.
+    ///
+    /// The arcade's own behaviour, and the reason losing every Humanoid
+    /// is catastrophic rather than merely sad — the difficulty does not
+    /// decline with nothing left to protect, it spikes.
+    pub fn mutate_all(&mut self) {
+        for l in &mut self.live {
+            if l.phase != Phase::Dying && !l.is_mutant() {
+                l.mutate();
+                l.y = l.y.min(world::VIEW_H * 0.9);
+            }
+        }
+        self.claimed.clear();
     }
 
     /// Drop whatever the Lander at `index` was carrying, and report who
@@ -531,6 +758,33 @@ impl Landers {
     pub fn kill(&mut self, index: usize) -> u32 {
         self.live[index].kill()
     }
+
+    /// The enemy at `index`, for a caller that needs to aim from it.
+    pub fn get(&self, index: usize) -> Option<&Lander> {
+        self.live.get(index)
+    }
+
+    /// Advance the shared noise, so a caller aiming a Mutant's shot
+    /// draws from the same deterministic stream.
+    pub fn next_noise(&mut self) -> u32 {
+        self.noise ^= self.noise << 13;
+        self.noise ^= self.noise >> 17;
+        self.noise ^= self.noise << 5;
+        self.noise
+    }
+
+    /// How many Mutants are alive.
+    pub fn mutants(&self) -> usize {
+        self.live.iter().filter(|l| l.is_mutant() && l.phase != Phase::Dying).count()
+    }
+}
+
+/// Advance a noise state and return 0..1.
+fn next01(seed: &mut u32) -> f32 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 17;
+    *seed ^= *seed << 5;
+    (*seed & 0x00FF_FFFF) as f32 / 0x0100_0000 as f32
 }
 
 /// A deterministic 0..1 from an integer, for placement that repeats.
@@ -565,7 +819,7 @@ mod tests {
         ls.spawn(Lander::new(500.0, 300.0, 0.0));
 
         assert!(ls.hit_test(500.0, 300.0).is_none(), "warping must not be hittable");
-        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
         assert!(ls.hit_test(500.0, 300.0).is_some(), "it should be hittable now");
     }
 
@@ -579,7 +833,7 @@ mod tests {
         // Sitting a few units west of the seam, i.e. at the very top of
         // the coordinate range.
         ls.spawn(Lander::new(world::WORLD_W - 4.0, 300.0, 0.0));
-        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
         let y = ls.iter().next().unwrap().y;
 
         assert!(
@@ -601,7 +855,7 @@ mod tests {
         let t = terrain();
         let mut ls = Landers::new();
         ls.spawn(Lander::new(500.0, 300.0, 0.0));
-        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
 
         let y = ls.iter().next().unwrap().y;
         let hit = ls.hit_test(500.0, y).expect("should be hittable");
@@ -615,14 +869,14 @@ mod tests {
         let t = terrain();
         let mut ls = Landers::new();
         ls.spawn(Lander::new(500.0, 300.0, 0.0));
-        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
         let y = ls.iter().next().unwrap().y;
         let hit = ls.hit_test(500.0, y).unwrap();
         ls.kill(hit);
 
-        ls.step(&t, &mut nobody(), DEATH_SECONDS * 0.5);
+        ls.step(&t, &mut nobody(), None, DEATH_SECONDS * 0.5);
         assert_eq!(ls.len(), 1, "the corpse should still be drawn");
-        ls.step(&t, &mut nobody(), DEATH_SECONDS);
+        ls.step(&t, &mut nobody(), None, DEATH_SECONDS);
         assert!(ls.is_empty(), "the corpse should be gone");
     }
 
@@ -632,9 +886,9 @@ mod tests {
         let mut ls = Landers::new();
         // Start at a wrong height and let it settle.
         ls.spawn(Lander::new(500.0, 10.0, 0.0));
-        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
         for _ in 0..240 {
-            ls.step(&t, &mut nobody(), 1.0 / 60.0);
+            ls.step(&t, &mut nobody(), None, 1.0 / 60.0);
         }
         let l = ls.iter().next().unwrap();
         let want = t.height_at(l.x) + HOVER_HEIGHT;
@@ -694,7 +948,7 @@ mod tests {
         let mut saw_grabbing = false;
         let mut saw_carrying = false;
         for _ in 0..1800 {
-            ls.step(&t, &mut people, 1.0 / 120.0);
+            ls.step(&t, &mut people, None, 1.0 / 120.0);
             people.step(&t, 1.0 / 120.0);
             match ls.iter().next().map(|l| l.phase) {
                 Some(Phase::Hunting) => saw_hunting = true,
@@ -717,7 +971,7 @@ mod tests {
         // And the victim must be RISING, under the Lander.
         let before = people.get(0).unwrap().y;
         for _ in 0..30 {
-            ls.step(&t, &mut people, 1.0 / 120.0);
+            ls.step(&t, &mut people, None, 1.0 / 120.0);
             people.step(&t, 1.0 / 120.0);
         }
         assert!(
@@ -739,7 +993,7 @@ mod tests {
         ls.spawn(Lander::new(590.0, t.height_at(600.0) + HOVER_HEIGHT, DRIFT_SPEED));
 
         for _ in 0..2400 {
-            ls.step(&t, &mut people, 1.0 / 120.0);
+            ls.step(&t, &mut people, None, 1.0 / 120.0);
             people.step(&t, 1.0 / 120.0);
             if ls.iter().next().map(|l| l.phase) == Some(Phase::Carrying) {
                 break;
@@ -778,7 +1032,7 @@ mod tests {
         ls.spawn(Lander::new(640.0, t.height_at(640.0) + HOVER_HEIGHT, -DRIFT_SPEED));
 
         for _ in 0..900 {
-            ls.step(&t, &mut people, 1.0 / 120.0);
+            ls.step(&t, &mut people, None, 1.0 / 120.0);
             people.step(&t, 1.0 / 120.0);
         }
 
@@ -800,7 +1054,7 @@ mod tests {
         ls.spawn(Lander::new(500.0, t.height_at(500.0) + HOVER_HEIGHT, DRIFT_SPEED));
 
         for _ in 0..600 {
-            ls.step(&t, &mut people, 1.0 / 120.0);
+            ls.step(&t, &mut people, None, 1.0 / 120.0);
             people.step(&t, 1.0 / 120.0);
             if ls.iter().next().map(|l| l.phase) == Some(Phase::Hunting) {
                 break;
@@ -810,7 +1064,7 @@ mod tests {
 
         people.get_mut(0).unwrap().kill();
         for _ in 0..30 {
-            ls.step(&t, &mut people, 1.0 / 120.0);
+            ls.step(&t, &mut people, None, 1.0 / 120.0);
             people.step(&t, 1.0 / 120.0);
         }
         assert_eq!(
@@ -821,14 +1075,150 @@ mod tests {
         assert_eq!(ls.iter().next().unwrap().target, None);
     }
 
+    /// ★★ THE STAGE'S HEADLINE: a Lander that gets away with someone
+    /// comes back as a Mutant.
+    #[test]
+    fn a_lander_that_reaches_the_top_becomes_a_mutant() {
+        let t = terrain();
+        let mut people = Humanoids::new();
+        people.spawn(crate::humanoid::Humanoid::new(600.0, t.height_at(600.0), 0.0));
+
+        let mut ls = Landers::new();
+        ls.spawn(Lander::new(590.0, t.height_at(600.0) + HOVER_HEIGHT, DRIFT_SPEED));
+
+        // No ship, so the Mutant has nothing to chase once it forms.
+        for _ in 0..6000 {
+            ls.step(&t, &mut people, None, 1.0 / 120.0);
+            people.step(&t, 1.0 / 120.0);
+            if ls.mutants() > 0 {
+                break;
+            }
+        }
+
+        assert_eq!(ls.mutants(), 1, "the Lander never mutated");
+        assert_eq!(people.alive(), 0, "the person should be gone");
+        let m = ls.iter().next().unwrap();
+        assert!(m.is_mutant());
+        assert_eq!(m.points(), MUTANT_POINTS, "a Mutant is worth 150");
+        assert!(
+            m.y <= world::VIEW_H * 1.1,
+            "it must come back into the playfield, not hunt from orbit: {}",
+            m.y
+        );
+    }
+
+    /// ⚠️⚠️ BRIAN'S SPEC, AS AN ASSERTION: "NEVER SHOOT STRAIGHT — always
+    /// at an angle." Tested over many geometries INCLUDING the exact
+    /// case a naive aim gets wrong: ship and Mutant at identical
+    /// altitude, where "aim at the player" fires dead level.
+    #[test]
+    fn a_mutant_never_fires_straight() {
+        let m = Lander::mutant(500.0, 400.0);
+        let mut noise = 0x1234_5678u32;
+
+        for dy in [-400.0f32, -60.0, -1.0, 0.0, 1.0, 60.0, 400.0] {
+            for dx in [-600.0f32, -40.0, 40.0, 600.0] {
+                let (vx, vy) = m.aim_at(500.0 + dx, 400.0 + dy, &mut noise);
+                let angle = vy.atan2(vx.abs());
+                assert!(
+                    angle.abs() >= MUTANT_MIN_ANGLE - 0.001,
+                    "fired at {angle:.3} rad for dx={dx} dy={dy} — too flat"
+                );
+                assert!(vy.abs() > 0.001, "a perfectly level shot got through");
+            }
+        }
+    }
+
+    /// The shot must still go TOWARD the ship — never-straight must not
+    /// become never-accurate.
+    #[test]
+    fn a_mutant_shoots_toward_the_ship() {
+        let m = Lander::mutant(500.0, 400.0);
+        let mut noise = 0x9999u32;
+
+        let (vx, _) = m.aim_at(900.0, 400.0, &mut noise);
+        assert!(vx > 0.0, "should fire east at a ship to the east");
+
+        let (vx, _) = m.aim_at(100.0, 400.0, &mut noise);
+        assert!(vx < 0.0, "should fire west at a ship to the west");
+
+        // ⚠️ AND ACROSS THE SEAM. A ship just east of x=0 is WEST of a
+        // Mutant near the end of the world, by the short way round.
+        let m = Lander::mutant(world::WORLD_W - 50.0, 400.0);
+        let (vx, _) = m.aim_at(20.0, 400.0, &mut noise);
+        assert!(vx > 0.0, "across the seam it must still fire the short way");
+    }
+
+    #[test]
+    fn a_mutant_chases_the_ship_and_asks_to_fire() {
+        let t = terrain();
+        let mut people = Humanoids::new();
+        let mut ls = Landers::new();
+        ls.spawn(Lander::mutant(500.0, 400.0));
+
+        let ship = Some((900.0f32, 400.0f32));
+        let start = world::delta(500.0, 900.0).abs();
+
+        let mut fired = false;
+        for _ in 0..600 {
+            let wants = ls.step(&t, &mut people, ship, 1.0 / 120.0);
+            if !wants.is_empty() {
+                fired = true;
+            }
+        }
+
+        let m = ls.iter().next().unwrap();
+        let now = world::delta(m.x, 900.0).abs();
+        assert!(now < start, "the Mutant did not close: {start} -> {now}");
+        assert!(fired, "a Mutant in range never asked to fire");
+    }
+
+    /// ⚠️ A MUTANT MUST NOT TRACK A DEAD SHIP. Converging on the respawn
+    /// point while the player cannot move is exactly the death loop the
+    /// invulnerability exists to prevent.
+    #[test]
+    fn a_mutant_does_not_hunt_a_ship_that_is_not_flying() {
+        let t = terrain();
+        let mut people = Humanoids::new();
+        let mut ls = Landers::new();
+        ls.spawn(Lander::mutant(500.0, 400.0));
+
+        for _ in 0..600 {
+            let wants = ls.step(&t, &mut people, None, 1.0 / 120.0);
+            assert!(wants.is_empty(), "it shot at a ship that is not there");
+        }
+        let m = ls.iter().next().unwrap();
+        assert!(
+            (m.y - 400.0).abs() < 1.0,
+            "it converged vertically on nothing: {}",
+            m.y
+        );
+    }
+
+    /// ★ THE WORLD ENDING: every surviving Lander turns.
+    #[test]
+    fn when_the_world_ends_every_lander_mutates() {
+        let t = terrain();
+        let mut ls = Landers::new();
+        ls.scatter(4, 0.0, &t, 99);
+        assert_eq!(ls.mutants(), 0);
+
+        ls.mutate_all();
+        assert_eq!(ls.mutants(), 4, "some Landers survived the apocalypse");
+        for l in ls.iter() {
+            assert!(l.is_mutant());
+            assert!(l.y <= world::VIEW_H * 0.95, "mutated out of reach at {}", l.y);
+        }
+    }
+
     #[test]
     fn a_drifting_lander_wraps_with_the_world() {
         let t = terrain();
         let mut ls = Landers::new();
         ls.spawn(Lander::new(5.0, 300.0, -DRIFT_SPEED));
-        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
         for _ in 0..600 {
-            ls.step(&t, &mut nobody(), 1.0 / 60.0);
+            ls.step(&t, &mut nobody(), None, 1.0 / 60.0);
         }
         let l = ls.iter().next().unwrap();
         assert!(l.x >= 0.0 && l.x < world::WORLD_W, "drifted out of the world: {}", l.x);

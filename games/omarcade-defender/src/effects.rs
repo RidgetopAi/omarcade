@@ -43,6 +43,12 @@ pub const LANDER_PIECES: usize = 26;
 /// How many pieces a Humanoid comes apart into. Fewer, and smaller.
 pub const HUMANOID_PIECES: usize = 12;
 
+/// How many pieces the ship comes apart into. More, and bigger.
+pub const SHIP_PIECES: usize = 40;
+
+/// How many pieces the world throws up when it ends.
+pub const WORLD_PIECES: usize = 150;
+
 /// How fast the debris leaves, in world units per second.
 const BURST_SPEED: f32 = 210.0;
 
@@ -175,6 +181,72 @@ impl Effects {
                 Vec2::new(angle.cos() * speed, -angle.sin() * speed),
                 size,
                 COLORS[i % COLORS.len()],
+                life,
+            ));
+        }
+    }
+
+    /// The player's ship, destroyed.
+    ///
+    /// Bigger and in the ship's own blues, so dying does not look like
+    /// another kill you scored.
+    pub fn explode_ship(&mut self, x: f32, y: f32, vx: f32) {
+        const COLORS: [Color; 4] = [
+            Color::rgb(45, 81, 225),
+            Color::rgb(140, 146, 222),
+            Color::rgb(255, 214, 120),
+            Color::rgb(255, 255, 255),
+        ];
+
+        for i in 0..SHIP_PIECES {
+            let spread = (i as f32 + self.rand()) / SHIP_PIECES as f32;
+            let angle = spread * std::f32::consts::TAU;
+            let r = self.rand();
+            let speed = BURST_SPEED * 1.35 * (0.12 + 1.15 * r * r);
+            let size = 2.5 + 4.0 * self.rand();
+            let life = PIECE_LIFE * (0.9 + 0.9 * self.rand());
+
+            self.pool.spawn(Particle::new(
+                Vec2::new(x, y),
+                Vec2::new(angle.cos() * speed + vx * 0.3, -angle.sin() * speed),
+                size,
+                COLORS[i % COLORS.len()],
+                life,
+            ));
+        }
+    }
+
+    /// ★★ THE WORLD ENDING. The surface blows apart along its whole
+    /// visible length.
+    ///
+    /// ⚠️ SEEDED FROM THE RIDGE THE WORLD USED TO HAVE, via
+    /// `height_at_raw` — by the time this is called the terrain is
+    /// already destroyed and `height_at` returns zero, so asking it
+    /// where the mountains were would put the entire explosion on the
+    /// floor. The shape being lost is the shape worth showing.
+    pub fn explode_world(&mut self, terrain: &crate::world::Terrain, camera_x: f32) {
+        let span = crate::world::VIEW_W * 1.4;
+        for i in 0..WORLD_PIECES {
+            let t = i as f32 / WORLD_PIECES as f32;
+            let x = crate::world::wrap(camera_x - span * 0.2 + span * t);
+            let y = terrain.height_at_raw(x);
+
+            let r = self.rand();
+            let angle = (self.rand() - 0.5) * std::f32::consts::PI * 0.8;
+            let speed = 340.0 * (0.25 + r);
+            let size = 3.0 + 5.0 * self.rand();
+            let life = 1.4 * (0.6 + 0.8 * self.rand());
+
+            // Thrown UPWARD and outward — the ground itself coming apart.
+            self.pool.spawn(Particle::new(
+                Vec2::new(x, y),
+                Vec2::new(angle.sin() * speed * 0.6, angle.cos() * speed),
+                size,
+                if i % 3 == 0 {
+                    Color::rgb(255, 180, 60)
+                } else {
+                    Color::rgb(220, 110, 40)
+                },
                 life,
             ));
         }

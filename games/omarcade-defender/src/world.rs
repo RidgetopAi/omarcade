@@ -47,6 +47,15 @@ pub struct Terrain {
     heights: Vec<f32>,
     /// World-space distance between neighbouring samples.
     step: f32,
+    /// ★ S7: whether the surface still exists.
+    ///
+    /// When the last Humanoid is carried off, the world explodes and the
+    /// mountains are GONE — the arcade's own behaviour, and the reason
+    /// losing everyone is catastrophic rather than merely sad. The
+    /// heights are kept rather than cleared so the destruction can be
+    /// animated from them, and so a new wave can restore the world
+    /// without regenerating different mountains.
+    destroyed: bool,
 }
 
 impl Terrain {
@@ -95,6 +104,7 @@ impl Terrain {
         Self {
             heights,
             step: WORLD_W / samples as f32,
+            destroyed: false,
         }
     }
 
@@ -102,7 +112,37 @@ impl Terrain {
     ///
     /// Takes any x, wrapped or not, so callers never have to normalise
     /// before asking.
+    /// Has the surface been destroyed?
+    pub fn is_destroyed(&self) -> bool {
+        self.destroyed
+    }
+
+    /// Destroy the surface. The mountains are gone.
+    pub fn destroy(&mut self) {
+        self.destroyed = true;
+    }
+
+    /// Bring it back, for a fresh game.
+    pub fn restore(&mut self) {
+        self.destroyed = false;
+    }
+
+    /// The height of the ridge at `x`.
+    ///
+    /// ⚠️ ZERO ONCE THE WORLD HAS ENDED, so everything that stands on,
+    /// hovers over or lands on the terrain follows the surface down to
+    /// nothing without needing to know the world ended. One check here
+    /// beats the same check in six callers.
     pub fn height_at(&self, x: f32) -> f32 {
+        if self.destroyed {
+            return 0.0;
+        }
+        self.height_at_raw(x)
+    }
+
+    /// The ridge as generated, ignoring destruction — for drawing the
+    /// world blowing up, which needs the shape that is being lost.
+    pub fn height_at_raw(&self, x: f32) -> f32 {
         let x = wrap(x);
         let pos = x / self.step;
         let i = pos.floor() as usize % self.heights.len();

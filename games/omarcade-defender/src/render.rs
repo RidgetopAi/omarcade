@@ -14,9 +14,11 @@ use omarcade_core::{Canvas, Color, Theme, Transform};
 
 use crate::art;
 use crate::effects::Effects;
-use crate::enemy::{Landers, Phase};
+use crate::enemy::{Kind, Landers, Phase};
 use crate::flight::{Camera, Ship};
 use crate::humanoid::{self, Humanoids, State};
+use crate::lives::Lives;
+use crate::shot::Owner;
 use crate::shot::Shots;
 use crate::world::{self, Terrain};
 
@@ -31,6 +33,7 @@ pub struct Scene<'a> {
     pub people: &'a Humanoids,
     pub effects: &'a Effects,
     pub score: u32,
+    pub lives: &'a Lives,
 }
 
 /// Draw a frame.
@@ -47,9 +50,18 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     draw_landers(canvas, scene.landers, scene.camera);
     draw_shots(canvas, scene.shots, scene.camera, theme);
     scene.effects.draw(canvas, scene.camera);
-    draw_ship(canvas, scene.ship, scene.camera, theme);
+    // ⚠️ A DEAD OR BLINKING SHIP IS NOT ALWAYS DRAWN. `is_visible`
+    // answers both questions, so this does not need to know which state
+    // the ship is in.
+    if scene.lives.is_visible() {
+        draw_ship(canvas, scene.ship, scene.camera, theme);
+    }
     draw_hud(canvas, scene.ship, scene.camera, theme);
     draw_score(canvas, scene.score, theme);
+    draw_lives(canvas, scene.lives, theme);
+    if scene.lives.is_game_over() {
+        draw_game_over(canvas, theme);
+    }
 }
 
 /// The Landers.
@@ -75,22 +87,20 @@ fn draw_landers(canvas: &mut Canvas<'_>, landers: &Landers, camera: &Camera) {
             // that is merely far away.
             Phase::Warping => {
                 let p = l.progress();
-                let t = Transform::at(sx, sy).scaled(art::SCALE * (0.15 + 0.85 * p));
-                art::draw_lander(canvas, &t);
+                draw_enemy(canvas, l.kind, sx, sy, art::SCALE * (0.15 + 0.85 * p));
             }
             // Hunting and carrying look the same as hovering — the
             // TRACTOR BEAM is what tells you which is which, and it is
             // drawn separately so it sits under the Lander.
             Phase::Hovering | Phase::Hunting | Phase::Grabbing | Phase::Carrying => {
-                art::draw_lander(canvas, &Transform::at(sx, sy).scaled(art::SCALE));
+                draw_enemy(canvas, l.kind, sx, sy, art::SCALE);
             }
             // Dying: one bright frame of the shape blowing outward,
             // under the particles. Short enough that it reads as the
             // instant of destruction rather than as an animation.
             Phase::Dying => {
                 let p = l.progress();
-                let t = Transform::at(sx, sy).scaled(art::SCALE * (1.0 + p * 0.9));
-                art::draw_lander(canvas, &t);
+                draw_enemy(canvas, l.kind, sx, sy, art::SCALE * (1.0 + p * 0.9));
             }
         }
     }
@@ -118,6 +128,20 @@ fn draw_people(canvas: &mut Canvas<'_>, people: &Humanoids, camera: &Camera) {
             canvas,
             &Transform::at(sx, sy).scaled(art::SCALE).flipped(p.vx < 0.0),
         );
+    }
+}
+
+/// One enemy, of whichever kind.
+///
+/// ★ THE MUTANT ART IS THE LANDER'S, WEARING A PERSON. Brian built it by
+/// importing the Lander into the playground and drawing a Humanoid into
+/// the pod, so the two occupy exactly the same space on screen — which
+/// is what makes the fusion read as a fusion rather than as a swap.
+fn draw_enemy(canvas: &mut Canvas<'_>, kind: Kind, sx: f32, sy: f32, scale: f32) {
+    let t = Transform::at(sx, sy).scaled(scale);
+    match kind {
+        Kind::Lander => art::draw_lander(canvas, &t),
+        Kind::Mutant => art::draw_mutant(canvas, &t),
     }
 }
 
@@ -182,17 +206,65 @@ fn draw_shots(canvas: &mut Canvas<'_>, shots: &Shots, camera: &Camera, theme: &T
 
     for s in shots.iter() {
         let head = camera.to_screen(s.x);
-        // The tail is placed by measuring BACK from the head on screen,
-        // which cannot straddle anything.
-        let tail = head - s.vx.signum() * crate::shot::SHOT_LENGTH;
-        let (x0, x1) = if tail < head { (tail, head) } else { (head, tail) };
 
+        // ⚠️ AN ENEMY BOLT IS DRAWN ALONG ITS OWN VELOCITY, not
+        // horizontally. Mutants are required never to fire level, so a
+        // horizontal streak would draw every angled shot as if it were
+        // flat and the one rule that makes them dangerous would be
+        // invisible.
+        let speed = (s.vx * s.vx + s.vy * s.vy).sqrt().max(1.0);
+        let len = crate::shot::SHOT_LENGTH;
+        let tail_x = head - (s.vx / speed) * len;
+        let y_head = h - s.y;
+        // Screen y grows DOWN while world y grows UP, so the tail's
+        // screen offset is the opposite sign of the world velocity.
+        let tail_y = y_head + (s.vy / speed) * len;
+
+        let (x0, x1) = if tail_x < head { (tail_x, head) } else { (head, tail_x) };
         if x1 < 0.0 || x0 > canvas.width() as f32 {
             continue;
         }
-        let y = h - s.y;
-        canvas.fill_rect_add_f(x0, y - 1.5, x1 - x0, 3.0, hot);
+
+        let color = if s.owner == Owner::Enemy {
+            Color::rgb(255, 120, 60)
+        } else {
+            hot
+        };
+
+        if s.vy.abs() < 0.001 {
+            canvas.fill_rect_add_f(x0, y_head - 1.5, x1 - x0, 3.0, color);
+        } else {
+            canvas.line_add_f(tail_x, tail_y, head, y_head, 3.0, color);
+        }
     }
+}
+
+/// The lives left, as ships.
+///
+/// ★ SHIPS, NOT A NUMBER. A count has to be read; a row of ships is
+/// understood at a glance, which is the only kind of reading a player
+/// does mid-flight.
+fn draw_lives(canvas: &mut Canvas<'_>, lives: &Lives, _theme: &Theme) {
+    for i in 0..lives.remaining {
+        let x = 28.0 + i as f32 * 42.0;
+        art::draw_ship(canvas, &Transform::at(x, 44.0).scaled(0.55));
+    }
+}
+
+/// ⚠️ NOT A REAL GAME-OVER SCREEN. S14 owns presentation; this exists so
+/// that running out of lives is unmistakable rather than a ship that
+/// silently stops coming back.
+fn draw_game_over(canvas: &mut Canvas<'_>, theme: &Theme) {
+    let msg = "GAME OVER";
+    let w = omarcade_core::text::text_width(msg, 5) as i32;
+    omarcade_core::text::text(
+        canvas,
+        msg,
+        (canvas.width() as i32 - w) / 2,
+        canvas.height() as i32 / 2 - 20,
+        5,
+        theme.foreground,
+    );
 }
 
 /// The score.
@@ -228,6 +300,12 @@ fn sky(theme: &Theme) -> Color {
 /// wrapping each sample handles that without a special case — which is
 /// the point of doing it this way rather than slicing the height array.
 fn draw_terrain(canvas: &mut Canvas<'_>, terrain: &Terrain, camera: &Camera, theme: &Theme) {
+    // ★ THE WORLD ENDED: there is nothing down there any more. Returning
+    // early rather than drawing a flat line at zero, because a line
+    // would read as ground you could still land on.
+    if terrain.is_destroyed() {
+        return;
+    }
     let w = canvas.width() as i32;
     let h = canvas.height() as f32;
 
@@ -351,7 +429,8 @@ mod tests {
             let mut c = canvas_of(&mut buf);
             let (shots, landers, fx) = (Shots::new(), Landers::new(), Effects::new());
             let people = Humanoids::new();
-            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx);
+            let lives = Lives::new();
+            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx, &lives);
             draw(&mut c, &scene, &theme);
         }
 
@@ -379,7 +458,8 @@ mod tests {
             let mut c = canvas_of(&mut buf);
             let (shots, landers, fx) = (Shots::new(), Landers::new(), Effects::new());
             let people = Humanoids::new();
-            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx);
+            let lives = Lives::new();
+            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx, &lives);
             draw(&mut c, &scene, &theme);
         }
 
@@ -409,8 +489,9 @@ mod tests {
         landers: &'a Landers,
         people: &'a Humanoids,
         effects: &'a Effects,
+        lives: &'a Lives,
     ) -> Scene<'a> {
-        Scene { terrain, ship, camera, shots, landers, people, effects, score: 0 }
+        Scene { terrain, ship, camera, shots, landers, people, effects, score: 0, lives }
     }
 
     /// ⚠️ THE SEAM, IN THE RENDERER. With the camera at x = 0 the left
@@ -428,7 +509,8 @@ mod tests {
             let mut c = canvas_of(&mut buf);
             let (shots, landers, fx) = (Shots::new(), Landers::new(), Effects::new());
             let people = Humanoids::new();
-            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx);
+            let lives = Lives::new();
+            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx, &lives);
             draw(&mut c, &scene, &theme);
         }
 

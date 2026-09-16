@@ -40,6 +40,9 @@ pub const GRAVITY: f32 = -520.0;
 /// How many pieces a Lander comes apart into.
 pub const LANDER_PIECES: usize = 26;
 
+/// How many pieces a Humanoid comes apart into. Fewer, and smaller.
+pub const HUMANOID_PIECES: usize = 12;
+
 /// How fast the debris leaves, in world units per second.
 const BURST_SPEED: f32 = 210.0;
 
@@ -139,6 +142,39 @@ impl Effects {
                 Vec2::new(angle.cos() * speed + vx * 0.35, -angle.sin() * speed),
                 size,
                 color,
+                life,
+            ));
+        }
+    }
+
+    /// A Humanoid killed by your own laser.
+    ///
+    /// ⚠️ DELIBERATELY SMALLER AND IN ITS OWN COLOURS. A person dying
+    /// must not look like a kill you meant to make — the same big green
+    /// burst a Lander gives would read as a score, and this is the
+    /// opposite of a score.
+    pub fn explode_humanoid(&mut self, x: f32, y: f32) {
+        const COLORS: [Color; 3] = [
+            Color::rgb(255, 0, 234),
+            Color::rgb(0, 255, 0),
+            Color::rgb(255, 221, 0),
+        ];
+
+        for i in 0..HUMANOID_PIECES {
+            let spread = (i as f32 + self.rand()) / HUMANOID_PIECES as f32;
+            let angle = spread * std::f32::consts::TAU;
+            let r = self.rand();
+            let speed = BURST_SPEED * 0.55 * (0.12 + 1.15 * r * r);
+
+            // Hoisted: `self.rand()` inside a `self.pool` call borrows
+            // self twice.
+            let size = 1.5 + 2.0 * self.rand();
+            let life = PIECE_LIFE * (0.5 + 0.6 * self.rand());
+            self.pool.spawn(Particle::new(
+                Vec2::new(x, y),
+                Vec2::new(angle.cos() * speed, -angle.sin() * speed),
+                size,
+                COLORS[i % COLORS.len()],
                 life,
             ));
         }

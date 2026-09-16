@@ -20,6 +20,8 @@ mod art;
 mod effects;
 #[path = "../src/enemy.rs"]
 mod enemy;
+#[path = "../src/humanoid.rs"]
+mod humanoid;
 #[path = "../src/shot.rs"]
 mod shot;
 #[path = "../src/flight.rs"]
@@ -31,6 +33,7 @@ mod world;
 
 use effects::Effects;
 use enemy::Landers;
+use humanoid::Humanoids;
 use flight::{Camera, Facing, Input, Ship};
 use shot::Shots;
 use world::Terrain;
@@ -51,6 +54,7 @@ fn main() {
     let mut shots = Shots::new();
     let mut landers = Landers::new();
     let mut effects = Effects::new();
+    let mut people = Humanoids::new();
 
     // Fly the ship into the state the scene names, using the real
     // physics rather than posing it by hand — a posed frame can show a
@@ -70,6 +74,53 @@ fn main() {
         // Sitting still, facing east. The baseline the others are read
         // against.
         "rest" => camera.snap_to(&ship),
+
+        // ★ S6: the abduction, mid-act. A Lander with its beam on and a
+        // person being lifted, another walking, one falling, and one
+        // riding under the ship after a catch.
+        "rescue" => {
+            camera.snap_to(&ship);
+            let base = ship.x;
+
+            // Walkers on the surface.
+            for dx in [120.0f32, 640.0] {
+                let x = world::wrap(base + dx);
+                people.spawn(humanoid::Humanoid::new(x, terrain.height_at(x), 18.0));
+            }
+
+            // One being taken: Lander overhead, beam on, victim rising.
+            let vx = world::wrap(base + 330.0);
+            let vground = terrain.height_at(vx);
+            people.spawn(humanoid::Humanoid::new(vx, vground + 46.0, 0.0));
+            people.get_mut(2).unwrap().grabbed();
+
+            let mut carrier = enemy::Lander::new(vx, vground + 46.0 + enemy::GRAB_HEIGHT, 0.0);
+            carrier.phase = enemy::Phase::Grabbing;
+            carrier.elapsed = enemy::GRAB_SECONDS * 0.6;
+            carrier.target = Some(2);
+            landers.spawn(carrier);
+
+            // One falling, having been shot free.
+            let fx = world::wrap(base + 470.0);
+            let mut faller = humanoid::Humanoid::new(fx, terrain.height_at(fx) + 260.0, 0.0);
+            faller.grabbed();
+            faller.dropped();
+            people.spawn(faller);
+
+            // And one already rescued, riding under the ship.
+            let mut saved = humanoid::Humanoid::new(ship.x, ship.y, 0.0);
+            saved.grabbed();
+            saved.dropped();
+            saved.rescued();
+            people.spawn(saved);
+            people.carry_with_ship(ship.x, ship.y);
+
+            // A Lander watching from further out.
+            let ox = world::wrap(base + 700.0);
+            let mut idle = enemy::Lander::new(ox, terrain.height_at(ox) + enemy::HOVER_HEIGHT, 46.0);
+            idle.phase = enemy::Phase::Hovering;
+            landers.spawn(idle);
+        }
 
         // ★ S5, ALL OF IT AT ONCE: Landers in the air, bolts in flight,
         // and an explosion part-way through. Posed deliberately so one
@@ -157,6 +208,7 @@ fn main() {
             camera: &camera,
             shots: &shots,
             landers: &landers,
+            people: &people,
             effects: &effects,
             score: 0,
         };

@@ -1,15 +1,18 @@
 //! Landers, and what it takes to kill one.
 //!
-//! ⚠️ THIS STAGE IS DELIBERATELY INCOMPLETE. A Defender Lander hunts a
-//! Humanoid, tractor-beams it upward and becomes a Mutant at the top.
-//! None of that is here — S5 is "there is something in the world and it
-//! can die", and the hunting is S6 where there are Humanoids to hunt.
-//! Building the abduction now would mean building it against imaginary
-//! Humanoids and rewriting it when the real ones arrive.
+//! ★ S6 GAVE THEM A PURPOSE. In S5 a Lander arrived, drifted and died —
+//! it was a target. Now it hunts: it finds the nearest Humanoid, drops
+//! to the surface, takes it, and carries it upward. That is the whole
+//! difference between a shooting gallery and Defender, because a Lander
+//! you ignore now costs you something.
 //!
-//! What IS here: they arrive, they drift over the ridge, they can be
-//! shot, and they are worth points.
+//! ⚠️ MUTATION IS STILL S7. A Lander that reaches the top of the world
+//! with a Humanoid should fuse into a Mutant and, when the last person
+//! is taken, end the world. Here it simply keeps climbing — the art is
+//! in [`crate::art`] waiting, and the loss condition is a stage of its
+//! own rather than a footnote to this one.
 
+use crate::humanoid::Humanoids;
 use crate::world::{self, Terrain};
 
 /// What a Lander is worth.
@@ -28,6 +31,15 @@ pub const LANDER_POINTS: u32 = 100;
 pub const LANDER_HALF_W: f32 = 6.0 * crate::art::SCALE;
 pub const LANDER_HALF_H: f32 = 7.5 * crate::art::SCALE;
 
+/// How high above a Humanoid a Lander sits while grabbing it.
+///
+/// ⚠️ RAISED FROM 54 AFTER LOOKING AT A FRAME. At 54 the Lander sat
+/// almost on top of its victim and the tractor beam was a stub — it read
+/// as two sprites touching rather than as a beam pulling someone up.
+/// The beam is the only warning a player gets, so it has to be visible
+/// as a beam at a glance.
+pub const GRAB_HEIGHT: f32 = 120.0;
+
 /// How high above the ridge a Lander settles.
 ///
 /// ⚠️ RAISED FROM 120 AFTER LOOKING AT A FRAME. At 120 the Landers sat
@@ -42,6 +54,36 @@ pub const HOVER_HEIGHT: f32 = 300.0;
 /// Slow. A Lander in the original is not chasing you in this phase — it
 /// is looking for a Humanoid, and the menace is that it is ignoring you.
 pub const DRIFT_SPEED: f32 = 46.0;
+
+/// How long a Lander drifts before it starts hunting, in seconds.
+///
+/// ★ A DELIBERATE GRACE PERIOD. Landers that begin hunting the instant
+/// they arrive reach the surface before the player has crossed the
+/// world once, and the first thing you learn is that you were already
+/// too late. Drifting first is also how the arcade reads: they mill
+/// about, and then they get to work.
+pub const HUNT_AFTER: f32 = 2.4;
+
+/// How fast a hunting Lander moves toward its target, in units/second.
+///
+/// Faster than the drift — this one has decided — but well under the
+/// ship's top speed, so an attentive player always has the option of
+/// getting there first.
+pub const HUNT_SPEED: f32 = 132.0;
+
+/// How fast a Lander descends and climbs, in units per second.
+pub const DESCEND_SPEED: f32 = 150.0;
+pub const CLIMB_SPEED: f32 = 96.0;
+
+/// How close, horizontally, a Lander must be to grab.
+pub const GRAB_REACH_X: f32 = 16.0;
+
+/// How long the tractor beam holds before the Humanoid is lifted.
+///
+/// ★ THE WINDOW THE WHOLE STAGE TURNS ON. This is the moment the player
+/// is meant to notice and intervene: long enough to see the beam, fly
+/// over and shoot, short enough that ignoring it costs you.
+pub const GRAB_SECONDS: f32 = 0.9;
 
 /// How long the warp-in takes, in seconds.
 pub const WARP_SECONDS: f32 = 0.55;
@@ -58,8 +100,14 @@ pub enum Phase {
     /// before it finished arriving would let a player farm the spawn
     /// point, and would look like a bug besides.
     Warping,
-    /// Alive and drifting. The only phase that can be shot.
+    /// Alive and drifting, not yet interested in anyone.
     Hovering,
+    /// Has chosen a Humanoid and is closing on it.
+    Hunting,
+    /// Over its target, beam on, lifting it.
+    Grabbing,
+    /// Climbing with a Humanoid. Shoot it and the passenger falls.
+    Carrying,
     /// Hit, and playing out its death. No longer collidable.
     Dying,
 }
@@ -75,16 +123,45 @@ pub struct Lander {
     pub phase: Phase,
     /// Seconds spent in the current phase.
     pub elapsed: f32,
+    /// Index of the Humanoid being hunted or carried, if any.
+    ///
+    /// ⚠️ AN INDEX, AND THE HUMANOID LIST MUST THEREFORE NEVER SHRINK.
+    /// `Humanoids::step` deliberately keeps the dead in place for
+    /// exactly this reason — a Vec that compacted on death would
+    /// silently re-point every carrier at the wrong person.
+    pub target: Option<usize>,
 }
 
 impl Lander {
     pub fn new(x: f32, y: f32, vx: f32) -> Self {
-        Self { x: world::wrap(x), y, vx, phase: Phase::Warping, elapsed: 0.0 }
+        Self {
+            x: world::wrap(x),
+            y,
+            vx,
+            phase: Phase::Warping,
+            elapsed: 0.0,
+            target: None,
+        }
     }
 
     /// Can a shot hit this one right now?
+    ///
+    /// ★ EVERY LIVE PHASE, NOT JUST HOVERING. A carrier that could not
+    /// be shot would make the abduction unstoppable, which is the one
+    /// thing the stage must never be.
     pub fn is_target(&self) -> bool {
-        self.phase == Phase::Hovering
+        matches!(
+            self.phase,
+            Phase::Hovering | Phase::Hunting | Phase::Grabbing | Phase::Carrying
+        )
+    }
+
+    /// Is this one holding someone?
+    pub fn carrying(&self) -> Option<usize> {
+        match self.phase {
+            Phase::Grabbing | Phase::Carrying => self.target,
+            _ => None,
+        }
     }
 
     /// Should this one still be drawn?
@@ -97,20 +174,35 @@ impl Lander {
         let span = match self.phase {
             Phase::Warping => WARP_SECONDS,
             Phase::Dying => DEATH_SECONDS,
-            Phase::Hovering => return 1.0,
+            Phase::Grabbing => GRAB_SECONDS,
+            // Open-ended phases have no "through" to be part of.
+            Phase::Hovering | Phase::Hunting | Phase::Carrying => return 1.0,
         };
         (self.elapsed / span).clamp(0.0, 1.0)
     }
 
     /// Mark this one as hit. Returns the points it is worth.
+    ///
+    /// The caller is responsible for dropping any passenger — this type
+    /// does not own the Humanoid list and must not pretend to.
     pub fn kill(&mut self) -> u32 {
         self.phase = Phase::Dying;
         self.elapsed = 0.0;
+        self.target = None;
         LANDER_POINTS
     }
 
-    fn step(&mut self, terrain: &Terrain, dt: f32) {
+    /// Advance this Lander. `prey` is where its target is, if it has one
+    /// and that target is still grabbable.
+    ///
+    /// ⚠️ THE HUMANOID IS PASSED IN RATHER THAN REACHED FOR. A Lander
+    /// that held a reference to the Humanoid list could not be stepped
+    /// while that list was being mutated, and the borrow checker would
+    /// push the whole thing into a shared-mutable shape it does not need.
+    /// The owner resolves the target and hands over a position.
+    fn step(&mut self, terrain: &Terrain, prey: Option<(f32, f32)>, dt: f32) -> Outcome {
         self.elapsed += dt;
+        let mut outcome = Outcome::None;
 
         match self.phase {
             Phase::Warping => {
@@ -119,6 +211,7 @@ impl Lander {
                     self.elapsed = 0.0;
                 }
             }
+
             Phase::Hovering => {
                 self.x = world::wrap(self.x + self.vx * dt);
 
@@ -129,21 +222,123 @@ impl Lander {
                 // over the ridge's fine detail.
                 let want = terrain.height_at(self.x) + HOVER_HEIGHT;
                 self.y += (want - self.y) * (1.0 - (-4.0 * dt).exp());
+
+                if self.elapsed >= HUNT_AFTER {
+                    outcome = Outcome::WantsTarget;
+                }
             }
+
+            Phase::Hunting => {
+                let Some((px, py)) = prey else {
+                    // The target is gone — shot, taken by someone else,
+                    // or fallen. Go back to drifting and look again.
+                    self.phase = Phase::Hovering;
+                    self.elapsed = 0.0;
+                    self.target = None;
+                    return Outcome::None;
+                };
+
+                // ⚠️ CLOSE THE GAP THROUGH `delta`, NOT BY SUBTRACTING.
+                // A Lander at x = 5 hunting someone at WORLD_W - 5 would
+                // otherwise fly the entire world eastward to reach
+                // something ten units west of it.
+                let gap = world::delta(self.x, px);
+                if gap.abs() > GRAB_REACH_X {
+                    let step = HUNT_SPEED * dt;
+                    self.x = world::wrap(self.x + gap.signum() * step.min(gap.abs()));
+                    self.vx = HUNT_SPEED * gap.signum();
+                }
+
+                // Descend toward the target as it closes, so the arrival
+                // is a swoop rather than a drop straight down.
+                let want_y = py + GRAB_HEIGHT;
+                if self.y > want_y {
+                    self.y = (self.y - DESCEND_SPEED * dt).max(want_y);
+                }
+
+                if world::delta(self.x, px).abs() <= GRAB_REACH_X
+                    && (self.y - want_y).abs() < 6.0
+                {
+                    self.phase = Phase::Grabbing;
+                    self.elapsed = 0.0;
+                    outcome = Outcome::Grabbed;
+                }
+            }
+
+            Phase::Grabbing => {
+                let Some((_, py)) = prey else {
+                    self.phase = Phase::Hovering;
+                    self.elapsed = 0.0;
+                    self.target = None;
+                    return Outcome::None;
+                };
+
+                // Hold station while the beam does its work, and draw
+                // the Humanoid up to meet it.
+                let _ = py;
+                if self.elapsed >= GRAB_SECONDS {
+                    self.phase = Phase::Carrying;
+                    self.elapsed = 0.0;
+                }
+            }
+
+            Phase::Carrying => {
+                if prey.is_none() {
+                    // Passenger gone (shot out of the beam): resume.
+                    self.phase = Phase::Hovering;
+                    self.elapsed = 0.0;
+                    self.target = None;
+                    return Outcome::None;
+                }
+                self.y += CLIMB_SPEED * dt;
+                // Drift a little while climbing so the ascent is not a
+                // dead vertical line.
+                self.x = world::wrap(self.x + self.vx.signum() * DRIFT_SPEED * 0.4 * dt);
+
+                // ⚠️ S7 TAKES OVER HERE. At the top of the world this
+                // should become a Mutant and, if it was the last person,
+                // end the world. Reported rather than acted on, so the
+                // stage boundary is visible in the code.
+                if self.y >= world::VIEW_H * 1.6 {
+                    outcome = Outcome::ReachedTop;
+                }
+            }
+
             Phase::Dying => {}
         }
+
+        outcome
     }
+}
+
+/// What a Lander's step needs its owner to do.
+///
+/// The Lander cannot reach the Humanoid list, so it says what happened
+/// and the owner applies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    None,
+    /// Drifted long enough; wants a Humanoid to hunt.
+    WantsTarget,
+    /// The beam has taken hold of its target.
+    Grabbed,
+    /// Carried a Humanoid off the top of the world. ⚠️ S7 owns what
+    /// happens next; S6 just stops it climbing forever.
+    ReachedTop,
 }
 
 /// Every Lander in the world.
 #[derive(Debug, Default)]
 pub struct Landers {
     live: Vec<Lander>,
+    /// Humanoid indices already spoken for, so two Landers never hunt
+    /// the same person and end up stacked on the same spot.
+    claimed: Vec<usize>,
 }
 
 impl Landers {
     pub fn new() -> Self {
-        Self { live: Vec::new() }
+        Self { live: Vec::new(), claimed: Vec::new() }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Lander> {
@@ -170,6 +365,7 @@ impl Landers {
 
     pub fn clear(&mut self) {
         self.live.clear();
+        self.claimed.clear();
     }
 
     /// Scatter `count` Landers across the world, away from `avoid_x`.
@@ -205,11 +401,115 @@ impl Landers {
         }
     }
 
-    pub fn step(&mut self, terrain: &Terrain, dt: f32) {
+    /// Advance every Lander, hunting and abducting through `people`.
+    ///
+    /// ★ THIS IS WHERE THE ABDUCTION ACTUALLY HAPPENS, and it lives here
+    /// rather than in `main` because it is the one place that can see
+    /// both lists at once. A Lander asks for a target; this resolves it,
+    /// hands over a position, and applies whatever the step reports.
+    pub fn step(&mut self, terrain: &Terrain, people: &mut Humanoids, dt: f32) {
         for l in &mut self.live {
-            l.step(terrain, dt);
+            // Resolve the target's position, and drop a target that has
+            // stopped being valid — shot while carried, or already taken.
+            let prey = match l.target {
+                Some(i) => match people.get(i) {
+                    Some(h) if h.is_alive() => {
+                        let held = matches!(l.phase, Phase::Grabbing | Phase::Carrying);
+                        // While hunting, the target must still be free.
+                        // While holding, it must still be ours.
+                        if held || h.is_grabbable() {
+                            Some((h.x, h.y))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                },
+                None => None,
+            };
+
+            match l.step(terrain, prey, dt) {
+                Outcome::None => {}
+
+                Outcome::WantsTarget => {
+                    if let Some(i) = people.nearest_grabbable(l.x) {
+                        // ⚠️ DO NOT LET TWO LANDERS CLAIM THE SAME
+                        // PERSON. Without this they converge on one
+                        // Humanoid and stack in the same place, which
+                        // looks like a rendering bug rather than a race.
+                        if !self.claimed.contains(&i) {
+                            l.target = Some(i);
+                            l.phase = Phase::Hunting;
+                            l.elapsed = 0.0;
+                            self.claimed.push(i);
+                        }
+                    }
+                }
+
+                Outcome::Grabbed => {
+                    if let Some(i) = l.target {
+                        if let Some(h) = people.get_mut(i) {
+                            h.grabbed();
+                        }
+                    }
+                }
+
+                Outcome::ReachedTop => {
+                    // ⚠️ S7 OWNS MUTATION AND THE WORLD ENDING. For now
+                    // the passenger is simply gone — taken — which is
+                    // honest about the stakes without pretending to
+                    // implement the loss condition.
+                    if let Some(i) = l.target.take() {
+                        if let Some(h) = people.get_mut(i) {
+                            h.kill();
+                        }
+                        self.claimed.retain(|&c| c != i);
+                    }
+                    l.phase = Phase::Hovering;
+                    l.elapsed = 0.0;
+                }
+            }
+
+            // Carry the passenger along, in both the grab and the climb.
+            if let Some(i) = l.carrying() {
+                if let Some(h) = people.get_mut(i) {
+                    h.x = l.x;
+                    // Rise to meet the Lander during the grab, then ride
+                    // beneath it.
+                    let under = l.y - GRAB_HEIGHT;
+                    if l.phase == Phase::Grabbing {
+                        let t = (l.elapsed / GRAB_SECONDS).clamp(0.0, 1.0);
+                        h.y += (under - h.y) * t * 0.35;
+                    } else {
+                        h.y = under;
+                    }
+                }
+            }
         }
+
+        // Release the claims of everyone who died, so a fresh Lander can
+        // hunt a Humanoid whose previous suitor was shot.
+        let live_claims: Vec<usize> =
+            self.live.iter().filter_map(|l| l.target).collect();
+        self.claimed.retain(|c| live_claims.contains(c));
+
         self.live.retain(|l| l.is_alive());
+    }
+
+    /// Drop whatever the Lander at `index` was carrying, and report who
+    /// it was so the caller can react.
+    ///
+    /// ⚠️ CALLED BEFORE `kill`, because `kill` clears the target. A
+    /// carrier shot without this would take its passenger with it
+    /// silently, and the whole catch-and-rescue loop would never fire.
+    pub fn release_passenger(&mut self, index: usize, people: &mut Humanoids) -> Option<usize> {
+        let who = self.live[index].carrying()?;
+        if let Some(h) = people.get_mut(who) {
+            h.dropped();
+        }
+        self.claimed.retain(|&c| c != who);
+        self.live[index].target = None;
+        Some(who)
     }
 
     /// The first Lander overlapping `(x, y)`, if any.
@@ -251,6 +551,13 @@ mod tests {
         Terrain::generate(256, 0x0DEF_E4DE)
     }
 
+    /// An empty world of people — the S5 tests are about Landers alone,
+    /// and with nobody to hunt a Lander simply drifts, which is exactly
+    /// the behaviour those tests were written against.
+    fn nobody() -> Humanoids {
+        Humanoids::new()
+    }
+
     #[test]
     fn a_lander_cannot_be_shot_until_it_has_arrived() {
         let t = terrain();
@@ -258,7 +565,7 @@ mod tests {
         ls.spawn(Lander::new(500.0, 300.0, 0.0));
 
         assert!(ls.hit_test(500.0, 300.0).is_none(), "warping must not be hittable");
-        ls.step(&t, WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
         assert!(ls.hit_test(500.0, 300.0).is_some(), "it should be hittable now");
     }
 
@@ -272,7 +579,7 @@ mod tests {
         // Sitting a few units west of the seam, i.e. at the very top of
         // the coordinate range.
         ls.spawn(Lander::new(world::WORLD_W - 4.0, 300.0, 0.0));
-        ls.step(&t, WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
         let y = ls.iter().next().unwrap().y;
 
         assert!(
@@ -294,7 +601,7 @@ mod tests {
         let t = terrain();
         let mut ls = Landers::new();
         ls.spawn(Lander::new(500.0, 300.0, 0.0));
-        ls.step(&t, WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
 
         let y = ls.iter().next().unwrap().y;
         let hit = ls.hit_test(500.0, y).expect("should be hittable");
@@ -308,14 +615,14 @@ mod tests {
         let t = terrain();
         let mut ls = Landers::new();
         ls.spawn(Lander::new(500.0, 300.0, 0.0));
-        ls.step(&t, WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
         let y = ls.iter().next().unwrap().y;
         let hit = ls.hit_test(500.0, y).unwrap();
         ls.kill(hit);
 
-        ls.step(&t, DEATH_SECONDS * 0.5);
+        ls.step(&t, &mut nobody(), DEATH_SECONDS * 0.5);
         assert_eq!(ls.len(), 1, "the corpse should still be drawn");
-        ls.step(&t, DEATH_SECONDS);
+        ls.step(&t, &mut nobody(), DEATH_SECONDS);
         assert!(ls.is_empty(), "the corpse should be gone");
     }
 
@@ -325,9 +632,9 @@ mod tests {
         let mut ls = Landers::new();
         // Start at a wrong height and let it settle.
         ls.spawn(Lander::new(500.0, 10.0, 0.0));
-        ls.step(&t, WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
         for _ in 0..240 {
-            ls.step(&t, 1.0 / 60.0);
+            ls.step(&t, &mut nobody(), 1.0 / 60.0);
         }
         let l = ls.iter().next().unwrap();
         let want = t.height_at(l.x) + HOVER_HEIGHT;
@@ -366,14 +673,162 @@ mod tests {
         assert_eq!(xs, ys);
     }
 
+    /// ★★ THE WHOLE STAGE, END TO END. A Lander drifts, finds the person
+    /// nearest to it, closes, lowers a beam, and carries them up.
+    ///
+    /// ⚠️ THIS IS THE TEST THAT MATTERS. Every other test here checks one
+    /// joint; this one checks that the joints connect, which is exactly
+    /// what a state machine assembled from correct parts still gets
+    /// wrong.
+    #[test]
+    fn a_lander_hunts_a_humanoid_grabs_it_and_carries_it_off() {
+        let t = terrain();
+        let mut people = Humanoids::new();
+        people.spawn(crate::humanoid::Humanoid::new(600.0, t.height_at(600.0), 0.0));
+
+        let mut ls = Landers::new();
+        ls.spawn(Lander::new(500.0, t.height_at(500.0) + HOVER_HEIGHT, DRIFT_SPEED));
+
+        // Long enough to warp, drift past HUNT_AFTER, close, and grab.
+        let mut saw_hunting = false;
+        let mut saw_grabbing = false;
+        let mut saw_carrying = false;
+        for _ in 0..1800 {
+            ls.step(&t, &mut people, 1.0 / 120.0);
+            people.step(&t, 1.0 / 120.0);
+            match ls.iter().next().map(|l| l.phase) {
+                Some(Phase::Hunting) => saw_hunting = true,
+                Some(Phase::Grabbing) => saw_grabbing = true,
+                Some(Phase::Carrying) => saw_carrying = true,
+                _ => {}
+            }
+            if saw_carrying {
+                break;
+            }
+        }
+
+        assert!(saw_hunting, "the Lander never went hunting");
+        assert!(saw_grabbing, "the Lander never got a grip");
+        assert!(saw_carrying, "the Lander never carried anyone off");
+
+        let h = people.get(0).unwrap();
+        assert_eq!(h.state, crate::humanoid::State::Carried, "the person is not held");
+
+        // And the victim must be RISING, under the Lander.
+        let before = people.get(0).unwrap().y;
+        for _ in 0..30 {
+            ls.step(&t, &mut people, 1.0 / 120.0);
+            people.step(&t, 1.0 / 120.0);
+        }
+        assert!(
+            people.get(0).unwrap().y > before,
+            "the victim is not being carried upward"
+        );
+    }
+
+    /// ★ AND THE PLAYER CAN STOP IT. Shooting a carrier must drop the
+    /// passenger, or the abduction is unstoppable and the stage is
+    /// pointless.
+    #[test]
+    fn shooting_a_carrier_drops_its_passenger() {
+        let t = terrain();
+        let mut people = Humanoids::new();
+        people.spawn(crate::humanoid::Humanoid::new(600.0, t.height_at(600.0), 0.0));
+
+        let mut ls = Landers::new();
+        ls.spawn(Lander::new(590.0, t.height_at(600.0) + HOVER_HEIGHT, DRIFT_SPEED));
+
+        for _ in 0..2400 {
+            ls.step(&t, &mut people, 1.0 / 120.0);
+            people.step(&t, 1.0 / 120.0);
+            if ls.iter().next().map(|l| l.phase) == Some(Phase::Carrying) {
+                break;
+            }
+        }
+        assert_eq!(
+            ls.iter().next().map(|l| l.phase),
+            Some(Phase::Carrying),
+            "setup failed: nobody was being carried"
+        );
+
+        // Shoot it.
+        let released = ls.release_passenger(0, &mut people);
+        assert_eq!(released, Some(0), "no passenger was released");
+        ls.kill(0);
+
+        assert_eq!(
+            people.get(0).unwrap().state,
+            crate::humanoid::State::Falling,
+            "the passenger did not fall"
+        );
+    }
+
+    /// ⚠️ TWO LANDERS MUST NOT CONVERGE ON THE SAME PERSON. Without the
+    /// claim list they stack on one Humanoid and it reads as a rendering
+    /// bug rather than as a race.
+    #[test]
+    fn two_landers_do_not_hunt_the_same_humanoid() {
+        let t = terrain();
+        let mut people = Humanoids::new();
+        people.spawn(crate::humanoid::Humanoid::new(600.0, t.height_at(600.0), 0.0));
+        people.spawn(crate::humanoid::Humanoid::new(1400.0, t.height_at(1400.0), 0.0));
+
+        let mut ls = Landers::new();
+        ls.spawn(Lander::new(560.0, t.height_at(560.0) + HOVER_HEIGHT, DRIFT_SPEED));
+        ls.spawn(Lander::new(640.0, t.height_at(640.0) + HOVER_HEIGHT, -DRIFT_SPEED));
+
+        for _ in 0..900 {
+            ls.step(&t, &mut people, 1.0 / 120.0);
+            people.step(&t, 1.0 / 120.0);
+        }
+
+        let targets: Vec<Option<usize>> = ls.iter().map(|l| l.target).collect();
+        if let [Some(a), Some(b)] = targets[..] {
+            assert_ne!(a, b, "both Landers claimed the same person");
+        }
+    }
+
+    /// A Lander whose target dies must give up rather than hunting a
+    /// corpse forever.
+    #[test]
+    fn a_lander_gives_up_on_a_dead_target() {
+        let t = terrain();
+        let mut people = Humanoids::new();
+        people.spawn(crate::humanoid::Humanoid::new(600.0, t.height_at(600.0), 0.0));
+
+        let mut ls = Landers::new();
+        ls.spawn(Lander::new(500.0, t.height_at(500.0) + HOVER_HEIGHT, DRIFT_SPEED));
+
+        for _ in 0..600 {
+            ls.step(&t, &mut people, 1.0 / 120.0);
+            people.step(&t, 1.0 / 120.0);
+            if ls.iter().next().map(|l| l.phase) == Some(Phase::Hunting) {
+                break;
+            }
+        }
+        assert_eq!(ls.iter().next().map(|l| l.phase), Some(Phase::Hunting));
+
+        people.get_mut(0).unwrap().kill();
+        for _ in 0..30 {
+            ls.step(&t, &mut people, 1.0 / 120.0);
+            people.step(&t, 1.0 / 120.0);
+        }
+        assert_eq!(
+            ls.iter().next().map(|l| l.phase),
+            Some(Phase::Hovering),
+            "it kept hunting a dead person"
+        );
+        assert_eq!(ls.iter().next().unwrap().target, None);
+    }
+
     #[test]
     fn a_drifting_lander_wraps_with_the_world() {
         let t = terrain();
         let mut ls = Landers::new();
         ls.spawn(Lander::new(5.0, 300.0, -DRIFT_SPEED));
-        ls.step(&t, WARP_SECONDS + 0.01);
+        ls.step(&t, &mut nobody(), WARP_SECONDS + 0.01);
         for _ in 0..600 {
-            ls.step(&t, 1.0 / 60.0);
+            ls.step(&t, &mut nobody(), 1.0 / 60.0);
         }
         let l = ls.iter().next().unwrap();
         assert!(l.x >= 0.0 && l.x < world::WORLD_W, "drifted out of the world: {}", l.x);

@@ -8,12 +8,17 @@
 //! Landers in the world, and they can be destroyed — with particles and
 //! with sound.
 //!
-//! ⚠️ WHAT S5 DELIBERATELY DOES NOT HAVE, so the stage stays honest:
-//! Landers do NOT hunt, do NOT abduct, and do NOT shoot back. All of
-//! that is S6/S7, where there are Humanoids for them to hunt; building
-//! it now would mean building it against imaginary Humanoids. There is
-//! also no wave structure and no score file — a score is drawn so a kill
-//! is visible, and S9 owns the real thing.
+//! ★ S6 GAVE IT STAKES: there are people on the surface, and the Landers
+//! come for them. A Lander drifts, picks the nearest Humanoid, drops on
+//! it, and carries it upward — and you can shoot the carrier and catch
+//! the person as they fall.
+//!
+//! ⚠️ WHAT IS STILL DELIBERATELY MISSING, so the stages stay honest:
+//! Landers do NOT shoot back, nothing MUTATES at the top of the world,
+//! and the world cannot END yet — that is S7, which spends the Mutant
+//! art already sitting unused in `art`. There is also no wave structure
+//! and no score file; the score is drawn so a kill is visible, and S9
+//! owns the real thing.
 //!
 //! ⚠️ NOT YET REGISTERED IN packaging/install.sh. A game with no name,
 //! no score file and no title screen has no business in the cabinet, and
@@ -24,6 +29,7 @@ mod art;
 mod effects;
 mod enemy;
 mod flight;
+mod humanoid;
 mod render;
 mod shot;
 mod sound;
@@ -36,6 +42,7 @@ use omarcade_core::{Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, 
 use effects::Effects;
 use enemy::Landers;
 use flight::{Camera, Facing, Input, Ship};
+use humanoid::Humanoids;
 use shot::Shots;
 use world::Terrain;
 
@@ -64,6 +71,13 @@ const FIXED_DT: f32 = 1.0 / 240.0;
 /// is one group, so that S5 has something to shoot.
 const OPENING_LANDERS: usize = 5;
 
+/// How many people live on the surface.
+///
+/// Defender's own count. Enough that losing one hurts without ending the
+/// game, which is what makes the middle of a wave tense rather than
+/// merely lost.
+const POPULATION: usize = 10;
+
 /// Where the gun sits relative to the ship's origin, in world units.
 ///
 /// ⚠️ THE ART DECIDES THIS, NOT A GUESS. The ship's gun reaches to about
@@ -71,6 +85,13 @@ const OPENING_LANDERS: usize = 5;
 /// centre would appear to emerge from the cockpit. Mirrored with facing,
 /// because the ship is mirrored with facing.
 const MUZZLE_FORWARD: f32 = 20.0 * art::SCALE;
+
+/// How low the ship must fly to put a rescued Humanoid back down.
+///
+/// ★ THE RISK/REWARD THE ARCADE IS BUILT ON. You are safest high up, and
+/// the only way to return someone is to go low — so a rescue is not
+/// finished at the catch, it is finished at the delivery.
+const DROP_OFF_HEIGHT: f32 = 90.0;
 
 struct Defender {
     theme: Theme,
@@ -81,6 +102,7 @@ struct Defender {
 
     shots: Shots,
     landers: Landers,
+    people: Humanoids,
     effects: Effects,
     score: u32,
 
@@ -108,6 +130,7 @@ struct Defender {
     /// cheaper.
     fired_this_frame: bool,
     killed_this_frame: bool,
+    rescued_this_frame: bool,
 }
 
 impl Defender {
@@ -123,6 +146,9 @@ impl Defender {
         let mut landers = Landers::new();
         landers.scatter(OPENING_LANDERS, ship.x, &terrain, 0x5EED_1234);
 
+        let mut people = Humanoids::new();
+        people.scatter(POPULATION, &terrain, 0x50C1_A15E);
+
         Self {
             theme,
             terrain,
@@ -131,6 +157,7 @@ impl Defender {
             pause: Pause::new(),
             shots: Shots::new(),
             landers,
+            people,
             effects: Effects::new(),
             score: 0,
             laser,
@@ -142,6 +169,7 @@ impl Defender {
             accumulator: 0.0,
             fired_this_frame: false,
             killed_this_frame: false,
+            rescued_this_frame: false,
         }
     }
 
@@ -166,10 +194,39 @@ impl Defender {
         }
 
         self.shots.step(dt);
-        self.landers.step(&self.terrain, dt);
+        self.landers.step(&self.terrain, &mut self.people, dt);
+        self.people.step(&self.terrain, dt);
         self.effects.update(dt);
 
         self.resolve_hits();
+        self.resolve_catches();
+    }
+
+    /// The ship flying into a falling Humanoid.
+    ///
+    /// ★ THE RESCUE. A caught person rides under the ship until it flies
+    /// low enough to set them down, which is the loop the arcade built
+    /// its whole risk/reward around: you are safest high up and you can
+    /// only return someone by going low.
+    fn resolve_catches(&mut self) {
+        if let Some(i) = self.people.catch_test(self.ship.x, self.ship.y) {
+            if let Some(h) = self.people.get_mut(i) {
+                h.rescued();
+                self.rescued_this_frame = true;
+            }
+        }
+
+        // Carry passengers along, and put them down near the ground.
+        self.people.carry_with_ship(self.ship.x, self.ship.y);
+        let ground = self.terrain.height_at(self.ship.x);
+        if self.ship.y - ground < DROP_OFF_HEIGHT {
+            let terrain = &self.terrain;
+            for i in 0..self.people.len() {
+                if let Some(h) = self.people.get_mut(i) {
+                    h.released_to_ground(terrain);
+                }
+            }
+        }
     }
 
     /// Shots meeting Landers.
@@ -196,8 +253,30 @@ impl Defender {
                     let l = self.landers.iter().nth(target).unwrap();
                     (l.x, l.y, l.vx)
                 };
+                // ⚠️ DROP THE PASSENGER BEFORE KILLING THE CARRIER.
+                // `kill` clears the target, so doing this after would
+                // take the Humanoid with it silently and the whole
+                // catch-and-rescue loop would never fire.
+                self.landers.release_passenger(target, &mut self.people);
                 self.score += self.landers.kill(target);
                 self.effects.explode_lander(lx, ly, lvx);
+                self.shots.consume(i);
+                self.killed_this_frame = true;
+                continue;
+            }
+
+            // ⚠️ AND YOUR OWN LASER KILLS PEOPLE. Brian's spec says
+            // DON'T SHOOT THEM, and a rule the game quietly refuses to
+            // let you break is not a rule anyone ever feels.
+            if let Some(victim) = self.people.hit_test(sx, sy) {
+                let (hx, hy) = {
+                    let h = self.people.get(victim).unwrap();
+                    (h.x, h.y)
+                };
+                if let Some(h) = self.people.get_mut(victim) {
+                    h.kill();
+                }
+                self.effects.explode_humanoid(hx, hy);
                 self.shots.consume(i);
                 self.killed_this_frame = true;
             }
@@ -276,6 +355,7 @@ impl Game for Defender {
 
         self.fired_this_frame = false;
         self.killed_this_frame = false;
+        self.rescued_this_frame = false;
 
         // Fixed-step accumulation. Clamped so a stalled frame — a
         // debugger, a laptop waking — does not spend a second of
@@ -304,6 +384,7 @@ impl Game for Defender {
             camera: &self.camera,
             shots: &self.shots,
             landers: &self.landers,
+            people: &self.people,
             effects: &self.effects,
             score: self.score,
         };

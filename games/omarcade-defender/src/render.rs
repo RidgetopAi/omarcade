@@ -16,6 +16,7 @@ use crate::art;
 use crate::effects::Effects;
 use crate::enemy::{Landers, Phase};
 use crate::flight::{Camera, Ship};
+use crate::humanoid::{self, Humanoids, State};
 use crate::shot::Shots;
 use crate::world::{self, Terrain};
 
@@ -27,6 +28,7 @@ pub struct Scene<'a> {
     pub camera: &'a Camera,
     pub shots: &'a Shots,
     pub landers: &'a Landers,
+    pub people: &'a Humanoids,
     pub effects: &'a Effects,
     pub score: u32,
 }
@@ -40,6 +42,8 @@ pub struct Scene<'a> {
 pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     canvas.clear(sky(theme));
     draw_terrain(canvas, scene.terrain, scene.camera, theme);
+    draw_people(canvas, scene.people, scene.camera);
+    draw_beams(canvas, scene.landers, scene.people, scene.camera);
     draw_landers(canvas, scene.landers, scene.camera);
     draw_shots(canvas, scene.shots, scene.camera, theme);
     scene.effects.draw(canvas, scene.camera);
@@ -74,7 +78,10 @@ fn draw_landers(canvas: &mut Canvas<'_>, landers: &Landers, camera: &Camera) {
                 let t = Transform::at(sx, sy).scaled(art::SCALE * (0.15 + 0.85 * p));
                 art::draw_lander(canvas, &t);
             }
-            Phase::Hovering => {
+            // Hunting and carrying look the same as hovering — the
+            // TRACTOR BEAM is what tells you which is which, and it is
+            // drawn separately so it sits under the Lander.
+            Phase::Hovering | Phase::Hunting | Phase::Grabbing | Phase::Carrying => {
                 art::draw_lander(canvas, &Transform::at(sx, sy).scaled(art::SCALE));
             }
             // Dying: one bright frame of the shape blowing outward,
@@ -85,6 +92,80 @@ fn draw_landers(canvas: &mut Canvas<'_>, landers: &Landers, camera: &Camera) {
                 let t = Transform::at(sx, sy).scaled(art::SCALE * (1.0 + p * 0.9));
                 art::draw_lander(canvas, &t);
             }
+        }
+    }
+}
+
+/// The people.
+///
+/// Drawn UNDER the Landers and the beams, so an abduction reads as
+/// something happening TO them.
+fn draw_people(canvas: &mut Canvas<'_>, people: &Humanoids, camera: &Camera) {
+    let h = canvas.height() as f32;
+    let margin = humanoid::HALF_W + 4.0;
+
+    for p in people.iter() {
+        if p.state == State::Dead {
+            continue;
+        }
+        let sx = camera.to_screen(p.x);
+        if sx < -margin || sx > canvas.width() as f32 + margin {
+            continue;
+        }
+        // The art's origin is its middle; y is the ground they stand on.
+        let sy = h - p.y - humanoid::HALF_H;
+        art::draw_humanoid(
+            canvas,
+            &Transform::at(sx, sy).scaled(art::SCALE).flipped(p.vx < 0.0),
+        );
+    }
+}
+
+/// The tractor beams.
+///
+/// ★ THE BEAM IS THE WARNING, and it is the only thing that tells a
+/// player an abduction is under way in time to stop it. A Lander that
+/// simply descended and rose again would give no signal at all, and the
+/// first time you noticed would be when someone was already gone.
+fn draw_beams(canvas: &mut Canvas<'_>, landers: &Landers, people: &Humanoids, camera: &Camera) {
+    let h = canvas.height() as f32;
+
+    for l in landers.iter() {
+        let Some(who) = l.carrying() else { continue };
+        let Some(p) = people.get(who) else { continue };
+
+        let sx = camera.to_screen(l.x);
+        if sx < -40.0 || sx > canvas.width() as f32 + 40.0 {
+            continue;
+        }
+
+        let top = h - l.y;
+        let bottom = h - p.y;
+        if bottom <= top {
+            continue;
+        }
+
+        // ⚠️ WIDER AND BRIGHTER AT THE BOTTOM, WHICH IS THE OPPOSITE OF
+        // the first version and only obvious at 8x. A beam that fades as
+        // it widens has its widest part at its dimmest, so it reads as a
+        // rod tapering to a point at the victim — the eye follows
+        // brightness, not geometry. Light pouring DOWN means the pool of
+        // it is on the person, which is also where the player needs to
+        // be looking.
+        let steps = 16;
+        for i in 0..steps {
+            let t0 = i as f32 / steps as f32;
+            let t1 = (i + 1) as f32 / steps as f32;
+            let y0 = top + (bottom - top) * t0;
+            let y1 = top + (bottom - top) * t1;
+            let half = 2.5 + 6.0 * t0 * t0;
+            let glow = 0.30 + 0.55 * t0;
+            let c = Color::rgb(
+                (70.0 * glow) as u8,
+                (235.0 * glow) as u8,
+                (120.0 * glow) as u8,
+            );
+            canvas.fill_rect_add_f(sx - half, y0, half * 2.0, y1 - y0, c);
         }
     }
 }
@@ -269,7 +350,8 @@ mod tests {
         {
             let mut c = canvas_of(&mut buf);
             let (shots, landers, fx) = (Shots::new(), Landers::new(), Effects::new());
-            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &fx);
+            let people = Humanoids::new();
+            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx);
             draw(&mut c, &scene, &theme);
         }
 
@@ -296,7 +378,8 @@ mod tests {
         {
             let mut c = canvas_of(&mut buf);
             let (shots, landers, fx) = (Shots::new(), Landers::new(), Effects::new());
-            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &fx);
+            let people = Humanoids::new();
+            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx);
             draw(&mut c, &scene, &theme);
         }
 
@@ -317,15 +400,17 @@ mod tests {
 
     /// A scene with nothing in it but the world and the ship — what the
     /// terrain tests are actually about.
+    #[allow(clippy::too_many_arguments)]
     fn bare_scene<'a>(
         terrain: &'a Terrain,
         ship: &'a Ship,
         camera: &'a Camera,
         shots: &'a Shots,
         landers: &'a Landers,
+        people: &'a Humanoids,
         effects: &'a Effects,
     ) -> Scene<'a> {
-        Scene { terrain, ship, camera, shots, landers, effects, score: 0 }
+        Scene { terrain, ship, camera, shots, landers, people, effects, score: 0 }
     }
 
     /// ⚠️ THE SEAM, IN THE RENDERER. With the camera at x = 0 the left
@@ -342,7 +427,8 @@ mod tests {
         {
             let mut c = canvas_of(&mut buf);
             let (shots, landers, fx) = (Shots::new(), Landers::new(), Effects::new());
-            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &fx);
+            let people = Humanoids::new();
+            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx);
             draw(&mut c, &scene, &theme);
         }
 

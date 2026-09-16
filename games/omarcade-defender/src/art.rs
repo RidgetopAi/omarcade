@@ -217,3 +217,342 @@ pub fn draw_ship(canvas: &mut Canvas<'_>, t: &Transform) {
     GUN.fill(canvas, t, Color::rgb(211, 198, 170));
     EXHAUST.fill_add(canvas, t, Color::rgb(248, 140, 18));
 }
+
+// =====================================================================
+// THE ENEMIES
+//
+// Authored by Brian in tools/vector-playground.html and scaled to the
+// size the render settled on — the Lander and the Mutant are both 12x15
+// units, drawing at 24x30px beside the ship's 70x22.
+//
+// ★ THE MUTANT IS THE LANDER, NOT A SECOND DRAWING OF ONE. It was built
+// by importing lander.rs back into the playground and drawing a humanoid
+// into the pod, so its body, both shadows and all three legs are
+// byte-identical to the Lander's. That is what makes the fusion read as
+// a fusion on screen: a Mutant occupies exactly the space a Lander did.
+// Verified as identical before and after scaling, not assumed.
+// =====================================================================
+
+/// lander-body — authored in tools/vector-playground.html.
+pub const LANDER_BODY: Shape = Shape::new(&[
+    (-2.00, -5.00),
+    (-5.00, -4.00),
+    (-6.00, -1.00),
+    (-5.00, 2.00),
+    (-2.00, 3.00),
+    (-5.00, 6.00),
+    (-6.00, 8.00),
+    (-6.00, 10.00),
+    (-4.00, 10.00),
+    (-4.00, 8.00),
+    (-3.00, 6.00),
+    (-1.00, 5.00),
+    (-1.00, 7.00),
+    (-1.00, 10.00),
+    (1.00, 10.00),
+    (1.00, 9.00),
+    (1.00, 7.00),
+    (1.00, 5.00),
+    (3.00, 6.00),
+    (4.00, 8.00),
+    (4.00, 10.00),
+    (6.00, 10.00),
+    (6.00, 8.00),
+    (5.00, 6.00),
+    (2.00, 3.00),
+    (5.00, 2.00),
+    (6.00, -1.00),
+    (5.00, -4.00),
+    (2.00, -5.00),
+]);
+
+/// lander-light — authored in tools/vector-playground.html.
+pub const LANDER_LIGHT: Shape = Shape::new(&[
+    (-2.00, -5.00),
+    (-1.00, -4.00),
+    (-5.00, -4.00),
+    (0.00, -3.00),
+    (5.00, -4.00),
+    (1.00, -4.00),
+    (2.00, -5.00),
+]);
+
+/// left-window — authored in tools/vector-playground.html.
+pub const LANDER_LEFT_WINDOW: Shape = Shape::new(&[
+    (-2.00, -1.00),
+    (-2.00, 1.00),
+    (-1.00, 1.00),
+    (-1.00, -1.00),
+]);
+
+/// right-window — authored in tools/vector-playground.html.
+pub const LANDER_RIGHT_WINDOW: Shape = Shape::new(&[
+    (1.00, -1.00),
+    (1.00, 1.00),
+    (2.00, 1.00),
+    (2.00, -1.00),
+]);
+
+/// lander-left-shadow — authored in tools/vector-playground.html.
+pub const LANDER_LEFT_SHADOW: Shape = Shape::new(&[
+    (-5.00, -4.00),
+    (-4.00, -2.00),
+    (-5.00, -1.00),
+    (-2.00, 3.00),
+    (-5.00, 2.00),
+    (-6.00, -1.00),
+]);
+
+/// lander-right-shadow — authored in tools/vector-playground.html.
+pub const LANDER_RIGHT_SHADOW: Shape = Shape::new(&[
+    (5.00, -4.00),
+    (4.00, -2.00),
+    (5.00, -1.00),
+    (2.00, 3.00),
+    (5.00, 2.00),
+    (6.00, -1.00),
+]);
+
+/// lander-shadow-leg1 — authored in tools/vector-playground.html.
+pub const LANDER_SHADOW_LEG1: Shape = Shape::new(&[
+    (-1.00, 5.00),
+    (-2.00, 5.00),
+    (-3.00, 5.00),
+    (-4.00, 7.00),
+    (-4.00, 8.00),
+    (-5.00, 10.00),
+    (-4.00, 10.00),
+    (-3.00, 8.00),
+    (-3.00, 6.00),
+]);
+
+/// lander-shadow-leg3 — authored in tools/vector-playground.html.
+pub const LANDER_SHADOW_LEG3: Shape = Shape::new(&[
+    (1.00, 5.00),
+    (3.00, 5.00),
+    (4.00, 7.00),
+    (4.00, 8.00),
+    (5.00, 10.00),
+    (4.00, 10.00),
+    (3.00, 8.00),
+    (3.00, 6.00),
+]);
+
+/// lander-shadow-leg2l — authored in tools/vector-playground.html.
+pub const LANDER_SHADOW_LEG2L: Shape = Shape::new(&[
+    (-1.00, 5.00),
+    (-1.00, 7.00),
+    (-1.00, 8.00),
+    (-1.00, 10.00),
+    (0.00, 10.00),
+    (0.00, 9.00),
+    (0.00, 6.00),
+]);
+
+/// lander-body-light1 — authored in tools/vector-playground.html.
+pub const LANDER_BODY_LIGHT1: Shape = Shape::new(&[
+    (-3.00, 1.00),
+    (-2.00, 2.00),
+    (-1.00, 2.00),
+    (-1.00, 1.00),
+]);
+
+/// lander-body-light2 — authored in tools/vector-playground.html.
+pub const LANDER_BODY_LIGHT2: Shape = Shape::new(&[
+    (1.00, 1.00),
+    (3.00, 1.00),
+    (2.00, 2.00),
+    (1.00, 2.00),
+]);
+
+/// Draw the lander at `t`.
+///
+/// Pieces are filled bottom to top and deliberately OVERLAP rather
+/// than sharing edges: two shapes meeting on an exact diagonal leave
+/// a hairline, because each is anti-aliased honestly and two
+/// half-covered edges reach 75%, not 100%.
+pub fn draw_lander(canvas: &mut Canvas<'_>, t: &Transform) {
+    LANDER_BODY.fill(canvas, t, Color::rgb(30, 218, 16));
+    LANDER_LIGHT.fill(canvas, t, Color::rgb(255, 230, 66));
+    LANDER_LEFT_WINDOW.fill(canvas, t, Color::rgb(0, 0, 0));
+    LANDER_RIGHT_WINDOW.fill(canvas, t, Color::rgb(0, 0, 0));
+    LANDER_LEFT_SHADOW.fill(canvas, t, Color::rgb(0, 143, 2));
+    LANDER_RIGHT_SHADOW.fill(canvas, t, Color::rgb(0, 143, 2));
+    LANDER_SHADOW_LEG1.fill(canvas, t, Color::rgb(0, 143, 2));
+    LANDER_SHADOW_LEG3.fill(canvas, t, Color::rgb(0, 143, 2));
+    LANDER_SHADOW_LEG2L.fill(canvas, t, Color::rgb(0, 143, 2));
+    LANDER_BODY_LIGHT1.fill(canvas, t, Color::rgb(255, 221, 0));
+    LANDER_BODY_LIGHT2.fill(canvas, t, Color::rgb(255, 213, 0));
+}
+
+/// lander-body — authored in tools/vector-playground.html.
+pub const MUTANT_LANDER_BODY: Shape = Shape::new(&[
+    (-2.00, -5.00),
+    (-5.00, -4.00),
+    (-6.00, -1.00),
+    (-5.00, 2.00),
+    (-2.00, 3.00),
+    (-5.00, 6.00),
+    (-6.00, 8.00),
+    (-6.00, 10.00),
+    (-4.00, 10.00),
+    (-4.00, 8.00),
+    (-3.00, 6.00),
+    (-1.00, 5.00),
+    (-1.00, 7.00),
+    (-1.00, 10.00),
+    (1.00, 10.00),
+    (1.00, 9.00),
+    (1.00, 7.00),
+    (1.00, 5.00),
+    (3.00, 6.00),
+    (4.00, 8.00),
+    (4.00, 10.00),
+    (6.00, 10.00),
+    (6.00, 8.00),
+    (5.00, 6.00),
+    (2.00, 3.00),
+    (5.00, 2.00),
+    (6.00, -1.00),
+    (5.00, -4.00),
+    (2.00, -5.00),
+]);
+
+/// humanoid-head — authored in tools/vector-playground.html.
+pub const MUTANT_HUMANOID_HEAD: Shape = Shape::new(&[
+    (-2.00, -5.00),
+    (-2.00, -4.00),
+    (-2.00, 1.00),
+    (-1.00, 3.00),
+    (0.00, 3.00),
+    (1.00, -1.00),
+    (1.00, -5.00),
+]);
+
+/// lander-left-shadow — authored in tools/vector-playground.html.
+pub const MUTANT_LANDER_LEFT_SHADOW: Shape = Shape::new(&[
+    (-5.00, -4.00),
+    (-4.00, -2.00),
+    (-5.00, -1.00),
+    (-2.00, 3.00),
+    (-5.00, 2.00),
+    (-6.00, -1.00),
+]);
+
+/// lander-right-shadow — authored in tools/vector-playground.html.
+pub const MUTANT_LANDER_RIGHT_SHADOW: Shape = Shape::new(&[
+    (5.00, -4.00),
+    (4.00, -2.00),
+    (5.00, -1.00),
+    (2.00, 3.00),
+    (5.00, 2.00),
+    (6.00, -1.00),
+]);
+
+/// lander-shadow-leg1 — authored in tools/vector-playground.html.
+pub const MUTANT_LANDER_SHADOW_LEG1: Shape = Shape::new(&[
+    (-1.00, 5.00),
+    (-2.00, 5.00),
+    (-3.00, 5.00),
+    (-4.00, 7.00),
+    (-4.00, 8.00),
+    (-5.00, 10.00),
+    (-4.00, 10.00),
+    (-3.00, 8.00),
+    (-3.00, 6.00),
+]);
+
+/// lander-shadow-leg3 — authored in tools/vector-playground.html.
+pub const MUTANT_LANDER_SHADOW_LEG3: Shape = Shape::new(&[
+    (1.00, 5.00),
+    (3.00, 5.00),
+    (4.00, 7.00),
+    (4.00, 8.00),
+    (5.00, 10.00),
+    (4.00, 10.00),
+    (3.00, 8.00),
+    (3.00, 6.00),
+]);
+
+/// lander-shadow-leg2l — authored in tools/vector-playground.html.
+pub const MUTANT_LANDER_SHADOW_LEG2L: Shape = Shape::new(&[
+    (-1.00, 5.00),
+    (-1.00, 7.00),
+    (-1.00, 8.00),
+    (-1.00, 10.00),
+    (0.00, 10.00),
+    (0.00, 9.00),
+    (0.00, 6.00),
+]);
+
+/// humanoid-arm2 — authored in tools/vector-playground.html.
+pub const MUTANT_HUMANOID_ARM2: Shape = Shape::new(&[
+    (-2.00, 0.00),
+    (-2.00, 3.00),
+    (-1.00, 3.00),
+    (-1.00, 0.00),
+]);
+
+/// humanoid-arm1 — authored in tools/vector-playground.html.
+pub const MUTANT_HUMANOID_ARM1: Shape = Shape::new(&[
+    (0.00, -1.00),
+    (2.00, -1.00),
+    (2.00, 3.00),
+    (0.00, 3.00),
+]);
+
+/// humanoid-body — authored in tools/vector-playground.html.
+pub const MUTANT_HUMANOID_BODY: Shape = Shape::new(&[
+    (-1.00, 3.00),
+    (1.00, 3.00),
+    (1.00, 10.00),
+    (-1.00, 10.00),
+]);
+
+/// humanoid-head-shadow — authored in tools/vector-playground.html.
+pub const MUTANT_HUMANOID_HEAD_SHADOW: Shape = Shape::new(&[
+    (1.00, -5.00),
+    (2.00, -5.00),
+    (2.00, -1.00),
+    (1.00, -1.00),
+    (1.00, 0.00),
+    (1.00, 0.00),
+]);
+
+/// lander-left-window — authored in tools/vector-playground.html.
+pub const MUTANT_LANDER_LEFT_WINDOW: Shape = Shape::new(&[
+    (-2.00, -3.00),
+    (-3.00, -3.00),
+    (-3.00, -2.00),
+    (-2.00, -1.00),
+]);
+
+/// lander-right-window — authored in tools/vector-playground.html.
+pub const MUTANT_LANDER_RIGHT_WINDOW: Shape = Shape::new(&[
+    (2.00, -3.00),
+    (3.00, -3.00),
+    (3.00, -2.00),
+    (2.00, -1.00),
+]);
+
+/// Draw the mutant at `t`.
+///
+/// Pieces are filled bottom to top and deliberately OVERLAP rather
+/// than sharing edges: two shapes meeting on an exact diagonal leave
+/// a hairline, because each is anti-aliased honestly and two
+/// half-covered edges reach 75%, not 100%.
+pub fn draw_mutant(canvas: &mut Canvas<'_>, t: &Transform) {
+    MUTANT_LANDER_BODY.fill(canvas, t, Color::rgb(30, 218, 16));
+    MUTANT_HUMANOID_HEAD.fill(canvas, t, Color::rgb(187, 0, 255));
+    MUTANT_LANDER_LEFT_SHADOW.fill(canvas, t, Color::rgb(0, 143, 2));
+    MUTANT_LANDER_RIGHT_SHADOW.fill(canvas, t, Color::rgb(0, 143, 2));
+    MUTANT_LANDER_SHADOW_LEG1.fill(canvas, t, Color::rgb(0, 143, 2));
+    MUTANT_LANDER_SHADOW_LEG3.fill(canvas, t, Color::rgb(0, 143, 2));
+    MUTANT_LANDER_SHADOW_LEG2L.fill(canvas, t, Color::rgb(0, 143, 2));
+    MUTANT_HUMANOID_ARM2.fill(canvas, t, Color::rgb(255, 0, 234));
+    MUTANT_HUMANOID_ARM1.fill(canvas, t, Color::rgb(255, 0, 234));
+    MUTANT_HUMANOID_BODY.fill(canvas, t, Color::rgb(87, 68, 0));
+    MUTANT_HUMANOID_HEAD_SHADOW.fill(canvas, t, Color::rgb(75, 5, 133));
+    MUTANT_LANDER_LEFT_WINDOW.fill(canvas, t, Color::rgb(255, 174, 0));
+    MUTANT_LANDER_RIGHT_WINDOW.fill(canvas, t, Color::rgb(255, 174, 0));
+}

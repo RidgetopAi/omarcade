@@ -16,6 +16,12 @@ use omarcade_core::{Canvas, Theme};
 
 #[path = "../src/art.rs"]
 mod art;
+#[path = "../src/effects.rs"]
+mod effects;
+#[path = "../src/enemy.rs"]
+mod enemy;
+#[path = "../src/shot.rs"]
+mod shot;
 #[path = "../src/flight.rs"]
 mod flight;
 #[path = "../src/render.rs"]
@@ -23,7 +29,10 @@ mod render;
 #[path = "../src/world.rs"]
 mod world;
 
+use effects::Effects;
+use enemy::Landers;
 use flight::{Camera, Facing, Input, Ship};
+use shot::Shots;
 use world::Terrain;
 
 const W: u32 = 960;
@@ -37,6 +46,11 @@ fn main() {
     let terrain = Terrain::generate(1024, 0x0DEF_E4DE);
     let mut ship = Ship::new(0.0);
     let mut camera = Camera::new(ship.x);
+    // S5's entities. Most scenes are about the flight model and leave
+    // these empty; the `combat` scene fills them.
+    let mut shots = Shots::new();
+    let mut landers = Landers::new();
+    let mut effects = Effects::new();
 
     // Fly the ship into the state the scene names, using the real
     // physics rather than posing it by hand — a posed frame can show a
@@ -56,6 +70,40 @@ fn main() {
         // Sitting still, facing east. The baseline the others are read
         // against.
         "rest" => camera.snap_to(&ship),
+
+        // ★ S5, ALL OF IT AT ONCE: Landers in the air, bolts in flight,
+        // and an explosion part-way through. Posed deliberately so one
+        // frame can be judged — the real game never shows all of this
+        // arranged this conveniently.
+        "combat" => {
+            camera.snap_to(&ship);
+            let base = ship.x;
+            // Three Landers ahead, at the height they hover.
+            for (i, dx) in [180.0f32, 330.0, 470.0].iter().enumerate() {
+                let x = world::wrap(base + dx);
+                let y = terrain.height_at(x) + enemy::HOVER_HEIGHT;
+                let mut l = enemy::Lander::new(x, y, if i == 1 { -46.0 } else { 46.0 });
+                // Push two past the warp so they are drawn at full size.
+                if i != 2 {
+                    l.phase = enemy::Phase::Hovering;
+                    l.elapsed = 0.0;
+                } else {
+                    l.elapsed = enemy::WARP_SECONDS * 0.45;
+                }
+                landers.spawn(l);
+            }
+            // Bolts on their way.
+            shots.fire(base + 70.0, ship.y, 1.0);
+            shots.step(shot::FIRE_INTERVAL);
+            shots.fire(base + 40.0, ship.y, 1.0);
+            shots.step(0.02);
+
+            // And one Lander already dying, mid-explosion.
+            let ex = world::wrap(base + 600.0);
+            let ey = terrain.height_at(ex) + enemy::HOVER_HEIGHT;
+            effects.explode_lander(ex, ey, 46.0);
+            effects.update(0.14);
+        }
 
         // At speed, east. What most of the game looks like.
         "cruise" => run(&mut ship, &mut camera, thrust_east, 4.0),
@@ -103,7 +151,16 @@ fn main() {
     let mut buf = vec![0u32; (W * H) as usize];
     {
         let mut canvas = Canvas::new(&mut buf, W, H);
-        render::draw(&mut canvas, &terrain, &ship, &camera, &Theme::load());
+        let scene = render::Scene {
+            terrain: &terrain,
+            ship: &ship,
+            camera: &camera,
+            shots: &shots,
+            landers: &landers,
+            effects: &effects,
+            score: 0,
+        };
+        render::draw(&mut canvas, &scene, &Theme::load());
     }
 
     write_png(Path::new(&path), &buf, W, H);

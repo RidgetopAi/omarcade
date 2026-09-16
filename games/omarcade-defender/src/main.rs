@@ -1,16 +1,19 @@
 //! Omarcade's fourth title: a horizontally scrolling shooter.
 //!
-//! ★ STAGE ONE, AND ONLY STAGE ONE. Brian: "first we prove we can build
-//! the world horizontal scrolling, with the mountain terrain below, no
-//! special effects now then put me something that represents a ship and
-//! we can fly it smoothly and it feels good... If we can get this we can
-//! build everything around it."
+//! ★ STAGE ONE built the world and the flying, and Brian confirmed it:
+//! "wow, you kind of nailed that. I honestly can't find anyhing wrong."
+//! Those constants are settled and are not retuned here.
 //!
-//! So there is no score, no enemies, no shooting, no sound. There is a
-//! world that loops, mountains under it, and a ship that flies. The
-//! flight model either feels right or it does not, and nothing else is
-//! worth building until that is settled — content cannot rescue bad
-//! handling.
+//! ★ S5 IS THE STAGE THAT MAKES IT A GAME: you can fire, there are
+//! Landers in the world, and they can be destroyed — with particles and
+//! with sound.
+//!
+//! ⚠️ WHAT S5 DELIBERATELY DOES NOT HAVE, so the stage stays honest:
+//! Landers do NOT hunt, do NOT abduct, and do NOT shoot back. All of
+//! that is S6/S7, where there are Humanoids for them to hunt; building
+//! it now would mean building it against imaginary Humanoids. There is
+//! also no wave structure and no score file — a score is drawn so a kill
+//! is visible, and S9 owns the real thing.
 //!
 //! ⚠️ NOT YET REGISTERED IN packaging/install.sh. A game with no name,
 //! no score file and no title screen has no business in the cabinet, and
@@ -18,14 +21,22 @@
 //! installed the suite.
 
 mod art;
+mod effects;
+mod enemy;
 mod flight;
 mod render;
+mod shot;
+mod sound;
 mod world;
 
+use omarcade_core::audio::SoundId;
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::{Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Pause, Theme};
 
+use effects::Effects;
+use enemy::Landers;
 use flight::{Camera, Facing, Input, Ship};
+use shot::Shots;
 use world::Terrain;
 
 const TITLE: &str = "Omarcade";
@@ -47,6 +58,20 @@ const RIDGE_SAMPLES: usize = 1024;
 /// drift between a 60Hz and a 144Hz machine.
 const FIXED_DT: f32 = 1.0 / 240.0;
 
+/// How many Landers arrive at the start.
+///
+/// Brian's spec says Landers come in groups of 4-5. S9 owns waves; this
+/// is one group, so that S5 has something to shoot.
+const OPENING_LANDERS: usize = 5;
+
+/// Where the gun sits relative to the ship's origin, in world units.
+///
+/// ⚠️ THE ART DECIDES THIS, NOT A GUESS. The ship's gun reaches to about
+/// +20 units in art space at [`art::SCALE`], so a bolt leaving from the
+/// centre would appear to emerge from the cockpit. Mirrored with facing,
+/// because the ship is mirrored with facing.
+const MUZZLE_FORWARD: f32 = 20.0 * art::SCALE;
+
 struct Defender {
     theme: Theme,
     terrain: Terrain,
@@ -54,18 +79,39 @@ struct Defender {
     camera: Camera,
     pause: Pause,
 
+    shots: Shots,
+    landers: Landers,
+    effects: Effects,
+    score: u32,
+
+    laser: SoundId,
+    boom: SoundId,
+
     // Held keys, resolved into an `Input` each step.
     thrust_held: bool,
     up_held: bool,
     down_held: bool,
+    fire_held: bool,
 
     /// Left over from the last frame, so a frame longer than the
     /// timestep does not silently drop simulation time.
     accumulator: f32,
+
+    /// Sounds asked for during the fixed-step loop, played once the
+    /// stepping is done.
+    ///
+    /// ⚠️ THE LOOP CANNOT PLAY THEM DIRECTLY. `update` may run several
+    /// physics steps for one frame, and a burst that kills two Landers
+    /// inside one frame would otherwise fire two identical one-shots a
+    /// few microseconds apart — which is not twice as loud, it is a
+    /// flam. Counting and playing once per frame is both correct and
+    /// cheaper.
+    fired_this_frame: bool,
+    killed_this_frame: bool,
 }
 
 impl Defender {
-    fn new(theme: Theme) -> Self {
+    fn new(theme: Theme, laser: SoundId, boom: SoundId) -> Self {
         let terrain = Terrain::generate(RIDGE_SAMPLES, 0x0DEF_E4DE);
         let ship = Ship::new(0.0);
         let mut camera = Camera::new(ship.x);
@@ -74,16 +120,87 @@ impl Defender {
         // for.
         camera.snap_to(&ship);
 
+        let mut landers = Landers::new();
+        landers.scatter(OPENING_LANDERS, ship.x, &terrain, 0x5EED_1234);
+
         Self {
             theme,
             terrain,
             ship,
             camera,
             pause: Pause::new(),
+            shots: Shots::new(),
+            landers,
+            effects: Effects::new(),
+            score: 0,
+            laser,
+            boom,
             thrust_held: false,
             up_held: false,
             down_held: false,
+            fire_held: false,
             accumulator: 0.0,
+            fired_this_frame: false,
+            killed_this_frame: false,
+        }
+    }
+
+    /// Where a bolt leaves the ship, in world coordinates.
+    fn muzzle(&self) -> (f32, f32) {
+        (
+            world::wrap(self.ship.x + MUZZLE_FORWARD * self.ship.facing.sign()),
+            self.ship.y,
+        )
+    }
+
+    /// One physics step: the ship, then everything it can interact with.
+    fn step(&mut self, input: Input, dt: f32) {
+        self.ship.step(input, &self.terrain, dt);
+        self.camera.follow(&self.ship, dt);
+
+        if self.fire_held && self.shots.ready() {
+            let (mx, my) = self.muzzle();
+            if self.shots.fire(mx, my, self.ship.facing.sign()) {
+                self.fired_this_frame = true;
+            }
+        }
+
+        self.shots.step(dt);
+        self.landers.step(&self.terrain, dt);
+        self.effects.update(dt);
+
+        self.resolve_hits();
+    }
+
+    /// Shots meeting Landers.
+    ///
+    /// ⚠️ ITERATED BACKWARDS because a hit removes a shot by
+    /// `swap_remove`, which moves the LAST element into the current
+    /// index. Walking forward would skip whatever got swapped in — a
+    /// bug that only shows up when two shots are in flight at once, and
+    /// then only sometimes.
+    fn resolve_hits(&mut self) {
+        let mut i = self.shots.len();
+        while i > 0 {
+            i -= 1;
+            let (sx, sy) = {
+                let s = match self.shots.iter().nth(i) {
+                    Some(s) => *s,
+                    None => continue,
+                };
+                (s.x, s.y)
+            };
+
+            if let Some(target) = self.landers.hit_test(sx, sy) {
+                let (lx, ly, lvx) = {
+                    let l = self.landers.iter().nth(target).unwrap();
+                    (l.x, l.y, l.vx)
+                };
+                self.score += self.landers.kill(target);
+                self.effects.explode_lander(lx, ly, lvx);
+                self.shots.consume(i);
+                self.killed_this_frame = true;
+            }
         }
     }
 
@@ -128,6 +245,21 @@ impl Game for Defender {
             InputEvent::KeyDown(Key::Space) => self.thrust_held = true,
             InputEvent::KeyUp(Key::Space) => self.thrust_held = false,
 
+            // ⚠️ FIRE IS A HELD KEY, RATE-LIMITED BY THE GUN, not one
+            // shot per KeyDown. Brian's spec says fire is unlimited, and
+            // a per-press weapon turns that into a test of how fast the
+            // player can tap.
+            //
+            // ⚠️⚠️ ENTER IS A PLACEHOLDER AND IT IS THE WRONG KEY.
+            // core's `Key` has no letters but P and M (both taken), so
+            // the natural binding — SPACE to fire, a letter to thrust —
+            // is not expressible today. Space is THRUST here and the
+            // flight model is approved, so it was not reassigned
+            // unasked. ⇒ ASK BRIAN, then either add the keys core is
+            // missing or move thrust deliberately. Do not ship on Enter.
+            InputEvent::KeyDown(Key::Enter) => self.fire_held = true,
+            InputEvent::KeyUp(Key::Enter) => self.fire_held = false,
+
             InputEvent::KeyDown(Key::Up) => self.up_held = true,
             InputEvent::KeyUp(Key::Up) => self.up_held = false,
             InputEvent::KeyDown(Key::Down) => self.down_held = true,
@@ -138,10 +270,13 @@ impl Game for Defender {
         true
     }
 
-    fn update(&mut self, dt: f32, _audio: &mut Audio<'_>) {
+    fn update(&mut self, dt: f32, audio: &mut Audio<'_>) {
         if self.pause.is_paused() {
             return;
         }
+
+        self.fired_this_frame = false;
+        self.killed_this_frame = false;
 
         // Fixed-step accumulation. Clamped so a stalled frame — a
         // debugger, a laptop waking — does not spend a second of
@@ -149,22 +284,41 @@ impl Game for Defender {
         self.accumulator = (self.accumulator + dt).min(0.25);
         let input = self.input();
         while self.accumulator >= FIXED_DT {
-            self.ship.step(input, &self.terrain, FIXED_DT);
-            self.camera.follow(&self.ship, FIXED_DT);
+            self.step(input, FIXED_DT);
             self.accumulator -= FIXED_DT;
+        }
+
+        // See `fired_this_frame`: one play per frame, however many
+        // physics steps ran.
+        if self.fired_this_frame {
+            audio.play(self.laser);
+        }
+        if self.killed_this_frame {
+            audio.play(self.boom);
         }
     }
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
-        render::draw(canvas, &self.terrain, &self.ship, &self.camera, &self.theme);
+        let scene = render::Scene {
+            terrain: &self.terrain,
+            ship: &self.ship,
+            camera: &self.camera,
+            shots: &self.shots,
+            landers: &self.landers,
+            effects: &self.effects,
+            score: self.score,
+        };
+        render::draw(canvas, &scene, &self.theme);
         self.pause.draw(canvas, &self.theme);
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let theme = Theme::load();
-    let audio = AudioSystem::new();
-    let game = Defender::new(theme);
+    let mut audio = AudioSystem::new();
+    let laser = audio.register_sound(Box::new(sound::Laser::new()));
+    let boom = audio.register_sound(Box::new(sound::Boom::new()));
+    let game = Defender::new(theme, laser, boom);
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
@@ -178,7 +332,10 @@ mod tests {
     use super::*;
 
     fn game() -> Defender {
-        Defender::new(Theme::fallback())
+        let mut audio = AudioSystem::new();
+        let laser = audio.register_sound(Box::new(sound::Laser::new()));
+        let boom = audio.register_sound(Box::new(sound::Boom::new()));
+        Defender::new(Theme::fallback(), laser, boom)
     }
 
     #[test]
@@ -187,7 +344,7 @@ mod tests {
         assert!(!g.on_input(InputEvent::KeyDown(Key::Escape)), "Esc must quit");
 
         let mut g = game();
-        for k in [Key::Space, Key::P, Key::Left, Key::Right, Key::Up, Key::Down] {
+        for k in [Key::Space, Key::P, Key::Left, Key::Right, Key::Up, Key::Down, Key::Enter] {
             assert!(g.on_input(InputEvent::KeyDown(k)), "{k:?} must not quit");
             assert!(g.on_input(InputEvent::KeyUp(k)), "{k:?} release must not quit");
         }

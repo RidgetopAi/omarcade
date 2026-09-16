@@ -29,6 +29,9 @@ mod humanoid_small;
 #[path = "../assets-inbox/humanoid_scaled.rs"]
 mod humanoid_big;
 
+#[path = "../assets-inbox/mutant_scaled.rs"]
+mod mutant_big;
+
 const W: u32 = 960;
 const H: u32 = 720;
 
@@ -76,6 +79,13 @@ fn main() {
 
     label(&mut canvas, "HUMANOID", 470, (row - 60.0) as i32, fg);
 
+    // ---- the mutant, which must sit exactly where a lander sits ----
+    lander_big::draw_lander(&mut canvas, &Transform::at(790.0, row).scaled(art::SCALE));
+    mutant_big::draw_mutant(&mut canvas, &Transform::at(880.0, row).scaled(art::SCALE));
+    label(&mut canvas, "MUTANT", 770, (row - 60.0) as i32, fg);
+    label(&mut canvas, "vs lander", 762, (row + 46.0) as i32, muted);
+    label(&mut canvas, "both 24x30", 758, (row + 62.0) as i32, muted);
+
     // ---- the real question: all three together, at the proposed sizes ----
     let scene = H as f32 * 0.88;
     label(&mut canvas, "TOGETHER, AT THE PROPOSED SIZES", 40, (scene - 118.0) as i32, fg);
@@ -84,6 +94,8 @@ fn main() {
     lander_big::draw_lander(&mut canvas, &Transform::at(530.0, scene - 62.0).scaled(art::SCALE));
     humanoid_big::draw_humanoid(&mut canvas, &Transform::at(430.0, scene - 12.0).scaled(art::SCALE));
     humanoid_big::draw_humanoid(&mut canvas, &Transform::at(700.0, scene - 12.0).scaled(art::SCALE));
+    mutant_big::draw_mutant(&mut canvas, &Transform::at(640.0, scene - 70.0).scaled(art::SCALE));
+    mutant_big::draw_mutant(&mut canvas, &Transform::at(760.0, scene - 84.0).scaled(art::SCALE));
 
     write_png(Path::new(&path), &buf, W, H);
     println!("wrote {path}");

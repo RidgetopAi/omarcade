@@ -242,23 +242,22 @@ impl Game for Defender {
             InputEvent::KeyDown(Key::Left) => self.ship.facing = Facing::West,
             InputEvent::KeyDown(Key::Right) => self.ship.facing = Facing::East,
 
-            InputEvent::KeyDown(Key::Space) => self.thrust_held = true,
-            InputEvent::KeyUp(Key::Space) => self.thrust_held = false,
-
+            // ★ SPACE FIRES, T THRUSTS — Brian's call, having flown it:
+            // "let's make 'T' thrust, space fire, that works pretty well
+            // using arrow keys to steer." Space is the fire key every
+            // shooter has, and thrust moved rather than fire settling
+            // for a key nobody presses. `Key::T` was added to core for
+            // this; the enum previously had no free letter at all.
+            //
             // ⚠️ FIRE IS A HELD KEY, RATE-LIMITED BY THE GUN, not one
             // shot per KeyDown. Brian's spec says fire is unlimited, and
             // a per-press weapon turns that into a test of how fast the
             // player can tap.
-            //
-            // ⚠️⚠️ ENTER IS A PLACEHOLDER AND IT IS THE WRONG KEY.
-            // core's `Key` has no letters but P and M (both taken), so
-            // the natural binding — SPACE to fire, a letter to thrust —
-            // is not expressible today. Space is THRUST here and the
-            // flight model is approved, so it was not reassigned
-            // unasked. ⇒ ASK BRIAN, then either add the keys core is
-            // missing or move thrust deliberately. Do not ship on Enter.
-            InputEvent::KeyDown(Key::Enter) => self.fire_held = true,
-            InputEvent::KeyUp(Key::Enter) => self.fire_held = false,
+            InputEvent::KeyDown(Key::Space) => self.fire_held = true,
+            InputEvent::KeyUp(Key::Space) => self.fire_held = false,
+
+            InputEvent::KeyDown(Key::T) => self.thrust_held = true,
+            InputEvent::KeyUp(Key::T) => self.thrust_held = false,
 
             InputEvent::KeyDown(Key::Up) => self.up_held = true,
             InputEvent::KeyUp(Key::Up) => self.up_held = false,
@@ -344,7 +343,7 @@ mod tests {
         assert!(!g.on_input(InputEvent::KeyDown(Key::Escape)), "Esc must quit");
 
         let mut g = game();
-        for k in [Key::Space, Key::P, Key::Left, Key::Right, Key::Up, Key::Down, Key::Enter] {
+        for k in [Key::Space, Key::P, Key::Left, Key::Right, Key::Up, Key::Down, Key::T] {
             assert!(g.on_input(InputEvent::KeyDown(k)), "{k:?} must not quit");
             assert!(g.on_input(InputEvent::KeyUp(k)), "{k:?} release must not quit");
         }
@@ -353,7 +352,7 @@ mod tests {
     #[test]
     fn pause_stops_the_ship_and_resume_releases_it() {
         let mut g = game();
-        g.on_input(InputEvent::KeyDown(Key::Space));
+        g.on_input(InputEvent::KeyDown(Key::T));
         let mut audio = AudioSystem::new();
         {
             let mut a = audio.handle();
@@ -384,11 +383,11 @@ mod tests {
     #[test]
     fn a_key_released_during_a_pause_is_still_released() {
         let mut g = game();
-        g.on_input(InputEvent::KeyDown(Key::Space));
+        g.on_input(InputEvent::KeyDown(Key::T));
         assert!(g.thrust_held);
 
         g.on_input(InputEvent::KeyDown(Key::P));
-        g.on_input(InputEvent::KeyUp(Key::Space));
+        g.on_input(InputEvent::KeyUp(Key::T));
         assert!(!g.thrust_held, "the release must land even while paused");
 
         g.on_input(InputEvent::KeyDown(Key::P));
@@ -422,7 +421,7 @@ mod tests {
     #[test]
     fn a_stalled_frame_is_clamped() {
         let mut g = game();
-        g.on_input(InputEvent::KeyDown(Key::Space));
+        g.on_input(InputEvent::KeyDown(Key::T));
         let mut audio = AudioSystem::new();
         let mut a = audio.handle();
         g.update(30.0, &mut a);

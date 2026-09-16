@@ -563,6 +563,7 @@ fn translate_key(code: KeyCode) -> Option<Key> {
         KeyCode::Enter | KeyCode::NumpadEnter => Key::Enter,
         KeyCode::Escape => Key::Escape,
         KeyCode::KeyP => Key::P,
+        KeyCode::KeyT => Key::T,
         KeyCode::KeyM => Key::M,
         KeyCode::Minus | KeyCode::NumpadSubtract => Key::Minus,
         KeyCode::Equal | KeyCode::NumpadAdd => Key::Equals,
@@ -596,6 +597,24 @@ mod tests {
     fn unmapped_keys_are_dropped() {
         assert_eq!(translate_key(KeyCode::F7), None);
         assert_eq!(translate_key(KeyCode::KeyQ), None);
+    }
+
+    /// ⚠️ T MUST NOT COLLIDE WITH THE WASD ALIASES. A letter added to the
+    /// enum is only useful if it is its own key — mapping one that
+    /// already means an arrow would give a game a control that silently
+    /// also steers.
+    #[test]
+    fn t_is_its_own_key() {
+        assert_eq!(translate_key(KeyCode::KeyT), Some(Key::T));
+        for (code, arrow) in [
+            (KeyCode::KeyW, Key::Up),
+            (KeyCode::KeyA, Key::Left),
+            (KeyCode::KeyS, Key::Down),
+            (KeyCode::KeyD, Key::Right),
+        ] {
+            assert_eq!(translate_key(code), Some(arrow));
+            assert_ne!(translate_key(code), Some(Key::T));
+        }
     }
 
     /// ★ The developer key reaches a debug build and nothing else does.

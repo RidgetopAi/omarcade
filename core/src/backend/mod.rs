@@ -469,6 +469,18 @@ pub enum Key {
     Enter,
     Escape,
     P,
+    /// A general-purpose action key.
+    ///
+    /// ★ ADDED FOR DEFENDER'S THRUST (S5). The enum had exactly two
+    /// letters, P and M, and both were spoken for — so a game wanting a
+    /// second held control alongside Space could not express one at all,
+    /// and Defender ended up firing on Enter. Unlike M/Minus/Equals this
+    /// is delivered to the game like any other key; the backend does
+    /// nothing with it.
+    ///
+    /// ⚠️ NOT ALIASED TO ANYTHING. W/A/S/D already alias the arrows, so
+    /// a letter added here must not collide with them.
+    T,
     /// Mute. Handled by the backend, never delivered to a game — see
     /// [`Game::update`] and the volume note in [`crate::audio`].
     M,

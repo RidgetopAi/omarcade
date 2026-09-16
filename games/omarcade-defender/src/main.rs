@@ -336,13 +336,27 @@ impl Defender {
         let mut i = self.shots.len();
         while i > 0 {
             i -= 1;
-            let (sx, sy) = {
+            let (sx, sy, from_enemy) = {
                 let s = match self.shots.iter().nth(i) {
                     Some(s) => *s,
                     None => continue,
                 };
-                (s.x, s.y)
+                (s.x, s.y, s.is_enemy())
             };
+
+            // ⚠️⚠️ AN ENEMY BOLT MUST NOT BE TESTED AGAINST ENEMIES.
+            // A Mutant's shot spawns INSIDE the Mutant's own hitbox, so
+            // without this the very next frame finds the shooter and
+            // kills it — Brian saw Mutants "just self destruct" about a
+            // fire-interval after appearing, and this was why. The
+            // owner check existed for shots hitting the SHIP and was
+            // never mirrored for shots hitting ENEMIES.
+            //
+            // Enemy bolts also pass harmlessly through Humanoids: the
+            // aliens are not here to shoot their own cargo.
+            if from_enemy {
+                continue;
+            }
 
             if let Some(target) = self.landers.hit_test(sx, sy) {
                 let (lx, ly, lvx) = {
@@ -584,6 +598,71 @@ mod tests {
         let mut a = audio.handle();
         g.update(0.5, &mut a);
         assert_eq!(g.ship.vx, 0.0, "the ship must not thrust after a released key");
+    }
+
+    /// ⚠️⚠️ REGRESSION: MUTANTS USED TO SHOOT THEMSELVES DEAD.
+    ///
+    /// Brian: "mutants appear and after about 2 seconds they just self
+    /// destruct." An enemy bolt spawns inside its shooter's own hitbox,
+    /// and `resolve_hits` tested EVERY shot against the enemy list
+    /// regardless of who fired it — so the frame after a Mutant fired,
+    /// its own bolt found it and killed it.
+    ///
+    /// ⚠️ THE TESTS IN `enemy` COULD NOT CATCH THIS. They step the
+    /// Landers directly and never build a Shot, so the whole collision
+    /// path was outside them. The bug lived in the one file that only
+    /// the real game exercises, which is exactly where it hid.
+    #[test]
+    fn an_enemy_bolt_does_not_kill_the_enemy_that_fired_it() {
+        let mut g = game();
+        g.people.clear();
+        g.landers.clear();
+
+        // A Mutant sitting next to the ship, and its own bolt right on
+        // top of it — the exact geometry of the frame after it fires.
+        let (mx, my) = (g.ship.x + 200.0, g.ship.y);
+        g.landers.spawn(enemy::Lander::mutant(mx, my));
+        assert_eq!(g.landers.len(), 1);
+
+        g.shots.fire_enemy(mx, my, 1.0, 0.3);
+        g.resolve_hits();
+
+        assert_eq!(
+            g.landers.len(),
+            1,
+            "a Mutant shot itself dead with its own bolt"
+        );
+        assert_eq!(g.score, 0, "and scored the player points for it");
+    }
+
+    /// The other half of the same rule: YOUR bolt must still kill them.
+    #[test]
+    fn your_own_bolt_still_kills_a_mutant() {
+        let mut g = game();
+        g.people.clear();
+        g.landers.clear();
+
+        let (mx, my) = (g.ship.x + 200.0, g.ship.y);
+        g.landers.spawn(enemy::Lander::mutant(mx, my));
+        g.shots.fire(mx, my, 1.0);
+        g.resolve_hits();
+
+        assert_eq!(g.score, enemy::MUTANT_POINTS, "your shot did not connect");
+    }
+
+    /// And an enemy bolt must not shoot the civilians either.
+    #[test]
+    fn an_enemy_bolt_does_not_kill_humanoids() {
+        let mut g = game();
+        g.landers.clear();
+        g.people.clear();
+        let (hx, hy) = (g.ship.x + 300.0, g.terrain.height_at(g.ship.x + 300.0));
+        g.people.spawn(humanoid::Humanoid::new(hx, hy, 0.0));
+
+        g.shots.fire_enemy(hx, hy, 1.0, 0.3);
+        g.resolve_hits();
+
+        assert_eq!(g.people.alive(), 1, "an alien shot its own cargo");
     }
 
     #[test]

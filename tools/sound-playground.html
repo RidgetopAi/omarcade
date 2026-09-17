@@ -1,0 +1,741 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Omarcade — sound playground</title>
+<!--
+  ★ BUILD A VOICE BY EAR, THEN EXPORT IT AS RUST.
+
+  The same move as tools/vector-playground.html, for sound. Brian built
+  the ship and the Mutant himself once a tool let him SEE what he was
+  doing; sound needs the same loop and needs it more, because the person
+  writing the synthesis (me) cannot hear any of it.
+
+  ⚠️ THE EXPORT MUST MATCH WHAT THE ENGINE DOES. The vector playground
+  learned this the hard way: a preview that draws differently from the
+  game is a tool that lies. So every oscillator here integrates its phase
+  per sample exactly as a core `Voice` does, and the exported Rust is a
+  real Voice rather than an approximation of one. If the browser and the
+  game ever disagree, the browser is wrong and must be fixed.
+
+  ⚠️ NO BUILD STEP, NO DEPENDENCIES, ONE FILE. Matches every other tool
+  in this directory. Open it in a browser and it works.
+-->
+<style>
+  :root {
+    --bg: #12100f; --panel: #1b1817; --line: #2e2a28;
+    --fg: #f0ece8; --muted: #8b827c; --accent: #ff6028;
+    --accent2: #ff28c8; --ok: #5aff8c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    display: grid; grid-template-columns: 340px 1fr; height: 100vh;
+  }
+  #left { border-right: 1px solid var(--line); overflow-y: auto; padding: 14px; }
+  #right { display: flex; flex-direction: column; overflow: hidden; }
+  h1 { font-size: 14px; margin: 0 0 4px; letter-spacing: .04em; }
+  h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--muted); margin: 18px 0 8px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+  }
+  h2::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .sub { color: var(--muted); font-size: 11px; margin: 0 0 12px; }
+  label { display: block; margin: 7px 0; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .row > span:first-child { width: 86px; color: var(--muted); flex: none; font-size: 11px; }
+  .row > output { width: 62px; text-align: right; color: var(--accent); flex: none; }
+  input[type=range] { flex: 1; accent-color: var(--accent); min-width: 0; }
+  select, button, textarea, input[type=text] {
+    background: var(--panel); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 4px;
+    font: inherit; padding: 5px 8px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #180d06; border-color: var(--accent); font-weight: 600; }
+  button.ghost { background: none; color: var(--muted); font-size: 11px; padding: 2px 7px; }
+  .osc {
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 9px; margin-bottom: 9px; background: var(--panel);
+  }
+  .osc.off { opacity: .42; }
+  .osc-head { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+  .osc-head select { flex: 1; }
+  canvas { display: block; width: 100%; background: #0a0908; }
+  #scopes { padding: 14px; display: grid; gap: 12px; }
+  .scope-label {
+    font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .08em; margin-bottom: 4px;
+  }
+  #out {
+    flex: 1; margin: 0 14px 14px; resize: none; font-size: 11px;
+    line-height: 1.45; white-space: pre; overflow: auto; min-height: 140px;
+  }
+  .keys { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  kbd {
+    background: var(--panel); border: 1px solid var(--line);
+    border-bottom-width: 2px; border-radius: 3px; padding: 0 5px; color: var(--fg);
+  }
+  .warn { color: var(--accent2); }
+  .presets { display: flex; flex-wrap: wrap; gap: 5px; }
+  .presets button { font-size: 11px; padding: 3px 7px; }
+</style>
+
+<div id="left">
+  <h1>Sound playground</h1>
+  <p class="sub">
+    Stack oscillators, sweep them, shape the envelope. Press
+    <kbd>space</kbd> to hear it. Export drops straight into
+    <code>sound.rs</code>.
+  </p>
+
+  <h2>Presets</h2>
+  <div class="presets" id="presets"></div>
+
+  <h2>Envelope</h2>
+  <label class="row"><span>length</span>
+    <input type="range" id="len" min="20" max="900" step="5" value="130">
+    <output id="len-o"></output></label>
+  <label class="row"><span>attack</span>
+    <input type="range" id="atk" min="0" max="40" step="1" value="6">
+    <output id="atk-o"></output></label>
+  <label class="row"><span>decay</span>
+    <input type="range" id="dec" min="0.3" max="18" step="0.1" value="4.5">
+    <output id="dec-o"></output></label>
+  <label class="row"><span>level</span>
+    <input type="range" id="lvl" min="0" max="100" step="1" value="30">
+    <output id="lvl-o"></output></label>
+
+  <h2>Filter</h2>
+  <label class="row"><span>mode</span>
+    <select id="fmode">
+      <option value="off">off</option>
+      <option value="lp">lowpass</option>
+      <option value="bp">bandpass</option>
+      <option value="hp">highpass</option>
+    </select></label>
+  <label class="row"><span>from</span>
+    <input type="range" id="fhi" min="60" max="12000" step="20" value="4000">
+    <output id="fhi-o"></output></label>
+  <label class="row"><span>to</span>
+    <input type="range" id="flo" min="60" max="12000" step="20" value="500">
+    <output id="flo-o"></output></label>
+  <label class="row"><span>resonance</span>
+    <input type="range" id="fq" min="0.5" max="14" step="0.1" value="2">
+    <output id="fq-o"></output></label>
+
+  <h2>Oscillators <button class="ghost" id="b-add">+ add</button></h2>
+  <div id="oscs"></div>
+
+  <h2>Output</h2>
+  <div class="row" style="gap:6px">
+    <button class="primary" id="b-play" style="flex:1">▶ play (space)</button>
+    <button id="b-wav">save .wav</button>
+  </div>
+  <p class="keys">
+    <kbd>space</kbd> play &nbsp; <kbd>R</kbd> repeat x5 (hear rapid fire)
+  </p>
+</div>
+
+<div id="right">
+  <div id="scopes">
+    <div>
+      <div class="scope-label">waveform</div>
+      <canvas id="wave" height="150"></canvas>
+    </div>
+    <div>
+      <div class="scope-label">spectrogram — time across, pitch up. A flat
+        band = noise; a moving line = a sweep.</div>
+      <canvas id="spec" height="190"></canvas>
+    </div>
+  </div>
+  <h2 style="margin:0 14px 8px">Export <button class="ghost" id="b-copy">copy</button></h2>
+  <textarea id="out" spellcheck="false" readonly></textarea>
+</div>
+
+<script>
+'use strict';
+
+const SR = 48000;
+
+// ─────────────────────────────────────────────────────────────────────
+// The model
+//
+// ⚠️ ONE SHAPE, SHARED BY THE PREVIEW AND THE EXPORT. Everything the ear
+// judges here is computed by `render()`, and the exported Rust is a
+// transcription of that same function. Two code paths that are supposed
+// to agree will not stay agreeing — the vector playground's whole design
+// note is about this.
+// ─────────────────────────────────────────────────────────────────────
+
+const WAVES = ['sine', 'square', 'saw', 'triangle', 'noise'];
+
+let state = {
+  len: 0.130, attack: 0.06, decay: 4.5, level: 0.30,
+  filter: { mode: 'off', from: 4000, to: 500, q: 2 },
+  oscs: [
+    { on: true, wave: 'square', from: 1850, to: 180, curve: 0.62, duty: 0.5, dutyTo: 0.5, mix: 1.0 },
+  ],
+};
+
+const PRESETS = {
+  'current laser': {
+    len: 0.130, attack: 0.06, decay: 4.5, level: 0.30,
+    filter: { mode: 'off', from: 4000, to: 500, q: 2 },
+    oscs: [
+      { on: true, wave: 'sine', from: 1850, to: 180, curve: 0.62, duty: .5, dutyTo: .5, mix: 0.72 },
+      { on: true, wave: 'square', from: 1850, to: 180, curve: 0.62, duty: .5, dutyTo: .5, mix: 0.28 },
+    ],
+  },
+  'noise sweep': {
+    len: 0.160, attack: 0.02, decay: 5.0, level: 0.55,
+    filter: { mode: 'bp', from: 2600, to: 260, q: 3.2 },
+    oscs: [{ on: true, wave: 'noise', from: 1, to: 1, curve: 1, duty: .5, dutyTo: .5, mix: 1 }],
+  },
+  'duty square': {
+    len: 0.160, attack: 0.01, decay: 5.5, level: 0.28,
+    filter: { mode: 'off', from: 4000, to: 500, q: 2 },
+    oscs: [{ on: true, wave: 'square', from: 2200, to: 150, curve: 0.5, duty: 0.08, dutyTo: 0.42, mix: 1 }],
+  },
+  'noise + tone': {
+    len: 0.150, attack: 0.02, decay: 5.0, level: 0.42,
+    filter: { mode: 'bp', from: 3000, to: 400, q: 1.6 },
+    oscs: [
+      { on: true, wave: 'sine', from: 1600, to: 200, curve: 0.6, duty: .5, dutyTo: .5, mix: 0.45 },
+      { on: true, wave: 'noise', from: 1, to: 1, curve: 1, duty: .5, dutyTo: .5, mix: 0.55 },
+    ],
+  },
+  'explosion': {
+    len: 0.620, attack: 0.005, decay: 3.6, level: 0.42,
+    filter: { mode: 'lp', from: 9000, to: 220, q: 1.0 },
+    oscs: [{ on: true, wave: 'noise', from: 1, to: 1, curve: 1, duty: .5, dutyTo: .5, mix: 1 }],
+  },
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// Synthesis — the one authority
+// ─────────────────────────────────────────────────────────────────────
+
+/** xorshift32, matching the Rust `white()` in sound.rs exactly. */
+function makeNoise(seed) {
+  let n = seed >>> 0;
+  return () => {
+    n ^= n << 13; n >>>= 0;
+    n ^= n >>> 17;
+    n ^= n << 5;  n >>>= 0;
+    return (n / 0xFFFFFFFF) * 2 - 1;
+  };
+}
+
+/**
+ * Render the current state to a Float32Array.
+ *
+ * ⚠️ PHASE IS INTEGRATED, NEVER RECOMPUTED. `sin(TAU*hz*t)` with a
+ * changing hz jumps the phase every sample and clicks through the whole
+ * sweep. This is the single most important line in the file and the one
+ * a rewrite is most likely to get wrong.
+ */
+function render(st) {
+  const n = Math.max(1, Math.round(st.len * SR));
+  const out = new Float32Array(n);
+  const dt = 1 / SR;
+  const rnd = makeNoise(0x12345678);
+
+  const phases = st.oscs.map(() => 0);
+  // Two-pole state-variable filter state.
+  let low = 0, band = 0;
+
+  for (let i = 0; i < n; i++) {
+    const u = i / n;
+    let v = 0, totalMix = 0;
+
+    for (let k = 0; k < st.oscs.length; k++) {
+      const o = st.oscs[k];
+      if (!o.on) continue;
+      totalMix += o.mix;
+
+      if (o.wave === 'noise') {
+        v += rnd() * o.mix;
+        continue;
+      }
+
+      // Exponential sweep in pitch, bent by `curve`. Pitch is heard
+      // logarithmically, so a linear ramp in Hz spends most of its time
+      // in the bottom octave where nothing is happening.
+      const ratio = o.to / o.from;
+      const hz = o.from * Math.pow(ratio, Math.pow(u, o.curve));
+      phases[k] = (phases[k] + hz * dt) % 1;
+      const p = phases[k];
+      const duty = o.duty + (o.dutyTo - o.duty) * u;
+
+      let w;
+      switch (o.wave) {
+        case 'sine':     w = Math.sin(2 * Math.PI * p); break;
+        case 'square':   w = p < duty ? 1 : -1; break;
+        case 'saw':      w = 2 * p - 1; break;
+        case 'triangle': w = 4 * Math.abs(p - 0.5) - 1; break;
+        default:         w = 0;
+      }
+      v += w * o.mix;
+    }
+    if (totalMix > 1) v /= totalMix;
+
+    // Filter, with its corner sweeping across the sound.
+    const f = st.filter;
+    if (f.mode !== 'off') {
+      const c = f.from * Math.pow(f.to / f.from, u);
+      // Clamped below the stability limit — a corner near Nyquist blows
+      // a state-variable filter up into a full-scale click, which would
+      // be judged as the sound rather than as a bug.
+      const g = Math.min(1.4, 2 * Math.sin(Math.PI * Math.min(c, SR * 0.45) / SR));
+      const damp = Math.min(1, 1 / f.q);
+      const high = v - low - damp * band;
+      band += g * high;
+      low += g * band;
+      v = f.mode === 'lp' ? low : f.mode === 'bp' ? band : high;
+    }
+
+    // Attack then exponential decay.
+    const env = u < st.attack ? u / st.attack
+                              : Math.exp(-(u - st.attack) * st.decay);
+    out[i] = v * env * st.level;
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Playback
+// ─────────────────────────────────────────────────────────────────────
+
+let ac = null;
+function audio() {
+  if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR });
+  if (ac.state === 'suspended') ac.resume();
+  return ac;
+}
+
+function play(times = 1) {
+  const ctx = audio();
+  const data = render(state);
+  for (let r = 0; r < times; r++) {
+    const buf = ctx.createBuffer(1, data.length, SR);
+    buf.copyToChannel(data, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    // ★ SPACED BY THE GAME'S OWN FIRE INTERVAL so "repeat" answers a
+    // real question: does holding the trigger turn into a drone?
+    src.start(ctx.currentTime + r * 0.16);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Drawing
+// ─────────────────────────────────────────────────────────────────────
+
+function fit(c) {
+  const r = c.getBoundingClientRect();
+  const d = window.devicePixelRatio || 1;
+  c.width = Math.max(1, Math.round(r.width * d));
+  c.height = Math.max(1, Math.round(c.height));
+  return c.getContext('2d');
+}
+
+function drawWave(data) {
+  const c = document.getElementById('wave');
+  const g = fit(c);
+  const W = c.width, H = c.height;
+  g.fillStyle = '#0a0908'; g.fillRect(0, 0, W, H);
+  g.strokeStyle = '#2e2a28'; g.beginPath();
+  g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
+
+  g.strokeStyle = '#ff6028'; g.lineWidth = 1; g.beginPath();
+  for (let x = 0; x < W; x++) {
+    // Min/max per column, so a waveform far denser than the display
+    // still shows its true extent rather than an aliased sample of it.
+    const a = Math.floor(x / W * data.length);
+    const b = Math.max(a + 1, Math.floor((x + 1) / W * data.length));
+    let lo = 1, hi = -1;
+    for (let i = a; i < b && i < data.length; i++) {
+      if (data[i] < lo) lo = data[i];
+      if (data[i] > hi) hi = data[i];
+    }
+    g.moveTo(x + .5, H / 2 - hi * H * .47);
+    g.lineTo(x + .5, H / 2 - lo * H * .47);
+  }
+  g.stroke();
+}
+
+/** A spectrogram, so a sweep is visible as a line and noise as a band. */
+function drawSpec(data) {
+  const c = document.getElementById('spec');
+  const g = fit(c);
+  const W = c.width, H = c.height;
+  g.fillStyle = '#0a0908'; g.fillRect(0, 0, W, H);
+
+  const N = 512;
+  const cols = Math.min(W, 260);
+  const img = g.createImageData(cols, H);
+
+  for (let col = 0; col < cols; col++) {
+    const start = Math.floor(col / cols * Math.max(1, data.length - N));
+    const re = new Float64Array(N), im = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N); // hann
+      re[i] = (data[start + i] || 0) * w;
+    }
+    fft(re, im);
+
+    for (let y = 0; y < H; y++) {
+      // ★ LOG FREQUENCY AXIS. A linear axis crams every musically
+      // meaningful sweep into the bottom eighth of the display and shows
+      // mostly empty space above it.
+      const frac = 1 - y / H;
+      const hz = 40 * Math.pow(12000 / 40, frac);
+      const bin = Math.min(N / 2 - 1, Math.round(hz * N / SR));
+      const m = Math.hypot(re[bin], im[bin]);
+      const db = 20 * Math.log10(m + 1e-9);
+      const v = Math.max(0, Math.min(1, (db + 62) / 62));
+      const o = (y * cols + col) * 4;
+      // Dark → orange → white, so intensity reads without a legend.
+      img.data[o]     = Math.min(255, v * 420);
+      img.data[o + 1] = Math.min(255, Math.max(0, (v - .35) * 340));
+      img.data[o + 2] = Math.min(255, Math.max(0, (v - .72) * 700));
+      img.data[o + 3] = 255;
+    }
+  }
+  // Blit and stretch to the full width.
+  const tmp = document.createElement('canvas');
+  tmp.width = cols; tmp.height = H;
+  tmp.getContext('2d').putImageData(img, 0, 0);
+  g.imageSmoothingEnabled = false;
+  g.drawImage(tmp, 0, 0, W, H);
+}
+
+/** In-place radix-2 FFT. N must be a power of two. */
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len;
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const ur = re[i + k], ui = im[i + k];
+        const vr = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
+        const vi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+        re[i + k] = ur + vr; im[i + k] = ui + vi;
+        re[i + k + len / 2] = ur - vr; im[i + k + len / 2] = ui - vi;
+        const ncr = cr * wr - ci * wi;
+        ci = cr * wi + ci * wr; cr = ncr;
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// The Rust export
+//
+// ⚠️ A REAL `Voice`, NOT PSEUDOCODE. It integrates phase per sample,
+// allocates nothing, and reports `alive()` so the mixer retires it —
+// the contract every voice in this project follows. Paste it into
+// games/omarcade-defender/src/sound.rs and it compiles.
+// ─────────────────────────────────────────────────────────────────────
+
+function exportRust(st) {
+  const live = st.oscs.filter(o => o.on);
+  if (!live.length) return '// No oscillators are on — nothing to export.';
+
+  const name = (document.getElementById('vname')?.value || 'Zap').trim() || 'Zap';
+  const f = st.filter;
+  const usesNoise = live.some(o => o.wave === 'noise');
+  const hasPitched = live.some(o => o.wave !== 'noise');
+  const totalMix = live.reduce((s, o) => s + o.mix, 0);
+
+  let s = '';
+  s += `// Built in tools/sound-playground.html. Re-open the tool and\n`;
+  s += `// paste these constants back to keep tweaking by ear.\n\n`;
+  s += `const ${up(name)}_LEN: f32 = ${f3(st.len)};\n`;
+  s += `const ${up(name)}_ATTACK: f32 = ${f3(st.attack)};\n`;
+  s += `const ${up(name)}_DECAY: f32 = ${f3(st.decay)};\n`;
+  s += `const ${up(name)}_LEVEL: f32 = ${f3(st.level)};\n\n`;
+
+  s += `pub struct ${name} {\n    t: f32,\n    gain: f32,\n    alive: bool,\n`;
+  if (hasPitched) s += `    phase: [f32; ${live.length}],\n`;
+  if (f.mode !== 'off') s += `    low: f32,\n    band: f32,\n`;
+  if (usesNoise) s += `    noise: u32,\n`;
+  s += `}\n\n`;
+
+  s += `impl Default for ${name} {\n    fn default() -> Self { Self::new() }\n}\n\n`;
+  s += `impl ${name} {\n    pub fn new() -> Self {\n        Self {\n`;
+  s += `            t: 0.0,\n            gain: 1.0,\n            alive: false,\n`;
+  if (hasPitched) s += `            phase: [0.0; ${live.length}],\n`;
+  if (f.mode !== 'off') s += `            low: 0.0,\n            band: 0.0,\n`;
+  if (usesNoise) s += `            noise: 0x1234_5678,\n`;
+  s += `        }\n    }\n`;
+
+  if (usesNoise) {
+    s += `\n    /// xorshift32 — deterministic, allocation-free, audio-thread safe.\n`;
+    s += `    fn white(&mut self) -> f32 {\n`;
+    s += `        self.noise ^= self.noise << 13;\n`;
+    s += `        self.noise ^= self.noise >> 17;\n`;
+    s += `        self.noise ^= self.noise << 5;\n`;
+    s += `        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0\n    }\n`;
+  }
+  s += `}\n\n`;
+
+  s += `impl Voice for ${name} {\n`;
+  s += `    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {\n`;
+  s += `        if !self.alive {\n            out.fill(0.0);\n            return;\n        }\n`;
+  s += `        let dt = 1.0 / sample_rate;\n\n`;
+  s += `        for sample in out.iter_mut() {\n`;
+  s += `            if self.t >= ${up(name)}_LEN {\n`;
+  s += `                *sample = 0.0;\n                self.alive = false;\n                continue;\n            }\n`;
+  s += `            let u = self.t / ${up(name)}_LEN;\n`;
+  s += `            let mut v = 0.0f32;\n\n`;
+
+  live.forEach((o, k) => {
+    s += `            // ${o.wave}, mix ${f3(o.mix)}\n`;
+    if (o.wave === 'noise') {
+      s += `            v += self.white() * ${f3(o.mix)};\n\n`;
+      return;
+    }
+    s += `            {\n`;
+    s += `                let hz = ${f1(o.from)} * ${f4(o.to / o.from)}_f32.powf(u.powf(${f3(o.curve)}));\n`;
+    s += `                // ⚠️ INTEGRATE the phase. Recomputing sin(TAU*hz*t)\n`;
+    s += `                // with a changing hz clicks on every sample.\n`;
+    s += `                self.phase[${k}] = (self.phase[${k}] + hz * dt).fract();\n`;
+    s += `                let p = self.phase[${k}];\n`;
+    switch (o.wave) {
+      case 'sine':
+        s += `                v += (TAU * p).sin() * ${f3(o.mix)};\n`; break;
+      case 'square':
+        s += (o.duty === o.dutyTo)
+          ? `                v += if p < ${f3(o.duty)} { 1.0 } else { -1.0 } * ${f3(o.mix)};\n`
+          : `                let duty = ${f3(o.duty)} + (${f3(o.dutyTo)} - ${f3(o.duty)}) * u;\n` +
+            `                v += (if p < duty { 1.0 } else { -1.0 }) * ${f3(o.mix)};\n`;
+        break;
+      case 'saw':
+        s += `                v += (2.0 * p - 1.0) * ${f3(o.mix)};\n`; break;
+      case 'triangle':
+        s += `                v += (4.0 * (p - 0.5).abs() - 1.0) * ${f3(o.mix)};\n`; break;
+    }
+    s += `            }\n\n`;
+  });
+
+  if (totalMix > 1) {
+    s += `            // Normalised: the mixes sum above 1 and would clip.\n`;
+    s += `            v /= ${f3(totalMix)};\n\n`;
+  }
+
+  if (f.mode !== 'off') {
+    const which = f.mode === 'lp' ? 'low' : f.mode === 'bp' ? 'band' : 'high';
+    s += `            // A two-pole state-variable filter, corner sweeping.\n`;
+    s += `            let c = ${f1(f.from)} * ${f4(f.to / f.from)}_f32.powf(u);\n`;
+    s += `            // ⚠️ CLAMPED: a corner near Nyquist makes this blow up.\n`;
+    s += `            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);\n`;
+    s += `            let damp = (1.0 / ${f3(f.q)}_f32).min(1.0);\n`;
+    s += `            let high = v - self.low - damp * self.band;\n`;
+    s += `            self.band += g * high;\n`;
+    s += `            self.low += g * self.band;\n`;
+    s += `            v = ${which === 'high' ? 'high' : 'self.' + which};\n\n`;
+  }
+
+  s += `            let env = if u < ${up(name)}_ATTACK {\n`;
+  s += `                u / ${up(name)}_ATTACK\n            } else {\n`;
+  s += `                (-(u - ${up(name)}_ATTACK) * ${up(name)}_DECAY).exp()\n            };\n\n`;
+  s += `            *sample = v * env * ${up(name)}_LEVEL * self.gain;\n`;
+  s += `            self.t += dt;\n        }\n    }\n\n`;
+  s += `    fn alive(&self) -> bool {\n        self.alive\n    }\n\n`;
+  s += `    fn retrigger(&mut self, gain: f32, _pitch: f32) {\n`;
+  s += `        self.t = 0.0;\n`;
+  s += `        // ⚠️ THE PHASE IS NOT RESET — successive shots get slightly\n`;
+  s += `        // different attacks for free, which is what the hardware did\n`;
+  s += `        // by not caring.\n`;
+  s += `        self.gain = gain.clamp(0.0, 1.0);\n`;
+  s += `        self.alive = true;\n`;
+  if (f.mode !== 'off') s += `        self.low = 0.0;\n        self.band = 0.0;\n`;
+  s += `    }\n}\n`;
+
+  s += `\n// ── playground state, for round-tripping ──\n`;
+  s += `// PLAYGROUND: ${JSON.stringify(st)}\n`;
+  return s;
+}
+
+const up = s => s.replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
+const f1 = n => Number(n).toFixed(1);
+const f3 = n => Number(n).toFixed(3);
+const f4 = n => Number(n).toFixed(4);
+
+// ─────────────────────────────────────────────────────────────────────
+// UI
+// ─────────────────────────────────────────────────────────────────────
+
+function oscRow(o, i) {
+  const d = document.createElement('div');
+  d.className = 'osc' + (o.on ? '' : ' off');
+  const isNoise = o.wave === 'noise';
+  d.innerHTML = `
+    <div class="osc-head">
+      <input type="checkbox" ${o.on ? 'checked' : ''} data-a="on">
+      <select data-a="wave">${WAVES.map(w =>
+        `<option ${w === o.wave ? 'selected' : ''}>${w}</option>`).join('')}</select>
+      <button class="ghost" data-a="del">×</button>
+    </div>
+    <label class="row"><span>mix</span>
+      <input type="range" data-a="mix" min="0" max="1" step="0.01" value="${o.mix}">
+      <output>${o.mix.toFixed(2)}</output></label>
+    ${isNoise ? '<div class="keys">Noise ignores pitch — shape it with the filter.</div>' : `
+    <label class="row"><span>from Hz</span>
+      <input type="range" data-a="from" min="40" max="6000" step="10" value="${o.from}">
+      <output>${o.from}</output></label>
+    <label class="row"><span>to Hz</span>
+      <input type="range" data-a="to" min="40" max="6000" step="10" value="${o.to}">
+      <output>${o.to}</output></label>
+    <label class="row"><span>curve</span>
+      <input type="range" data-a="curve" min="0.15" max="3" step="0.01" value="${o.curve}">
+      <output>${o.curve.toFixed(2)}</output></label>
+    ${o.wave === 'square' ? `
+    <label class="row"><span>duty</span>
+      <input type="range" data-a="duty" min="0.02" max="0.98" step="0.01" value="${o.duty}">
+      <output>${o.duty.toFixed(2)}</output></label>
+    <label class="row"><span>duty to</span>
+      <input type="range" data-a="dutyTo" min="0.02" max="0.98" step="0.01" value="${o.dutyTo}">
+      <output>${o.dutyTo.toFixed(2)}</output></label>` : ''}`}`;
+
+  d.querySelectorAll('[data-a]').forEach(el => {
+    const a = el.dataset.a;
+    const handler = () => {
+      if (a === 'del') { state.oscs.splice(i, 1); refresh(true); return; }
+      if (a === 'on') o.on = el.checked;
+      else if (a === 'wave') o.wave = el.value;
+      else o[a] = parseFloat(el.value);
+      refresh(a === 'wave' || a === 'on' || a === 'del');
+    };
+    el.addEventListener(el.tagName === 'BUTTON' ? 'click' : 'input', handler);
+  });
+  return d;
+}
+
+function refresh(rebuild) {
+  if (rebuild) {
+    const box = document.getElementById('oscs');
+    box.innerHTML = '';
+    state.oscs.forEach((o, i) => box.appendChild(oscRow(o, i)));
+  } else {
+    document.querySelectorAll('#oscs .osc').forEach((d, i) => {
+      const o = state.oscs[i];
+      if (!o) return;
+      d.classList.toggle('off', !o.on);
+      d.querySelectorAll('input[type=range]').forEach(el => {
+        const out = el.parentElement.querySelector('output');
+        if (out) {
+          const v = parseFloat(el.value);
+          out.textContent = (el.dataset.a === 'from' || el.dataset.a === 'to')
+            ? Math.round(v) : v.toFixed(2);
+        }
+      });
+    });
+  }
+
+  const g = id => parseFloat(document.getElementById(id).value);
+  state.len = g('len') / 1000;
+  state.attack = g('atk') / 100;
+  state.decay = g('dec');
+  state.level = g('lvl') / 100;
+  state.filter.mode = document.getElementById('fmode').value;
+  state.filter.from = g('fhi');
+  state.filter.to = g('flo');
+  state.filter.q = g('fq');
+
+  document.getElementById('len-o').textContent = (state.len * 1000).toFixed(0) + 'ms';
+  document.getElementById('atk-o').textContent = (state.attack * 100).toFixed(0) + '%';
+  document.getElementById('dec-o').textContent = state.decay.toFixed(1);
+  document.getElementById('lvl-o').textContent = state.level.toFixed(2);
+  document.getElementById('fhi-o').textContent = state.filter.from + 'Hz';
+  document.getElementById('flo-o').textContent = state.filter.to + 'Hz';
+  document.getElementById('fq-o').textContent = state.filter.q.toFixed(1);
+
+  const data = render(state);
+  drawWave(data);
+  drawSpec(data);
+  document.getElementById('out').value = exportRust(state);
+}
+
+function loadPreset(p) {
+  state = JSON.parse(JSON.stringify(PRESETS[p]));
+  document.getElementById('len').value = state.len * 1000;
+  document.getElementById('atk').value = state.attack * 100;
+  document.getElementById('dec').value = state.decay;
+  document.getElementById('lvl').value = state.level * 100;
+  document.getElementById('fmode').value = state.filter.mode;
+  document.getElementById('fhi').value = state.filter.from;
+  document.getElementById('flo').value = state.filter.to;
+  document.getElementById('fq').value = state.filter.q;
+  refresh(true);
+}
+
+function saveWav() {
+  const d = render(state);
+  const n = d.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, SR, true); v.setUint32(28, SR * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, d[i])) * 32767, true);
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  a.download = 'voice.wav';
+  a.click();
+}
+
+// Wire up.
+const pbox = document.getElementById('presets');
+Object.keys(PRESETS).forEach(k => {
+  const b = document.createElement('button');
+  b.textContent = k;
+  b.onclick = () => loadPreset(k);
+  pbox.appendChild(b);
+});
+
+['len', 'atk', 'dec', 'lvl', 'fhi', 'flo', 'fq'].forEach(id =>
+  document.getElementById(id).addEventListener('input', () => refresh(false)));
+document.getElementById('fmode').addEventListener('change', () => refresh(false));
+
+document.getElementById('b-add').onclick = () => {
+  state.oscs.push({ on: true, wave: 'sine', from: 1200, to: 300, curve: 0.6, duty: .5, dutyTo: .5, mix: 0.5 });
+  refresh(true);
+};
+document.getElementById('b-play').onclick = () => play(1);
+document.getElementById('b-wav').onclick = saveWav;
+document.getElementById('b-copy').onclick = async () => {
+  const b = document.getElementById('b-copy');
+  try {
+    await navigator.clipboard.writeText(document.getElementById('out').value);
+    b.textContent = 'copied';
+  } catch { b.textContent = 'select & copy'; }
+  setTimeout(() => { b.textContent = 'copy'; }, 1200);
+};
+
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.code === 'Space') { e.preventDefault(); play(1); }
+  if (e.key === 'r' || e.key === 'R') { e.preventDefault(); play(5); }
+});
+addEventListener('resize', () => refresh(false));
+
+loadPreset('current laser');
+</script>

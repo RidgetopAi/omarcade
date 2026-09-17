@@ -34,6 +34,8 @@ pub struct Scene<'a> {
     pub effects: &'a Effects,
     pub score: u32,
     pub lives: &'a Lives,
+    /// Seconds of simulated time, for the scanner's Mutant pulse.
+    pub time: f32,
 }
 
 /// Draw a frame.
@@ -58,6 +60,21 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     }
     draw_hud(canvas, scene.ship, scene.camera, theme);
     draw_score(canvas, scene.score, theme);
+    // ★ S8. The scanner is the last thing drawn before the lives and the
+    // game-over card, because nothing in the world may overlap it — a
+    // Lander drawn over the scanner would be read as a blip ON it.
+    crate::scanner::draw(
+        canvas,
+        &crate::scanner::View {
+            terrain: scene.terrain,
+            ship: scene.ship,
+            camera: scene.camera,
+            landers: scene.landers,
+            people: scene.people,
+            time: scene.time,
+        },
+        theme,
+    );
     draw_lives(canvas, scene.lives, theme);
     if scene.lives.is_game_over() {
         draw_game_over(canvas, theme);
@@ -245,11 +262,19 @@ fn draw_shots(canvas: &mut Canvas<'_>, shots: &Shots, camera: &Camera, theme: &T
 /// understood at a glance, which is the only kind of reading a player
 /// does mid-flight.
 fn draw_lives(canvas: &mut Canvas<'_>, lives: &Lives, _theme: &Theme) {
+    // ⚠️ MOVED DOWN BY S8, UNDER THE SCORE. The ships sat at y=44 and the
+    // score at y=14; once the scanner took the top-centre strip the
+    // score moved into this gutter and landed on top of them. They are
+    // one column now — score, then ships beneath it — rather than two
+    // things that happen to occupy the same corner.
     for i in 0..lives.remaining {
-        let x = 28.0 + i as f32 * 42.0;
-        art::draw_ship(canvas, &Transform::at(x, 44.0).scaled(0.55));
+        let x = HUD_MARGIN + 14.0 + i as f32 * 42.0;
+        art::draw_ship(canvas, &Transform::at(x, 66.0).scaled(0.55));
     }
 }
+
+/// The left margin the whole left-hand HUD column hangs off.
+const HUD_MARGIN: f32 = 18.0;
 
 /// ⚠️ NOT A REAL GAME-OVER SCREEN. S14 owns presentation; this exists so
 /// that running out of lives is unmistakable rather than a ship that
@@ -276,14 +301,19 @@ fn draw_game_over(canvas: &mut Canvas<'_>, theme: &Theme) {
 fn draw_score(canvas: &mut Canvas<'_>, score: u32, theme: &Theme) {
     let text = format!("{score:06}");
     let w = omarcade_core::text::text_width(&text, 3) as i32;
-    omarcade_core::text::text(
-        canvas,
-        &text,
-        (canvas.width() as i32 - w) / 2,
-        14,
-        3,
-        theme.foreground,
-    );
+    // ★ MOVED LEFT OF CENTRE BY S8, AND THIS IS THE ARCADE'S OWN LAYOUT.
+    // The score was centred at the top, which is exactly where the
+    // scanner now sits — rendered, the digits collided with its rim.
+    // Defender put the score to one side of the scanner rather than
+    // above it, and that is also WHY the scanner is only half the screen
+    // wide: the space either side is not margin, it is where the rest of
+    // the HUD lives.
+    // ⚠️ LEFT-ALIGNED IN THE GUTTER, NOT CENTRED IN IT. Centring put the
+    // digits on top of the lives row; the gutter is narrow enough that
+    // two centred elements in it will always collide. Anchored to the
+    // same left margin the lives use, they stack instead.
+    let _ = w;
+    omarcade_core::text::text(canvas, &text, HUD_MARGIN as i32, 30, 3, theme.foreground);
 }
 
 fn sky(theme: &Theme) -> Color {
@@ -478,6 +508,85 @@ mod tests {
         );
     }
 
+    /// ★★ THE SCANNER, THROUGH THE REAL `draw`, WITH REAL ENEMIES IN IT.
+    ///
+    /// ⚠️ THIS TEST EXISTS BECAUSE OF L064. Yesterday 90 unit tests
+    /// passed while the headline feature destroyed itself on sight,
+    /// because every enemy test stepped Landers directly and never built
+    /// a Shot — the whole collision path sat outside them. The scanner
+    /// has exactly the same shape of exposure: its own module tests
+    /// check the coordinate mapping, and would all still pass if the
+    /// call in `draw` were deleted, mis-ordered, or handed the wrong
+    /// camera. So this one goes through `draw` and asserts the scanner
+    /// is actually ON the frame.
+    #[test]
+    fn the_scanner_reaches_the_frame_through_draw() {
+        let mut buf = vec![0u32; 960 * 720];
+        let t = Terrain::generate(256, 5);
+        let ship = Ship::new(0.0);
+        let cam = Camera::new(ship.x);
+        let theme = Theme::fallback();
+
+        // A Mutant on the far side of the world — the exact thing the
+        // scanner was built to reveal, at the exact distance that makes
+        // it invisible in the main view.
+        let mut landers = Landers::new();
+        landers.spawn(crate::enemy::Lander::mutant(
+            world::WORLD_W * 0.5,
+            world::VIEW_H * 0.8,
+        ));
+
+        {
+            let mut c = canvas_of(&mut buf);
+            let (shots, fx) = (Shots::new(), Effects::new());
+            let people = Humanoids::new();
+            let lives = Lives::new();
+            let scene = Scene {
+                terrain: &t,
+                ship: &ship,
+                camera: &cam,
+                shots: &shots,
+                landers: &landers,
+                people: &people,
+                effects: &fx,
+                score: 0,
+                lives: &lives,
+                time: 0.37,
+            };
+            draw(&mut c, &scene, &theme);
+        }
+
+        // The scanner occupies a band across the top-centre. Assert
+        // there is lit structure there that the rest of the frame does
+        // not explain: the sky is flat, so anything in this band came
+        // from the scanner.
+        let band_top = 28;
+        let band_bottom = 88;
+        let sky_px = sky(&theme).to_u32();
+
+        let lit = (band_top..band_bottom)
+            .flat_map(|y| (300..660).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[y * 960 + x] != sky_px)
+            .count();
+        assert!(
+            lit > 500,
+            "only {lit} pixels of the scanner band differ from sky — the scanner is not being \
+             drawn by `draw` at all"
+        );
+
+        // ★ AND THE MUTANT IS ON IT. A scanner face with no blip on it
+        // would satisfy the check above — the face and rim alone light
+        // plenty of pixels. This asserts the thing the player needs:
+        // something is showing at the middle of the world.
+        let mid_x = 480;
+        let mutant_showing = (band_top..band_bottom)
+            .any(|y| (mid_x - 6..mid_x + 6).any(|x| buf[y * 960 + x as usize] != sky_px));
+        assert!(
+            mutant_showing,
+            "nothing is drawn where a Mutant at the middle of the world should plot"
+        );
+    }
+
     /// A scene with nothing in it but the world and the ship — what the
     /// terrain tests are actually about.
     #[allow(clippy::too_many_arguments)]
@@ -491,7 +600,7 @@ mod tests {
         effects: &'a Effects,
         lives: &'a Lives,
     ) -> Scene<'a> {
-        Scene { terrain, ship, camera, shots, landers, people, effects, score: 0, lives }
+        Scene { terrain, ship, camera, shots, landers, people, effects, score: 0, lives, time: 0.0 }
     }
 
     /// ⚠️ THE SEAM, IN THE RENDERER. With the camera at x = 0 the left

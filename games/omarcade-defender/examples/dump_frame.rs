@@ -30,6 +30,8 @@ mod shot;
 mod flight;
 #[path = "../src/render.rs"]
 mod render;
+#[path = "../src/scanner.rs"]
+mod scanner;
 #[path = "../src/world.rs"]
 mod world;
 
@@ -271,6 +273,12 @@ fn main() {
             effects: &effects,
             lives: &lives,
             score: 0,
+            // ★ A FIXED, NON-ZERO CLOCK. The scanner pulses its Mutants
+            // on this; at 0.0 every dump would freeze the pulse at one
+            // arbitrary phase. This value puts it near its peak, so a
+            // screenshot shows the Mutant blips at their brightest —
+            // which is the state worth checking they are visible in.
+            time: 0.37,
         };
         render::draw(&mut canvas, &scene, &Theme::load());
     }

@@ -36,6 +36,7 @@ mod flight;
 mod humanoid;
 mod lives;
 mod render;
+mod scanner;
 mod shot;
 mod sound;
 mod world;
@@ -138,6 +139,15 @@ struct Defender {
     /// timestep does not silently drop simulation time.
     accumulator: f32,
 
+    /// Seconds of simulated time since the game began.
+    ///
+    /// ★ ADDED BY S8 FOR THE SCANNER'S MUTANT PULSE. Advanced inside the
+    /// FIXED step rather than from the frame's `dt`, so it counts the
+    /// same simulated time everything else does — a pulse driven by
+    /// wall-clock would drift away from the game it is describing the
+    /// moment a frame ran long, and would keep running while paused.
+    elapsed: f32,
+
     /// Sounds asked for during the fixed-step loop, played once the
     /// stepping is done.
     ///
@@ -191,6 +201,7 @@ impl Defender {
             down_held: false,
             fire_held: false,
             accumulator: 0.0,
+            elapsed: 0.0,
             fired_this_frame: false,
             killed_this_frame: false,
             rescued_this_frame: false,
@@ -210,6 +221,7 @@ impl Defender {
 
     /// One physics step: the ship, then everything it can interact with.
     fn step(&mut self, input: Input, dt: f32) {
+        self.elapsed += dt;
         self.lives.step(dt);
 
         // ⚠️ A DEAD SHIP DOES NOT FLY, AND MUTANTS MUST NOT TRACK IT.
@@ -509,6 +521,7 @@ impl Game for Defender {
             effects: &self.effects,
             score: self.score,
             lives: &self.lives,
+            time: self.elapsed,
         };
         render::draw(canvas, &scene, &self.theme);
         self.pause.draw(canvas, &self.theme);

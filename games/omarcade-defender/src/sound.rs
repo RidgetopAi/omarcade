@@ -24,7 +24,6 @@
 //! still ringing. Voices render on the AUDIO THREAD — no allocation, no
 //! `rand`, no panics.
 
-use std::f32::consts::TAU;
 use std::f32::consts::PI;
 
 use omarcade_core::audio::{Voice, VoiceParams};
@@ -191,75 +190,67 @@ pub type Laser = Zap;
 // PLAYGROUND: {"len":0.58,"attack":0.02,"decay":0.7,"level":0.55,"filter":{"mode":"bp","from":1940,"to":260,"q":3.6},"oscs":[{"on":true,"wave":"noise","from":1,"to":1,"curve":1,"duty":0.5,"dutyTo":0.5,"mix":1}]}
 
 // ---------------------------------------------------------------------
-// The explosion
+// The explosions
 // ---------------------------------------------------------------------
 
+// ★★ FOUR DEATHS, FOUR SOUNDS — AND UNTIL NOW THERE WAS ONE.
+//
+// `killed_this_frame` fired the same boom for a Lander dying, a MUTANT
+// dying, a Humanoid you shot by mistake, and YOUR OWN SHIP exploding.
+// Four events with completely different meanings, one noise. Brian's
+// note is what split them: "this is the explosion (it's subtle like og)
+// for landers...the mutants get a more intense explosion".
+//
+// ⚠️ ONLY `Boom` IS BRIAN'S. He built the Lander explosion by ear in the
+// playground against the original machine and its constants are his,
+// verbatim. THE OTHER THREE ARE PLACEHOLDERS I SHAPED, NOT SOUNDS HE HAS
+// APPROVED — each is the Lander recipe bent toward what its event MEANS,
+// and each is meant to be replaced the same way the laser was: open the
+// playground, build it by ear, paste the export back.
+// ⇒ DO NOT treat the three placeholder constant sets as settled the way
+// Brian's are. They are a starting point for his ear, and the PLAYGROUND
+// comment under each one is how he picks it up.
+
 /// How long the blast lasts, in seconds.
-const BOOM_LEN: f32 = 0.62;
+const BOOM_LEN: f32 = 0.580;
 
-/// The ring modulator's carrier, in Hz.
+/// ★ SUBTLE, AND DELIBERATELY SO. Brian checked the original machine:
+/// a Lander going up is not a spectacle, it is a soft crump. The whole
+/// character is a slow saw under a lowpass corner falling 1060 -> 260 Hz,
+/// with a long lazy decay that lets it settle rather than snap.
+const BOOM_ATTACK: f32 = 0.090;
+const BOOM_DECAY: f32 = 2.100;
+const BOOM_LEVEL: f32 = 0.250;
+
+/// A Lander dying. ★ BRIAN'S, BUILT BY EAR AGAINST THE ORIGINAL.
 ///
-/// ★ RING MODULATION IS THE POINT. Multiplying noise by a low sine (not
-/// adding) produces sum and difference frequencies and gives the metallic,
-/// hollow quality the 1981 explosions have — filtered noise alone is a
-/// "shh", and no amount of enveloping turns it into a Defender explosion.
-const RING_HZ: f32 = 62.0;
-
-/// How much of the output is ring-modulated versus plain noise.
-const RING_MIX: f32 = 0.62;
-
-/// Where the noise filter starts and ends, as a fraction of Nyquist.
-///
-/// Sweeping DOWN over the blast, which is a fireball settling: bright at
-/// the instant of the burst, a low rumble as it dies. A fixed corner is a
-/// wash that merely gets quieter — the same mistake the racer's crash
-/// made and had to be corrected for (see its BURN block).
-const BOOM_COLOUR_TOP: f32 = 0.42;
-const BOOM_COLOUR_BOTTOM: f32 = 0.045;
-
-const BOOM_LEVEL: f32 = 0.42;
-
-/// A one-pole lowpass, enough to colour noise.
-#[derive(Default, Clone, Copy)]
-struct Lowpass {
-    z: f32,
-}
-
-impl Lowpass {
-    /// `cutoff` is a fraction of the sample rate, 0..0.5.
-    fn tick(&mut self, input: f32, cutoff: f32) -> f32 {
-        let a = (TAU * cutoff.clamp(0.0005, 0.49)).min(1.0);
-        self.z += a * (input - self.z);
-        self.z
-    }
-}
-
-/// An explosion: swept noise, ring-modulated.
+/// ⚠️ THIS IS A SAW THROUGH A SWEEPING LOWPASS, NOT RING-MODULATED NOISE.
+/// The previous Boom was noise multiplied by a 62 Hz carrier, on the
+/// theory that ring modulation gave the 1981 explosions their metallic
+/// quality. That theory is gone — Brian went and listened to the machine.
+/// A 40 Hz saw is almost all harmonics, and dragging a resonant lowpass
+/// down across them is what actually produces the crump.
+/// ⇒ THE `low` OUTPUT IS TAKEN, not `band`. The laser wants the bandpass
+/// (energy in a moving sliver); an explosion wants everything BELOW the
+/// corner, which is what makes it a body rather than a whistle.
 pub struct Boom {
     t: f32,
     gain: f32,
     alive: bool,
-    phase: f32,
-    lp: Lowpass,
-    noise: u32,
+    phase: [f32; 1],
+    low: f32,
+    band: f32,
 }
 
 impl Default for Boom {
     fn default() -> Self {
-        Boom::new()
+        Self::new()
     }
 }
 
 impl Boom {
-    pub fn new() -> Boom {
-        Boom { t: 0.0, gain: 1.0, alive: false, phase: 0.0, lp: Lowpass::default(), noise: 0x1234_5678 }
-    }
-
-    fn white(&mut self) -> f32 {
-        self.noise ^= self.noise << 13;
-        self.noise ^= self.noise >> 17;
-        self.noise ^= self.noise << 5;
-        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
+    pub fn new() -> Self {
+        Self { t: 0.0, gain: 1.0, alive: false, phase: [0.0; 1], low: 0.0, band: 0.0 }
     }
 }
 
@@ -269,7 +260,6 @@ impl Voice for Boom {
             out.fill(0.0);
             return;
         }
-
         let dt = 1.0 / sample_rate;
 
         for sample in out.iter_mut() {
@@ -278,25 +268,35 @@ impl Voice for Boom {
                 self.alive = false;
                 continue;
             }
-
             let u = self.t / BOOM_LEN;
+            let mut v = 0.0f32;
 
-            // Noise, filtered by a corner sweeping downward.
-            let cutoff = BOOM_COLOUR_TOP * (BOOM_COLOUR_BOTTOM / BOOM_COLOUR_TOP).powf(u);
-            let raw = self.white();
-            let n = self.lp.tick(raw, cutoff);
+            // saw, mix 1.000
+            {
+                let hz = 40.0 * 1.0000_f32.powf(u.powf(0.920));
+                // ⚠️ INTEGRATE the phase. Recomputing sin(TAU*hz*t)
+                // with a changing hz clicks on every sample.
+                self.phase[0] = (self.phase[0] + hz * dt).fract();
+                let p = self.phase[0];
+                v += (2.0 * p - 1.0) * 1.000;
+            }
 
-            // Ring modulation: MULTIPLY, do not add. The carrier also
-            // falls, so the metallic component sags with the blast.
-            let carrier_hz = RING_HZ * (1.0 - 0.45 * u);
-            self.phase = (self.phase + carrier_hz * dt).fract();
-            let ring = n * (TAU * self.phase).sin();
+            // A two-pole state-variable filter, corner sweeping
+            // 1060 Hz -> 260 Hz.
+            let c = 1060.0 * 0.2453_f32.powf(u);
+            // ⚠️ CLAMPED: a corner near Nyquist makes this blow up.
+            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);
+            let damp = (1.0 / 5.700_f32).min(1.0);
+            let high = v - self.low - damp * self.band;
+            self.band += g * high;
+            self.low += g * self.band;
+            v = self.low;
 
-            let v = n * (1.0 - RING_MIX) + ring * RING_MIX;
-
-            // Instant attack, exponential decay. An explosion has no
-            // swell — it is loudest at the moment it happens.
-            let env = (-u * 3.6).exp();
+            let env = if u < BOOM_ATTACK {
+                u / BOOM_ATTACK
+            } else {
+                (-(u - BOOM_ATTACK) * BOOM_DECAY).exp()
+            };
 
             *sample = v * env * BOOM_LEVEL * self.gain;
             self.t += dt;
@@ -309,11 +309,311 @@ impl Voice for Boom {
 
     fn retrigger(&mut self, gain: f32, _pitch: f32) {
         self.t = 0.0;
+        // ⚠️ THE PHASE IS NOT RESET — successive blasts get slightly
+        // different attacks for free, which is what the hardware did
+        // by not caring.
         self.gain = gain.clamp(0.0, 1.0);
         self.alive = true;
-        self.lp = Lowpass::default();
+        // ★ THE FILTER STATE *IS* CLEARED. Stale low/band would make the
+        // first milliseconds of a blast depend on the previous one,
+        // which is a click, not character.
+        self.low = 0.0;
+        self.band = 0.0;
     }
 }
+
+// ── playground state, for round-tripping ──
+// Paste this line back into tools/sound-playground.html to keep tweaking
+// this sound by ear.
+// PLAYGROUND: {"len":0.58,"attack":0.09,"decay":2.1,"level":0.25,"filter":{"mode":"lp","from":1060,"to":260,"q":5.7},"oscs":[{"on":true,"wave":"saw","from":40,"to":40,"curve":0.92,"duty":0.04,"dutyTo":0.08,"mix":1}]}
+
+// ---------------------------------------------------------------------
+
+/// ⚠️ PLACEHOLDER — NOT BUILT BY EAR. Brian asked for "a more intense
+/// explosion" for Mutants and has not yet designed it.
+///
+/// The shape is the Lander's, bent toward violence rather than settling:
+/// the corner starts nearly twice as high and stays open longer (a
+/// brighter, harsher body), the saw sits higher, the decay is faster so
+/// it BITES instead of sagging, and the level is up. A Mutant is the
+/// thing that hunts you; its death should be a bang, not a crump.
+const MUTANT_BOOM_LEN: f32 = 0.480;
+const MUTANT_BOOM_ATTACK: f32 = 0.020;
+const MUTANT_BOOM_DECAY: f32 = 3.400;
+const MUTANT_BOOM_LEVEL: f32 = 0.360;
+
+pub struct MutantBoom {
+    t: f32,
+    gain: f32,
+    alive: bool,
+    phase: [f32; 1],
+    low: f32,
+    band: f32,
+}
+
+impl Default for MutantBoom {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MutantBoom {
+    pub fn new() -> Self {
+        Self { t: 0.0, gain: 1.0, alive: false, phase: [0.0; 1], low: 0.0, band: 0.0 }
+    }
+}
+
+impl Voice for MutantBoom {
+    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
+        if !self.alive {
+            out.fill(0.0);
+            return;
+        }
+        let dt = 1.0 / sample_rate;
+
+        for sample in out.iter_mut() {
+            if self.t >= MUTANT_BOOM_LEN {
+                *sample = 0.0;
+                self.alive = false;
+                continue;
+            }
+            let u = self.t / MUTANT_BOOM_LEN;
+            let mut v = 0.0f32;
+
+            {
+                let hz = 66.0 * 1.0000_f32.powf(u.powf(0.920));
+                self.phase[0] = (self.phase[0] + hz * dt).fract();
+                let p = self.phase[0];
+                v += (2.0 * p - 1.0) * 1.000;
+            }
+
+            let c = 1900.0 * 0.2100_f32.powf(u);
+            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);
+            let damp = (1.0 / 4.200_f32).min(1.0);
+            let high = v - self.low - damp * self.band;
+            self.band += g * high;
+            self.low += g * self.band;
+            v = self.low;
+
+            let env = if u < MUTANT_BOOM_ATTACK {
+                u / MUTANT_BOOM_ATTACK
+            } else {
+                (-(u - MUTANT_BOOM_ATTACK) * MUTANT_BOOM_DECAY).exp()
+            };
+
+            *sample = v * env * MUTANT_BOOM_LEVEL * self.gain;
+            self.t += dt;
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.alive
+    }
+
+    fn retrigger(&mut self, gain: f32, _pitch: f32) {
+        self.t = 0.0;
+        self.gain = gain.clamp(0.0, 1.0);
+        self.alive = true;
+        self.low = 0.0;
+        self.band = 0.0;
+    }
+}
+
+// PLAYGROUND: {"len":0.48,"attack":0.02,"decay":3.4,"level":0.36,"filter":{"mode":"lp","from":1900,"to":399,"q":4.2},"oscs":[{"on":true,"wave":"saw","from":66,"to":66,"curve":0.92,"duty":0.04,"dutyTo":0.08,"mix":1}]}
+
+// ---------------------------------------------------------------------
+
+/// ⚠️ PLACEHOLDER — NOT BUILT BY EAR. ★ YOUR OWN DEATH, and it used to
+/// be the SAME SOUND as a Lander's.
+///
+/// That was the worst of the four collisions: the game gave identical
+/// feedback for "you scored" and "you lost a life". This is shaped to be
+/// the worst sound in the game — the longest, the lowest, a slow decay
+/// that outlasts the others so it hangs there. An explosion you hear
+/// happening TO you rather than one you caused.
+const SHIP_BOOM_LEN: f32 = 1.100;
+const SHIP_BOOM_ATTACK: f32 = 0.010;
+const SHIP_BOOM_DECAY: f32 = 1.200;
+/// ⚠️ 0.30, NOT the 0.42 this started at. At 0.42 the rendered peak was
+/// 1.03 — CLIPPING, because a resonant lowpass at Q 6.4 adds gain the
+/// level constant does not account for. The WAV writer clamps and would
+/// have hidden it; the mixer would not have.
+/// ⇒ ★ A `_LEVEL` CONSTANT IS NOT THE PEAK. Render and measure.
+const SHIP_BOOM_LEVEL: f32 = 0.300;
+
+pub struct ShipBoom {
+    t: f32,
+    gain: f32,
+    alive: bool,
+    phase: [f32; 1],
+    low: f32,
+    band: f32,
+}
+
+impl Default for ShipBoom {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ShipBoom {
+    pub fn new() -> Self {
+        Self { t: 0.0, gain: 1.0, alive: false, phase: [0.0; 1], low: 0.0, band: 0.0 }
+    }
+}
+
+impl Voice for ShipBoom {
+    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
+        if !self.alive {
+            out.fill(0.0);
+            return;
+        }
+        let dt = 1.0 / sample_rate;
+
+        for sample in out.iter_mut() {
+            if self.t >= SHIP_BOOM_LEN {
+                *sample = 0.0;
+                self.alive = false;
+                continue;
+            }
+            let u = self.t / SHIP_BOOM_LEN;
+            let mut v = 0.0f32;
+
+            {
+                let hz = 28.0 * 1.0000_f32.powf(u.powf(0.920));
+                self.phase[0] = (self.phase[0] + hz * dt).fract();
+                let p = self.phase[0];
+                v += (2.0 * p - 1.0) * 1.000;
+            }
+
+            let c = 820.0 * 0.1400_f32.powf(u);
+            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);
+            let damp = (1.0 / 6.400_f32).min(1.0);
+            let high = v - self.low - damp * self.band;
+            self.band += g * high;
+            self.low += g * self.band;
+            v = self.low;
+
+            let env = if u < SHIP_BOOM_ATTACK {
+                u / SHIP_BOOM_ATTACK
+            } else {
+                (-(u - SHIP_BOOM_ATTACK) * SHIP_BOOM_DECAY).exp()
+            };
+
+            *sample = v * env * SHIP_BOOM_LEVEL * self.gain;
+            self.t += dt;
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.alive
+    }
+
+    fn retrigger(&mut self, gain: f32, _pitch: f32) {
+        self.t = 0.0;
+        self.gain = gain.clamp(0.0, 1.0);
+        self.alive = true;
+        self.low = 0.0;
+        self.band = 0.0;
+    }
+}
+
+// PLAYGROUND: {"len":1.1,"attack":0.01,"decay":1.2,"level":0.3,"filter":{"mode":"lp","from":820,"to":115,"q":6.4},"oscs":[{"on":true,"wave":"saw","from":28,"to":28,"curve":0.92,"duty":0.04,"dutyTo":0.08,"mix":1}]}
+
+// ---------------------------------------------------------------------
+
+/// ⚠️ PLACEHOLDER — NOT BUILT BY EAR. Shooting a Humanoid.
+///
+/// ★ AND IT SHOULD NOT BE SATISFYING. Brian's spec is DON'T SHOOT THEM,
+/// and the game deliberately lets you — "a rule the game quietly refuses
+/// to let you break is not a rule anyone ever feels" (main.rs). Giving
+/// that the same meaty boom as killing a Lander REWARDS it, which is
+/// exactly backwards.
+/// ⇒ So: short, thin, high, and over almost before it starts. A mistake
+/// noise, not an achievement noise.
+const PERSON_BOOM_LEN: f32 = 0.260;
+const PERSON_BOOM_ATTACK: f32 = 0.006;
+const PERSON_BOOM_DECAY: f32 = 5.200;
+const PERSON_BOOM_LEVEL: f32 = 0.180;
+
+pub struct PersonBoom {
+    t: f32,
+    gain: f32,
+    alive: bool,
+    phase: [f32; 1],
+    low: f32,
+    band: f32,
+}
+
+impl Default for PersonBoom {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PersonBoom {
+    pub fn new() -> Self {
+        Self { t: 0.0, gain: 1.0, alive: false, phase: [0.0; 1], low: 0.0, band: 0.0 }
+    }
+}
+
+impl Voice for PersonBoom {
+    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
+        if !self.alive {
+            out.fill(0.0);
+            return;
+        }
+        let dt = 1.0 / sample_rate;
+
+        for sample in out.iter_mut() {
+            if self.t >= PERSON_BOOM_LEN {
+                *sample = 0.0;
+                self.alive = false;
+                continue;
+            }
+            let u = self.t / PERSON_BOOM_LEN;
+            let mut v = 0.0f32;
+
+            {
+                let hz = 150.0 * 1.0000_f32.powf(u.powf(0.920));
+                self.phase[0] = (self.phase[0] + hz * dt).fract();
+                let p = self.phase[0];
+                v += (2.0 * p - 1.0) * 1.000;
+            }
+
+            let c = 1400.0 * 0.5000_f32.powf(u);
+            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);
+            let damp = (1.0 / 3.000_f32).min(1.0);
+            let high = v - self.low - damp * self.band;
+            self.band += g * high;
+            self.low += g * self.band;
+            v = self.low;
+
+            let env = if u < PERSON_BOOM_ATTACK {
+                u / PERSON_BOOM_ATTACK
+            } else {
+                (-(u - PERSON_BOOM_ATTACK) * PERSON_BOOM_DECAY).exp()
+            };
+
+            *sample = v * env * PERSON_BOOM_LEVEL * self.gain;
+            self.t += dt;
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.alive
+    }
+
+    fn retrigger(&mut self, gain: f32, _pitch: f32) {
+        self.t = 0.0;
+        self.gain = gain.clamp(0.0, 1.0);
+        self.alive = true;
+        self.low = 0.0;
+        self.band = 0.0;
+    }
+}
+
+// PLAYGROUND: {"len":0.26,"attack":0.006,"decay":5.2,"level":0.18,"filter":{"mode":"lp","from":1400,"to":700,"q":3},"oscs":[{"on":true,"wave":"saw","from":150,"to":150,"curve":0.92,"duty":0.04,"dutyTo":0.08,"mix":1}]}
 
 #[cfg(test)]
 mod tests {
@@ -464,23 +764,116 @@ mod tests {
         assert!(first > last * 2.0, "did not decay: {first} then {last}");
     }
 
-    /// Ring modulation must actually be doing something — a mix of 0
-    /// would leave plain noise, and the test that catches that is one
-    /// that compares against noise with the ring removed.
+    /// ★ THE FOUR DEATHS MUST NOT SOUND THE SAME.
+    ///
+    /// ⚠️ THIS REPLACES `the_explosion_is_ring_modulated_not_just_noise`,
+    /// which asserted `RING_MIX > 0.25` — a claim about a mechanism that
+    /// no longer exists. The old Boom was noise times a 62 Hz carrier on
+    /// the theory that ring modulation gave the 1981 explosions their
+    /// metallic quality. Brian went and listened to the actual machine
+    /// and the answer was a saw under a falling lowpass. The theory was
+    /// wrong, so the test defending it had to go rather than be renamed.
+    ///
+    /// What replaces it is the property the split actually buys: a
+    /// Lander, a Mutant, your ship and a shot Humanoid must be TELLABLE
+    /// APART. If a future edit collapses two of them onto the same
+    /// numbers, this fails.
     #[test]
-    fn the_explosion_is_ring_modulated_not_just_noise() {
-        assert!(RING_MIX > 0.25, "the ring is what makes it metallic");
-        let mut boom = Boom::new();
-        boom.retrigger(1.0, 1.0);
-        let s = render_all(&mut boom, BOOM_LEN * 0.5);
+    fn the_four_deaths_are_distinguishable() {
+        let mut lander = Boom::new();
+        let mut mutant = MutantBoom::new();
+        let mut ship = ShipBoom::new();
+        let mut person = PersonBoom::new();
 
-        // A ring-modulated signal crosses zero at the carrier's rate on
-        // top of the noise, so the modulated signal has markedly more
-        // low-frequency structure than its envelope alone would give.
-        // Cheap proxy: it must not be silent and must not be a DC blob.
-        let mean = s.iter().sum::<f32>() / s.len() as f32;
-        assert!(mean.abs() < 0.02, "the blast has a DC offset: {mean}");
-        assert!(peak(&s) > 0.05);
+        lander.retrigger(1.0, 1.0);
+        mutant.retrigger(1.0, 1.0);
+        ship.retrigger(1.0, 1.0);
+        person.retrigger(1.0, 1.0);
+
+        let l = render_all(&mut lander, BOOM_LEN);
+        let m = render_all(&mut mutant, MUTANT_BOOM_LEN);
+        let s = render_all(&mut ship, SHIP_BOOM_LEN);
+        let p = render_all(&mut person, PERSON_BOOM_LEN);
+
+        // Length: the ship's death outlasts everything, the Humanoid is
+        // the briefest. This is the loss/mistake ordering, in seconds.
+        assert!(
+            SHIP_BOOM_LEN > BOOM_LEN,
+            "your own death must outlast a Lander's"
+        );
+        assert!(
+            PERSON_BOOM_LEN < BOOM_LEN,
+            "shooting a person must be the briefest of them"
+        );
+
+        // Brightness: a Mutant bites, a ship rumbles. Measured, not
+        // asserted from the constants, so a broken filter is caught too.
+        let bright = |v: &[f32]| {
+            let n = v.len() / 3;
+            band_rms(&v[..n], 1200.0) / band_rms(&v[..n], 200.0).max(1e-9)
+        };
+        assert!(
+            bright(&m) > bright(&s),
+            "a Mutant must be brighter than your own death: {:.3} vs {:.3}",
+            bright(&m),
+            bright(&s)
+        );
+
+        // Level: shooting a Humanoid must not be the most satisfying
+        // sound in the game. It is a mistake, not an achievement.
+        assert!(
+            peak(&p) < peak(&l),
+            "shooting a person must be quieter than killing a Lander"
+        );
+        assert!(
+            peak(&p) < peak(&m),
+            "shooting a person must be quieter than killing a Mutant"
+        );
+    }
+
+    /// ⚠️ NOTHING MAY CLIP. ★ THIS TEST EXISTS BECAUSE IT HAPPENED:
+    /// ShipBoom shipped at LEVEL 0.42 and rendered a peak of 1.03,
+    /// because a resonant lowpass at Q 6.4 adds gain the level constant
+    /// says nothing about. The WAV writer clamps, so the rendered file
+    /// sounded plausible while the real mixer would have hard-clipped.
+    /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
+    #[test]
+    fn no_voice_clips_at_full_gain() {
+        let cases: [(&str, &mut dyn Voice, f32); 5] = [
+            ("laser", &mut Laser::new(), ZAP_LEN),
+            ("lander", &mut Boom::new(), BOOM_LEN),
+            ("mutant", &mut MutantBoom::new(), MUTANT_BOOM_LEN),
+            ("ship", &mut ShipBoom::new(), SHIP_BOOM_LEN),
+            ("person", &mut PersonBoom::new(), PERSON_BOOM_LEN),
+        ];
+        for (name, v, len) in cases {
+            v.retrigger(1.0, 1.0);
+            let p = peak(&render_all(v, len * 1.1));
+            assert!(p <= 1.0, "{name} CLIPS at full gain: peak {p:.3}");
+            // And leave headroom, because these share a mixer.
+            assert!(p < 0.95, "{name} has no headroom: peak {p:.3}");
+        }
+    }
+
+    /// Every explosion voice is a one-shot and must retire itself, or the
+    /// mixer keeps rendering silence forever.
+    #[test]
+    fn every_explosion_retires_itself() {
+        let cases: [(&str, &mut dyn Voice, f32); 4] = [
+            ("lander", &mut Boom::new(), BOOM_LEN),
+            ("mutant", &mut MutantBoom::new(), MUTANT_BOOM_LEN),
+            ("ship", &mut ShipBoom::new(), SHIP_BOOM_LEN),
+            ("person", &mut PersonBoom::new(), PERSON_BOOM_LEN),
+        ];
+        for (name, v, len) in cases {
+            v.retrigger(1.0, 1.0);
+            let s = render_all(v, len * 1.4);
+            assert!(peak(&s) > 0.02, "{name} was inaudible: peak {}", peak(&s));
+            assert!(!v.alive(), "{name} must retire itself");
+            for x in s {
+                assert!(x.is_finite(), "{name} emitted {x}");
+            }
+        }
     }
 
     #[test]

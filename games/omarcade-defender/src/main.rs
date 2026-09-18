@@ -128,6 +128,9 @@ struct Defender {
 
     laser: SoundId,
     boom: SoundId,
+    mutant_boom: SoundId,
+    ship_boom: SoundId,
+    person_boom: SoundId,
 
     // Held keys, resolved into an `Input` each step.
     thrust_held: bool,
@@ -158,15 +161,36 @@ struct Defender {
     /// flam. Counting and playing once per frame is both correct and
     /// cheaper.
     fired_this_frame: bool,
-    killed_this_frame: bool,
+    // ★ FOUR DEATHS, FOUR FLAGS. This was one `killed_this_frame` that
+    // fired the same boom for a Lander, a Mutant, a shot Humanoid and
+    // YOUR OWN SHIP. Four events with different meanings and identical
+    // feedback — the game said the same thing for "you scored" and "you
+    // lost a life".
+    lander_killed_this_frame: bool,
+    mutant_killed_this_frame: bool,
+    person_killed_this_frame: bool,
     rescued_this_frame: bool,
     enemy_fired_this_frame: bool,
     died_this_frame: bool,
     world_ended_this_frame: bool,
 }
 
+/// The four explosion voices, grouped so `Defender::new` takes one
+/// argument rather than five.
+///
+/// ⚠️ NOT a tuple. Four same-typed `SoundId`s positionally would silently
+/// swap if anyone reordered them, and the compiler would never say a
+/// word — you would just hear a Lander die like a ship once and never
+/// work out why.
+struct Booms {
+    lander: SoundId,
+    mutant: SoundId,
+    ship: SoundId,
+    person: SoundId,
+}
+
 impl Defender {
-    fn new(theme: Theme, laser: SoundId, boom: SoundId) -> Self {
+    fn new(theme: Theme, laser: SoundId, booms: Booms) -> Self {
         let terrain = Terrain::generate(RIDGE_SAMPLES, 0x0DEF_E4DE);
         let ship = Ship::new(0.0);
         let mut camera = Camera::new(ship.x);
@@ -195,7 +219,10 @@ impl Defender {
             world_ended: false,
             score: 0,
             laser,
-            boom,
+            boom: booms.lander,
+            mutant_boom: booms.mutant,
+            ship_boom: booms.ship,
+            person_boom: booms.person,
             thrust_held: false,
             up_held: false,
             down_held: false,
@@ -203,7 +230,9 @@ impl Defender {
             accumulator: 0.0,
             elapsed: 0.0,
             fired_this_frame: false,
-            killed_this_frame: false,
+            lander_killed_this_frame: false,
+            mutant_killed_this_frame: false,
+            person_killed_this_frame: false,
             rescued_this_frame: false,
             enemy_fired_this_frame: false,
             died_this_frame: false,
@@ -380,10 +409,22 @@ impl Defender {
                 // take the Humanoid with it silently and the whole
                 // catch-and-rescue loop would never fire.
                 self.landers.release_passenger(target, &mut self.people);
+                // ⚠️ ASK WHAT IT IS *BEFORE* KILLING IT. `kill` sets
+                // Phase::Dying, and a Mutant that has started dying is
+                // still a Mutant — but reading the kind afterwards means
+                // reaching back into a list this line just mutated, and
+                // the next person to touch it would have to prove that
+                // still works. Read it first; it is one bool.
+                let was_mutant =
+                    self.landers.get(target).map(|l| l.is_mutant()).unwrap_or(false);
                 self.score += self.landers.kill(target);
                 self.effects.explode_lander(lx, ly, lvx);
                 self.shots.consume(i);
-                self.killed_this_frame = true;
+                if was_mutant {
+                    self.mutant_killed_this_frame = true;
+                } else {
+                    self.lander_killed_this_frame = true;
+                }
                 continue;
             }
 
@@ -400,7 +441,7 @@ impl Defender {
                 }
                 self.effects.explode_humanoid(hx, hy);
                 self.shots.consume(i);
-                self.killed_this_frame = true;
+                self.person_killed_this_frame = true;
             }
         }
     }
@@ -476,7 +517,9 @@ impl Game for Defender {
         }
 
         self.fired_this_frame = false;
-        self.killed_this_frame = false;
+        self.lander_killed_this_frame = false;
+        self.mutant_killed_this_frame = false;
+        self.person_killed_this_frame = false;
         self.rescued_this_frame = false;
         self.enemy_fired_this_frame = false;
         self.died_this_frame = false;
@@ -497,8 +540,20 @@ impl Game for Defender {
         if self.fired_this_frame {
             audio.play(self.laser);
         }
-        if self.killed_this_frame || self.died_this_frame {
+        // ★ EACH DEATH SAYS WHAT IT WAS. A Lander crumps, a Mutant
+        // bangs, a Humanoid you shot barely registers, and your own
+        // ship is the worst sound in the game.
+        if self.lander_killed_this_frame {
             audio.play(self.boom);
+        }
+        if self.mutant_killed_this_frame {
+            audio.play(self.mutant_boom);
+        }
+        if self.person_killed_this_frame {
+            audio.play(self.person_boom);
+        }
+        if self.died_this_frame {
+            audio.play(self.ship_boom);
         }
         if self.enemy_fired_this_frame {
             // Quieter than your own gun, so a busy screen does not drown
@@ -532,8 +587,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let theme = Theme::load();
     let mut audio = AudioSystem::new();
     let laser = audio.register_sound(Box::new(sound::Laser::new()));
-    let boom = audio.register_sound(Box::new(sound::Boom::new()));
-    let game = Defender::new(theme, laser, boom);
+    let booms = Booms {
+        lander: audio.register_sound(Box::new(sound::Boom::new())),
+        mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
+        ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
+        person: audio.register_sound(Box::new(sound::PersonBoom::new())),
+    };
+    let game = Defender::new(theme, laser, booms);
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
@@ -549,8 +609,13 @@ mod tests {
     fn game() -> Defender {
         let mut audio = AudioSystem::new();
         let laser = audio.register_sound(Box::new(sound::Laser::new()));
-        let boom = audio.register_sound(Box::new(sound::Boom::new()));
-        Defender::new(Theme::fallback(), laser, boom)
+        let booms = Booms {
+            lander: audio.register_sound(Box::new(sound::Boom::new())),
+            mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
+            ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
+            person: audio.register_sound(Box::new(sound::PersonBoom::new())),
+        };
+        Defender::new(Theme::fallback(), laser, booms)
     }
 
     #[test]

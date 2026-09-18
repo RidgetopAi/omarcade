@@ -55,6 +55,19 @@ fn main() {
     let fires: Vec<f32> = (0..5).map(|i| i as f32 * FIRE_INTERVAL).collect();
     let rapid = render(&mut sound::Laser::new(), 1.6, &fires);
     emit(&dir.join("laser-rapid.wav"), &rapid, "5 shots @ 0.16s, one voice");
+
+    // ★ THE FOUR DEATHS, each on its own. Only the Lander is Brian's;
+    // the other three are placeholders waiting for his ear.
+    let deaths: [(&str, &mut dyn Voice, f32, &str); 4] = [
+        ("lander", &mut sound::Boom::new(), 0.9, "BRIAN'S — subtle, like the original"),
+        ("mutant", &mut sound::MutantBoom::new(), 0.8, "placeholder — more intense"),
+        ("ship", &mut sound::ShipBoom::new(), 1.5, "placeholder — your own death"),
+        ("person", &mut sound::PersonBoom::new(), 0.5, "placeholder — you broke the rule"),
+    ];
+    for (name, v, secs, what) in deaths {
+        let s = render(v, secs, &[0.0]);
+        emit(&dir.join(format!("boom-{name}.wav")), &s, what);
+    }
 }
 
 /// Render a voice for `seconds`, retriggering it at each time in `fires`,

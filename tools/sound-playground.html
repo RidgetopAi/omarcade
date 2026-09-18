@@ -150,8 +150,10 @@
       <canvas id="spec" height="190"></canvas>
     </div>
   </div>
-  <h2 style="margin:0 14px 8px">Export <button class="ghost" id="b-copy">copy</button></h2>
-  <textarea id="out" spellcheck="false" readonly></textarea>
+  <h2 style="margin:0 14px 8px">Export
+    <button class="ghost" id="b-copy">copy</button>
+    <button class="ghost" id="b-import">import</button></h2>
+  <textarea id="out" spellcheck="false"></textarea>
 </div>
 
 <script>
@@ -169,7 +171,7 @@ const SR = 48000;
 // note is about this.
 // ─────────────────────────────────────────────────────────────────────
 
-const WAVES = ['sine', 'square', 'saw', 'triangle', 'noise'];
+const WAVES = ['sine', 'square', 'saw', 'triangle', 'noise', 'crackle'];
 
 let state = {
   len: 0.130, attack: 0.06, decay: 4.5, level: 0.30,
@@ -211,6 +213,18 @@ const PRESETS = {
     filter: { mode: 'lp', from: 9000, to: 220, q: 1.0 },
     oscs: [{ on: true, wave: 'noise', from: 1, to: 1, curve: 1, duty: .5, dutyTo: .5, mix: 1 }],
   },
+  // ★ THE SHIPPED LANDER BOOM (Brian's, built by ear from the real
+  // machine) with a crackle layer over it. The saw + falling lowpass
+  // are HIS CONSTANTS, verbatim — the starting point, not a redesign.
+  'boom + crackle': {
+    len: 0.58, attack: 0.09, decay: 2.1, level: 0.25,
+    filter: { mode: 'lp', from: 1060, to: 260, q: 5.7 },
+    oscs: [
+      { on: true, wave: 'saw', from: 40, to: 40, curve: 0.92, duty: 0.04, dutyTo: 0.08, mix: 1 },
+      { on: true, wave: 'crackle', from: 420, to: 45, curve: 0.8,
+        delay: 0.10, snap: 0.003, snapTo: 0.009, mix: 0.30 },
+    ],
+  },
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -243,6 +257,9 @@ function render(st) {
   const rnd = makeNoise(0x12345678);
 
   const phases = st.oscs.map(() => 0);
+  // Crackle state, per osc: countdown to the next pop, and the
+  // amplitude + sign of the pop currently ringing down.
+  const pops = st.oscs.map(() => ({ wait: 0, amp: 0, sign: 1 }));
   // Two-pole state-variable filter state.
   let low = 0, band = 0;
 
@@ -257,6 +274,49 @@ function render(st) {
 
       if (o.wave === 'noise') {
         v += rnd() * o.mix;
+        continue;
+      }
+
+      // ★ CRACKLE — the one generator that is not a waveform.
+      //
+      // Everything else here is continuous by construction: an
+      // integrated phase through a smoothly swept filter can be bright
+      // or dark or long, but it is always ONE event. A crackle is many
+      // SEPARATE small events at irregular times, and no value of any
+      // continuous parameter produces one.
+      //
+      // So: schedule short decaying impulses. Between them, silence.
+      // The ear counts the gaps and hears fire.
+      if (o.wave === 'crackle') {
+        const p = pops[k];
+        // Nothing before the delay — the boom lands first, then the
+        // debris crackles as it falls.
+        if (u < o.delay) continue;
+        // Re-map so density/snap sweep across the AUDIBLE part only,
+        // not across a lifetime that starts before the first pop.
+        const cu = o.delay >= 1 ? 0 : (u - o.delay) / (1 - o.delay);
+
+        // Density is the whole sound. A FIXED rate reads as a broken
+        // speaker; fire is defined by pops THINNING as it dies, so the
+        // rate is what sweeps.
+        const rate = o.from * Math.pow(o.to / o.from, Math.pow(cu, o.curve));
+
+        p.wait -= dt;
+        if (p.wait <= 0) {
+          // Exponential gaps (not fixed ones) — evenly spaced pops
+          // sound like a machine. -ln(rnd) turns a uniform draw into
+          // the interval distribution of genuinely random events.
+          const r = (rnd() + 1) * 0.5;
+          p.wait += -Math.log(Math.max(1e-6, r)) / Math.max(1e-6, rate);
+          p.amp = 1;
+          p.sign = rnd() < 0 ? -1 : 1;
+        }
+
+        // Each pop decays on its own clock. Short = dry ticks, longer
+        // = each pop keeps a little tail.
+        const snap = o.snap + (o.snapTo - o.snap) * cu;
+        v += p.sign * p.amp * o.mix;
+        p.amp *= Math.exp(-dt / Math.max(1e-5, snap));
         continue;
       }
 
@@ -455,8 +515,9 @@ function exportRust(st) {
 
   const name = (document.getElementById('vname')?.value || 'Zap').trim() || 'Zap';
   const f = st.filter;
-  const usesNoise = live.some(o => o.wave === 'noise');
-  const hasPitched = live.some(o => o.wave !== 'noise');
+  const crackles = live.filter(o => o.wave === 'crackle');
+  const usesNoise = live.some(o => o.wave === 'noise' || o.wave === 'crackle');
+  const hasPitched = live.some(o => o.wave !== 'noise' && o.wave !== 'crackle');
   const totalMix = live.reduce((s, o) => s + o.mix, 0);
 
   let s = '';
@@ -471,6 +532,13 @@ function exportRust(st) {
   if (hasPitched) s += `    phase: [f32; ${live.length}],\n`;
   if (f.mode !== 'off') s += `    low: f32,\n    band: f32,\n`;
   if (usesNoise) s += `    noise: u32,\n`;
+  if (crackles.length) {
+    s += `    /// Per-crackle: seconds until the next pop, the amplitude of\n`;
+    s += `    /// the pop ringing down now, and its sign.\n`;
+    s += `    pop_wait: [f32; ${crackles.length}],\n`;
+    s += `    pop_amp: [f32; ${crackles.length}],\n`;
+    s += `    pop_sign: [f32; ${crackles.length}],\n`;
+  }
   s += `}\n\n`;
 
   s += `impl Default for ${name} {\n    fn default() -> Self { Self::new() }\n}\n\n`;
@@ -479,6 +547,11 @@ function exportRust(st) {
   if (hasPitched) s += `            phase: [0.0; ${live.length}],\n`;
   if (f.mode !== 'off') s += `            low: 0.0,\n            band: 0.0,\n`;
   if (usesNoise) s += `            noise: 0x1234_5678,\n`;
+  if (crackles.length) {
+    s += `            pop_wait: [0.0; ${crackles.length}],\n`;
+    s += `            pop_amp: [0.0; ${crackles.length}],\n`;
+    s += `            pop_sign: [1.0; ${crackles.length}],\n`;
+  }
   s += `        }\n    }\n`;
 
   if (usesNoise) {
@@ -501,10 +574,34 @@ function exportRust(st) {
   s += `            let u = self.t / ${up(name)}_LEN;\n`;
   s += `            let mut v = 0.0f32;\n\n`;
 
+  let ci = 0;
   live.forEach((o, k) => {
     s += `            // ${o.wave}, mix ${f3(o.mix)}\n`;
     if (o.wave === 'noise') {
       s += `            v += self.white() * ${f3(o.mix)};\n\n`;
+      return;
+    }
+    if (o.wave === 'crackle') {
+      const j = ci++;
+      s += `            // ★ Pops, not a waveform. Short impulses at random\n`;
+      s += `            // times, thinning as the sound dies — a continuous\n`;
+      s += `            // oscillator cannot make this shape at any setting.\n`;
+      s += `            if u >= ${f3(o.delay)} {\n`;
+      s += `                let cu = (u - ${f3(o.delay)}) / ${f3(1 - o.delay)};\n`;
+      s += `                let rate = ${f1(o.from)} * ${f4(o.to / o.from)}_f32.powf(cu.powf(${f3(o.curve)}));\n`;
+      s += `                self.pop_wait[${j}] -= dt;\n`;
+      s += `                if self.pop_wait[${j}] <= 0.0 {\n`;
+      s += `                    // Exponential gaps. Evenly spaced pops sound\n`;
+      s += `                    // like a machine, not like fire.\n`;
+      s += `                    let r = (self.white() + 1.0) * 0.5;\n`;
+      s += `                    self.pop_wait[${j}] += -r.max(1e-6).ln() / rate.max(1e-6);\n`;
+      s += `                    self.pop_amp[${j}] = 1.0;\n`;
+      s += `                    self.pop_sign[${j}] = if self.white() < 0.0 { -1.0 } else { 1.0 };\n`;
+      s += `                }\n`;
+      s += `                let snap = ${f3(o.snap)} + (${f3(o.snapTo)} - ${f3(o.snap)}) * cu;\n`;
+      s += `                v += self.pop_sign[${j}] * self.pop_amp[${j}] * ${f3(o.mix)};\n`;
+      s += `                self.pop_amp[${j}] *= (-dt / snap.max(1e-5)).exp();\n`;
+      s += `            }\n\n`;
       return;
     }
     s += `            {\n`;
@@ -562,6 +659,13 @@ function exportRust(st) {
   s += `        self.gain = gain.clamp(0.0, 1.0);\n`;
   s += `        self.alive = true;\n`;
   if (f.mode !== 'off') s += `        self.low = 0.0;\n        self.band = 0.0;\n`;
+  if (crackles.length) {
+    s += `        // Pop state IS cleared — unlike phase. A half-decayed pop\n`;
+    s += `        // carried into the next explosion is an audible click at\n`;
+    s += `        // sample zero, before the attack has opened.\n`;
+    s += `        self.pop_wait = [0.0; ${crackles.length}];\n`;
+    s += `        self.pop_amp = [0.0; ${crackles.length}];\n`;
+  }
   s += `    }\n}\n`;
 
   s += `\n// ── playground state, for round-tripping ──\n`;
@@ -592,7 +696,28 @@ function oscRow(o, i) {
     <label class="row"><span>mix</span>
       <input type="range" data-a="mix" min="0" max="1" step="0.01" value="${o.mix}">
       <output>${o.mix.toFixed(2)}</output></label>
-    ${isNoise ? '<div class="keys">Noise ignores pitch — shape it with the filter.</div>' : `
+    ${o.wave === 'crackle' ? `
+    <div class="keys">Pops, not a waveform. Density is the sound — fire
+      THINS as it dies.</div>
+    <label class="row"><span>delay</span>
+      <input type="range" data-a="delay" min="0" max="0.6" step="0.01" value="${o.delay}">
+      <output>${(o.delay * 100).toFixed(0)}%</output></label>
+    <label class="row"><span>pops/s</span>
+      <input type="range" data-a="from" min="10" max="1200" step="10" value="${o.from}">
+      <output>${o.from}</output></label>
+    <label class="row"><span>pops/s to</span>
+      <input type="range" data-a="to" min="10" max="1200" step="10" value="${o.to}">
+      <output>${o.to}</output></label>
+    <label class="row"><span>curve</span>
+      <input type="range" data-a="curve" min="0.15" max="3" step="0.01" value="${o.curve}">
+      <output>${o.curve.toFixed(2)}</output></label>
+    <label class="row"><span>snap</span>
+      <input type="range" data-a="snap" min="0.0005" max="0.04" step="0.0005" value="${o.snap}">
+      <output>${(o.snap * 1000).toFixed(1)}ms</output></label>
+    <label class="row"><span>snap to</span>
+      <input type="range" data-a="snapTo" min="0.0005" max="0.04" step="0.0005" value="${o.snapTo}">
+      <output>${(o.snapTo * 1000).toFixed(1)}ms</output></label>` :
+    isNoise ? '<div class="keys">Noise ignores pitch — shape it with the filter.</div>' : `
     <label class="row"><span>from Hz</span>
       <input type="range" data-a="from" min="40" max="6000" step="10" value="${o.from}">
       <output>${o.from}</output></label>
@@ -669,8 +794,28 @@ function refresh(rebuild) {
   document.getElementById('out').value = exportRust(state);
 }
 
+/**
+ * Fill in any field an osc is missing.
+ *
+ * ★ EVERY state entering the tool goes through here — presets, "+ add",
+ * and a pasted PLAYGROUND line. A sound exported before `crackle`
+ * existed has no delay/snap fields, and an undefined reaching the
+ * render loop becomes NaN, which is silence with no error message.
+ */
+const OSC_DEFAULTS = {
+  on: true, wave: 'sine', from: 1200, to: 300, curve: 0.6,
+  duty: 0.5, dutyTo: 0.5, mix: 0.5,
+  // crackle only
+  delay: 0.06, snap: 0.004, snapTo: 0.010,
+};
+
+function normalise(st) {
+  st.oscs = (st.oscs || []).map(o => Object.assign({}, OSC_DEFAULTS, o));
+  return st;
+}
+
 function loadPreset(p) {
-  state = JSON.parse(JSON.stringify(PRESETS[p]));
+  state = normalise(JSON.parse(JSON.stringify(PRESETS[p])));
   document.getElementById('len').value = state.len * 1000;
   document.getElementById('atk').value = state.attack * 100;
   document.getElementById('dec').value = state.decay;
@@ -716,7 +861,41 @@ Object.keys(PRESETS).forEach(k => {
 document.getElementById('fmode').addEventListener('change', () => refresh(false));
 
 document.getElementById('b-add').onclick = () => {
-  state.oscs.push({ on: true, wave: 'sine', from: 1200, to: 300, curve: 0.6, duty: .5, dutyTo: .5, mix: 0.5 });
+  state.oscs.push(Object.assign({}, OSC_DEFAULTS));
+  refresh(true);
+};
+/**
+ * Read a sound back IN, so an existing voice can keep being tweaked.
+ *
+ * ★ Paste anything containing a `PLAYGROUND:` line — the whole Rust
+ * file, the struct, or just that one comment. This is what lets a
+ * SHIPPED sound (sound.rs carries the line on every voice) be reopened
+ * and layered on, rather than rebuilt from memory.
+ */
+document.getElementById('b-import').onclick = () => {
+  const box = document.getElementById('out');
+  const m = box.value.match(/PLAYGROUND:\s*(\{.*\})\s*$/m);
+  if (!m) {
+    alert('No PLAYGROUND: line found.\n\nPaste a voice exported by this ' +
+          'tool — the whole .rs file is fine, it finds the line itself.');
+    return;
+  }
+  let st;
+  try { st = JSON.parse(m[1]); }
+  catch (e) { alert('That PLAYGROUND line is not valid JSON:\n' + e.message); return; }
+  if (!st || !Array.isArray(st.oscs) || !st.filter) {
+    alert('That PLAYGROUND line is missing oscs or filter.');
+    return;
+  }
+  state = normalise(st);
+  document.getElementById('len').value = state.len * 1000;
+  document.getElementById('atk').value = state.attack * 100;
+  document.getElementById('dec').value = state.decay;
+  document.getElementById('lvl').value = state.level * 100;
+  document.getElementById('fmode').value = state.filter.mode;
+  document.getElementById('fhi').value = state.filter.from;
+  document.getElementById('flo').value = state.filter.to;
+  document.getElementById('fq').value = state.filter.q;
   refresh(true);
 };
 document.getElementById('b-play').onclick = () => play(1);

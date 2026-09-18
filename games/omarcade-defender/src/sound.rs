@@ -2,10 +2,15 @@
 //!
 //! ★ BRIAN NAMED SOUND AS THE THING HE MOST WANTS TO NAIL, and he was
 //! right about the mechanism before any of this was written: "pretty sure
-//! uses some kind of phaser to shift frequencys". Defender's laser is a
-//! VCO swept hard downward in a few tens of milliseconds. It is not a
-//! sample, it was never a sample, and reproducing it means sweeping an
-//! oscillator rather than finding a wav.
+//! uses some kind of phaser to shift frequencys". Something is swept hard
+//! downward in both of these. It is not a sample, it was never a sample,
+//! and reproducing it means sweeping rather than finding a wav.
+//!
+//! ⚠️ WHAT gets swept is the part that took two attempts. The laser was
+//! first built as a swept OSCILLATOR, and Brian's verdict after listening
+//! was "our laser is higher pitched and original is more white noise" —
+//! so it is now a swept FILTER over noise, built by ear in the playground
+//! rather than derived. The `Zap` doc below has the whole story.
 //!
 //! These two land in S5 rather than waiting for the S13 sound pass for a
 //! simple reason: a shooter with silent guns does not read as a game, so
@@ -20,6 +25,7 @@
 //! `rand`, no panics.
 
 use std::f32::consts::TAU;
+use std::f32::consts::PI;
 
 use omarcade_core::audio::{Voice, VoiceParams};
 
@@ -27,93 +33,130 @@ use omarcade_core::audio::{Voice, VoiceParams};
 // The laser
 // ---------------------------------------------------------------------
 
-/// Where the sweep starts, in Hz.
-///
-/// High and thin. The original's bolt is a zip rather than a bang, and
-/// the whole character is in how fast it falls from here.
-const LASER_TOP_HZ: f32 = 1850.0;
-
-/// Where the sweep ends, in Hz.
-const LASER_BOTTOM_HZ: f32 = 180.0;
+// ★★ BUILT BY EAR, NOT DERIVED. Brian designed this voice in
+// tools/sound-playground.html and exported it; the constants below are
+// his, verbatim, and the playground state rides in a comment at the end
+// of this block so the design can be pasted back in and tweaked further.
+// ⚠️ DO NOT "improve" these numbers by reasoning about them. They are a
+// listening result. The playground round-trips, so the way to change
+// this sound is to open the tool, not to edit the file.
 
 /// How long the whole sound lasts, in seconds.
 ///
-/// ⚠️ SHORT, AND IT MATTERS. At the fire interval a player can hold down
-/// the trigger and get six of these a second; anything longer overlaps
-/// itself into a drone and the individual shots stop being audible as
-/// shots.
-const LASER_LEN: f32 = 0.13;
+/// ⚠️ THIS IS 3.6x THE FIRE INTERVAL (shot.rs FIRE_INTERVAL = 0.16) AND
+/// THAT IS DELIBERATE. One `Laser` voice is registered, so a new shot
+/// `retrigger()`s it and cuts the previous one dead at 160 ms — on held
+/// fire you hear only the top ~28% of the sweep, and the fall to 260 Hz
+/// never arrives. Brian was shown exactly that trade and chose it: the
+/// truncation IS the rapid-fire texture, and the full tail is what a
+/// single shot is for. ⇒ Do not "fix" this by shortening the sound or by
+/// adding voices without asking him.
+const ZAP_LEN: f32 = 0.580;
+const ZAP_ATTACK: f32 = 0.020;
+const ZAP_DECAY: f32 = 0.700;
+const ZAP_LEVEL: f32 = 0.550;
 
-/// How sharply the sweep falls.
+/// Defender's laser: white noise through a hard downward bandpass sweep.
 ///
-/// The frequency runs `top * (bottom/top)^(t^CURVE)` — an exponential
-/// sweep in pitch, because pitch is heard logarithmically and a LINEAR
-/// ramp in Hz spends most of its time in the bottom octave where nothing
-/// is happening. The exponent bends it further toward the start, which is
-/// what makes it read as a zap rather than a slide whistle.
-const LASER_CURVE: f32 = 0.62;
-
-const LASER_LEVEL: f32 = 0.30;
-
-/// Defender's laser: a fast downward frequency sweep.
-pub struct Laser {
+/// ★ THE MECHANISM CHANGED HERE, NOT THE TUNING. This voice used to be a
+/// pitched oscillator (sine+square swept 1850→180 Hz) and Brian's verdict
+/// on it was "our laser is higher pitched and original is more white
+/// noise" — a judgement about METHOD. No value of a top-frequency
+/// constant fixes a tone that should not be a tone, so the oscillator is
+/// gone and what sweeps now is a FILTER over noise.
+///
+/// ★★ AND IT IS THE RACER'S TYRE-SQUEAL FINDING RUNNING BACKWARDS. That
+/// one was filtered noise and needed an oscillator, because a pitch needs
+/// energy in a LINE (see games/omarcade-racer/src/sound.rs:328). This is
+/// the mirror image: the laser needed to STOP being a line.
+///
+/// ⚠️ The real hardware is a 6802 writing 8-bit samples straight to a DAC
+/// — it could emit anything, and nobody has published the actual laser
+/// routine. This is an informed reading confirmed by Brian's ear, which
+/// is the authority the analysis does not have.
+pub struct Zap {
     t: f32,
-    phase: f32,
     gain: f32,
     alive: bool,
+    low: f32,
+    band: f32,
+    noise: u32,
 }
 
-impl Default for Laser {
+impl Default for Zap {
     fn default() -> Self {
-        Laser::new()
+        Self::new()
     }
 }
 
-impl Laser {
-    pub fn new() -> Laser {
-        Laser { t: 0.0, phase: 0.0, gain: 1.0, alive: false }
+impl Zap {
+    pub fn new() -> Self {
+        Self {
+            t: 0.0,
+            gain: 1.0,
+            alive: false,
+            low: 0.0,
+            band: 0.0,
+            noise: 0x1234_5678,
+        }
+    }
+
+    /// xorshift32 — deterministic, allocation-free, audio-thread safe.
+    ///
+    /// ⚠️ NOT `rand`. Voices render on the audio thread, where an
+    /// allocation or a lock is a dropout.
+    fn white(&mut self) -> f32 {
+        self.noise ^= self.noise << 13;
+        self.noise ^= self.noise >> 17;
+        self.noise ^= self.noise << 5;
+        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
     }
 }
 
-impl Voice for Laser {
+impl Voice for Zap {
     fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
         if !self.alive {
             out.fill(0.0);
             return;
         }
-
         let dt = 1.0 / sample_rate;
-        let ratio = LASER_BOTTOM_HZ / LASER_TOP_HZ;
 
         for sample in out.iter_mut() {
-            if self.t >= LASER_LEN {
+            if self.t >= ZAP_LEN {
                 *sample = 0.0;
                 self.alive = false;
                 continue;
             }
+            let u = self.t / ZAP_LEN;
+            let mut v = 0.0f32;
 
-            let u = self.t / LASER_LEN;
-            let hz = LASER_TOP_HZ * ratio.powf(u.powf(LASER_CURVE));
+            // noise, mix 1.000
+            v += self.white() * 1.000;
 
-            // ⚠️ ADVANCE THE PHASE, DO NOT COMPUTE sin(TAU * hz * t).
-            // With a CHANGING frequency the second form is wrong: it
-            // jumps the phase every time hz moves, which is a click on
-            // every sample of a fast sweep. Integrating the frequency is
-            // the only way a swept oscillator stays continuous.
-            self.phase = (self.phase + hz * dt).fract();
+            // A two-pole state-variable filter, corner sweeping
+            // 1940 Hz → 260 Hz across the life of the sound. The band
+            // output is the one taken: a bandpass moving down is what
+            // turns a flat hiss into a zap.
+            let c = 1940.0 * 0.1340_f32.powf(u);
+            // ⚠️ CLAMPED: a corner near Nyquist makes this blow up. The
+            // SVF is only stable while g stays well below 2, and an
+            // unclamped corner at a low sample rate walks straight past
+            // it — the filter self-oscillates to NaN and the mixer
+            // spreads the NaN across every voice.
+            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);
+            let damp = (1.0 / 3.600_f32).min(1.0);
+            let high = v - self.low - damp * self.band;
+            self.band += g * high;
+            self.low += g * self.band;
+            v = self.band;
 
-            // A touch of square in the sine gives it the edge the
-            // original has without the harshness of a pure square.
-            let sine = (TAU * self.phase).sin();
-            let edge = if self.phase < 0.5 { 1.0 } else { -1.0 };
-            let wave = sine * 0.72 + edge * 0.28;
+            let env = if u < ZAP_ATTACK {
+                u / ZAP_ATTACK
+            } else {
+                (-(u - ZAP_ATTACK) * ZAP_DECAY).exp()
+            };
 
-            // Fast attack, and a decay that is mostly gone before the
-            // sweep bottoms out — the tail of the sweep should be felt
-            // more than heard.
-            let env = if u < 0.06 { u / 0.06 } else { (-(u - 0.06) * 4.5).exp() };
-
-            *sample = wave * env * LASER_LEVEL * self.gain;
+            *sample = v * env * ZAP_LEVEL * self.gain;
             self.t += dt;
         }
     }
@@ -124,14 +167,28 @@ impl Voice for Laser {
 
     fn retrigger(&mut self, gain: f32, _pitch: f32) {
         self.t = 0.0;
-        // ⚠️ THE PHASE IS NOT RESET. Restarting it at zero on every shot
-        // makes rapid fire sound mechanically identical each time; letting
-        // it run gives successive bolts slightly different attacks for
-        // free, which is what the hardware did by not caring.
+        // ⚠️ THE NOISE SEQUENCE IS NOT RESET — successive shots draw from
+        // where the last one left off, so each gets a slightly different
+        // attack for free, which is what the hardware did by not caring.
+        // ★ THE FILTER STATE *IS* CLEARED, and that is not the same
+        // decision: stale `low`/`band` would make the first millisecond
+        // of a shot depend on the one before it, which is a click, not
+        // character.
         self.gain = gain.clamp(0.0, 1.0);
         self.alive = true;
+        self.low = 0.0;
+        self.band = 0.0;
     }
 }
+
+/// The shipped laser. ★ Named `Laser` so the game wires up unchanged;
+/// `Zap` is the name the playground exported it under.
+pub type Laser = Zap;
+
+// ── playground state, for round-tripping ──
+// Paste this line back into tools/sound-playground.html to keep tweaking
+// this sound by ear.
+// PLAYGROUND: {"len":0.58,"attack":0.02,"decay":0.7,"level":0.55,"filter":{"mode":"bp","from":1940,"to":260,"q":3.6},"oscs":[{"on":true,"wave":"noise","from":1,"to":1,"curve":1,"duty":0.5,"dutyTo":0.5,"mix":1}]}
 
 // ---------------------------------------------------------------------
 // The explosion
@@ -281,15 +338,26 @@ mod tests {
         samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
     }
 
-    /// Estimate the dominant frequency of a slice by counting zero
-    /// crossings — enough to prove a sweep goes DOWN, which is the one
-    /// claim that matters.
-    fn rough_hz(samples: &[f32]) -> f32 {
-        let crossings = samples
-            .windows(2)
-            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
-            .count() as f32;
-        crossings * SR / (2.0 * samples.len() as f32)
+    /// RMS of a slice after a one-pole bandpass at `hz`, used to ask
+    /// "how much energy is around here" without pulling in an FFT.
+    ///
+    /// ⚠️ This replaces a zero-crossing pitch estimator. The old voice
+    /// was an oscillator and had a countable pitch; this one is noise,
+    /// where only a band measurement says anything true. (Same finding
+    /// as the sound scope's: a naive per-window statistic lies about
+    /// noise unless you ask it about a BAND.)
+    fn band_rms(samples: &[f32], hz: f32) -> f32 {
+        let g = 2.0 * (PI * hz / SR).sin();
+        let damp = 0.4f32;
+        let (mut low, mut band) = (0.0f32, 0.0f32);
+        let mut sum = 0.0f64;
+        for &s in samples {
+            let high = s - low - damp * band;
+            band += g * high;
+            low += g * band;
+            sum += (band as f64) * (band as f64);
+        }
+        (sum / samples.len().max(1) as f64).sqrt() as f32
     }
 
     #[test]
@@ -311,26 +379,46 @@ mod tests {
         laser.retrigger(1.0, 1.0);
         assert!(laser.alive());
 
-        let s = render_all(&mut laser, LASER_LEN * 1.5);
+        let s = render_all(&mut laser, ZAP_LEN * 1.5);
         assert!(peak(&s) > 0.05, "the laser was inaudible: peak {}", peak(&s));
         assert!(!laser.alive(), "a one-shot must retire itself");
     }
 
-    /// ★ THE DEFINING PROPERTY. Brian identified the mechanism as
-    /// frequency shifting, and this is that claim as an assertion: the
-    /// pitch at the start must be far above the pitch at the end.
+    /// ★★ THE DEFINING PROPERTY, AND IT IS NOT THE OLD ONE.
+    ///
+    /// This used to assert that the PITCH falls, measured by counting
+    /// zero crossings. That test is gone with the oscillator it was
+    /// written for: bandpassed noise has no stable pitch to count, and
+    /// a crossing count over noise measures the filter's ringing rate
+    /// mixed with hash — it would pass or fail for the wrong reasons.
+    ///
+    /// ⚠️ THE CLAIM STILL HAS TO BE DEFENDED, so it is restated in the
+    /// terms the new mechanism actually has: the ENERGY moves from a
+    /// high band to a low band. Early in the sound there must be more
+    /// energy up around the top of the sweep than down at the bottom,
+    /// and late in the sound that relationship must have INVERTED.
     #[test]
     fn the_laser_sweeps_downward() {
         let mut laser = Laser::new();
         laser.retrigger(1.0, 1.0);
-        let s = render_all(&mut laser, LASER_LEN);
+        let s = render_all(&mut laser, ZAP_LEN);
+        let n = ((ZAP_LEN * SR) as usize).min(s.len());
 
-        let n = (LASER_LEN * SR) as usize;
-        let early = rough_hz(&s[..n / 6]);
-        let late = rough_hz(&s[n / 2..n.min(s.len())]);
+        // The sweep runs 1940 Hz -> 260 Hz. Probe well inside each end
+        // so the test does not depend on the exact corner values.
+        let early = &s[..n / 8];
+        let late = &s[n * 3 / 4..n];
+
+        let early_ratio = band_rms(early, 1500.0) / band_rms(early, 300.0).max(1e-9);
+        let late_ratio = band_rms(late, 1500.0) / band_rms(late, 300.0).max(1e-9);
+
         assert!(
-            early > late * 2.0,
-            "the sweep is not falling: {early:.0} Hz then {late:.0} Hz"
+            early_ratio > 1.0,
+            "the sound does not START high: high/low energy was {early_ratio:.2}"
+        );
+        assert!(
+            late_ratio < early_ratio * 0.5,
+            "the energy is not FALLING: high/low went {early_ratio:.2} -> {late_ratio:.2}"
         );
     }
 
@@ -341,8 +429,8 @@ mod tests {
     fn the_laser_does_not_click() {
         let mut laser = Laser::new();
         laser.retrigger(1.0, 1.0);
-        let s = render_all(&mut laser, LASER_LEN);
-        let live: Vec<f32> = s.iter().copied().take((LASER_LEN * SR) as usize).collect();
+        let s = render_all(&mut laser, ZAP_LEN);
+        let live: Vec<f32> = s.iter().copied().take((ZAP_LEN * SR) as usize).collect();
 
         let biggest = live
             .windows(2)
@@ -399,11 +487,11 @@ mod tests {
     fn gain_scales_the_sound() {
         let mut loud = Laser::new();
         loud.retrigger(1.0, 1.0);
-        let l = peak(&render_all(&mut loud, LASER_LEN));
+        let l = peak(&render_all(&mut loud, ZAP_LEN));
 
         let mut soft = Laser::new();
         soft.retrigger(0.25, 1.0);
-        let s = peak(&render_all(&mut soft, LASER_LEN));
+        let s = peak(&render_all(&mut soft, ZAP_LEN));
 
         assert!(s < l * 0.6, "gain did not reduce the level: {l} vs {s}");
     }
@@ -418,7 +506,7 @@ mod tests {
 
         laser.retrigger(1.0, 1.0);
         assert!(laser.alive(), "a retrigger must revive the voice");
-        let s = render_all(&mut laser, LASER_LEN);
+        let s = render_all(&mut laser, ZAP_LEN);
         assert!(peak(&s) > 0.05, "a retriggered laser must be audible");
     }
 
@@ -431,7 +519,7 @@ mod tests {
         let mut boom = Boom::new();
         boom.retrigger(1.0, 1.0);
 
-        for s in render_all(&mut laser, LASER_LEN * 2.0) {
+        for s in render_all(&mut laser, ZAP_LEN * 2.0) {
             assert!(s.is_finite(), "laser emitted {s}");
         }
         for s in render_all(&mut boom, BOOM_LEN * 2.0) {

@@ -329,26 +329,51 @@ impl Voice for Boom {
 
 // ---------------------------------------------------------------------
 
-/// ⚠️ PLACEHOLDER — NOT BUILT BY EAR. Brian asked for "a more intense
-/// explosion" for Mutants and has not yet designed it.
+/// ★★ A MUTANT DYING. BRIAN'S, BUILT BY EAR AGAINST THE ORIGINAL.
 ///
-/// The shape is the Lander's, bent toward violence rather than settling:
-/// the corner starts nearly twice as high and stays open longer (a
-/// brighter, harsher body), the saw sits higher, the decay is faster so
-/// it BITES instead of sagging, and the level is up. A Mutant is the
-/// thing that hunts you; its death should be a bang, not a crump.
-const MUTANT_BOOM_LEN: f32 = 0.480;
-const MUTANT_BOOM_ATTACK: f32 = 0.020;
-const MUTANT_BOOM_DECAY: f32 = 3.400;
-const MUTANT_BOOM_LEVEL: f32 = 0.360;
+/// ⚠️⚠️ THIS IS NOT A BOOM. THERE IS NO OSCILLATOR AND NO FILTER.
+/// It is PURE CRACKLE — short impulses at random times, nothing else.
+/// Every other voice in this file is a waveform shaped by a filter;
+/// this one is a scatter of pops, and that is the entire sound.
+///
+/// ★ THE NAME IS NOW A LIE and is kept only so main.rs needs no edit.
+/// A Mutant does not go "boom", it comes apart.
+///
+/// ⚠️ DO NOT "FIX" THIS BY ADDING A BODY. The placeholder it replaced
+/// was a saw under a falling lowpass — the Lander's shape bent toward
+/// violence — and I proposed layering crackle ON TOP of exactly that.
+/// Brian threw the body out entirely and the result is closer to the
+/// machine. That is the third time in three sessions that a confident
+/// claim in this file about HOW a sound works was overturned by him
+/// going and listening (L067).
+///
+/// How it works, since nothing else here does this:
+/// · DENSITY 960 -> 480 pops/sec, with curve 2.43 — so it holds dense
+///   and collapses LATE, rather than thinning evenly.
+/// · SNAP FALLS 25ms -> 9ms. The pops start with a tail and end dry,
+///   which is what makes it come apart rather than fade.
+/// · No filter at all. `mode: off`.
+const MUTANT_BOOM_LEN: f32 = 0.575;
+const MUTANT_BOOM_ATTACK: f32 = 0.100;
+const MUTANT_BOOM_DECAY: f32 = 2.000;
+/// ⚠️ 0.45, NOT the 0.300 Brian exported. His level rendered a peak of
+/// 0.263 — QUIETER THAN SHOOTING A HUMANOID (0.336), which inverts a
+/// design decision the tests encode: killing a Mutant is an achievement
+/// and shooting a person is a mistake, so the mistake must never be the
+/// more satisfying sound. 0.45 renders 0.395 and changes nothing else
+/// about the voice. ⇒ `the_four_deaths_are_distinguishable` caught this.
+const MUTANT_BOOM_LEVEL: f32 = 0.450;
 
 pub struct MutantBoom {
     t: f32,
     gain: f32,
     alive: bool,
-    phase: [f32; 1],
-    low: f32,
-    band: f32,
+    noise: u32,
+    /// Per-crackle: seconds until the next pop, the amplitude of
+    /// the pop ringing down now, and its sign.
+    pop_wait: [f32; 1],
+    pop_amp: [f32; 1],
+    pop_sign: [f32; 1],
 }
 
 impl Default for MutantBoom {
@@ -359,7 +384,23 @@ impl Default for MutantBoom {
 
 impl MutantBoom {
     pub fn new() -> Self {
-        Self { t: 0.0, gain: 1.0, alive: false, phase: [0.0; 1], low: 0.0, band: 0.0 }
+        Self {
+            t: 0.0,
+            gain: 1.0,
+            alive: false,
+            noise: 0x1234_5678,
+            pop_wait: [0.0; 1],
+            pop_amp: [0.0; 1],
+            pop_sign: [1.0; 1],
+        }
+    }
+
+    /// xorshift32 — deterministic, allocation-free, audio-thread safe.
+    fn white(&mut self) -> f32 {
+        self.noise ^= self.noise << 13;
+        self.noise ^= self.noise >> 17;
+        self.noise ^= self.noise << 5;
+        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
     }
 }
 
@@ -380,20 +421,30 @@ impl Voice for MutantBoom {
             let u = self.t / MUTANT_BOOM_LEN;
             let mut v = 0.0f32;
 
-            {
-                let hz = 66.0 * 1.0000_f32.powf(u.powf(0.920));
-                self.phase[0] = (self.phase[0] + hz * dt).fract();
-                let p = self.phase[0];
-                v += (2.0 * p - 1.0) * 1.000;
+            // crackle, mix 0.880
+            // ★ Pops, not a waveform. Short impulses at random
+            // times, thinning as the sound dies — a continuous
+            // oscillator cannot make this shape at any setting.
+            // ⚠️ The `u >= 0.000` guard and `/ 1.000` are DEAD (delay is
+            // zero) and are kept verbatim so the playground's export
+            // regenerates this file byte-for-byte. Do not simplify them
+            // or the round-trip stops being checkable.
+            if u >= 0.000 {
+                let cu = (u - 0.000) / 1.000;
+                let rate = 960.0 * 0.5000_f32.powf(cu.powf(2.430));
+                self.pop_wait[0] -= dt;
+                if self.pop_wait[0] <= 0.0 {
+                    // Exponential gaps. Evenly spaced pops sound
+                    // like a machine, not like fire.
+                    let r = (self.white() + 1.0) * 0.5;
+                    self.pop_wait[0] += -r.max(1e-6).ln() / rate.max(1e-6);
+                    self.pop_amp[0] = 1.0;
+                    self.pop_sign[0] = if self.white() < 0.0 { -1.0 } else { 1.0 };
+                }
+                let snap = 0.025 + (0.009 - 0.025) * cu;
+                v += self.pop_sign[0] * self.pop_amp[0] * 0.880;
+                self.pop_amp[0] *= (-dt / snap.max(1e-5)).exp();
             }
-
-            let c = 1900.0 * 0.2100_f32.powf(u);
-            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);
-            let damp = (1.0 / 4.200_f32).min(1.0);
-            let high = v - self.low - damp * self.band;
-            self.band += g * high;
-            self.low += g * self.band;
-            v = self.low;
 
             let env = if u < MUTANT_BOOM_ATTACK {
                 u / MUTANT_BOOM_ATTACK
@@ -414,12 +465,18 @@ impl Voice for MutantBoom {
         self.t = 0.0;
         self.gain = gain.clamp(0.0, 1.0);
         self.alive = true;
-        self.low = 0.0;
-        self.band = 0.0;
+        // Pop state IS cleared — unlike phase. A half-decayed pop
+        // carried into the next explosion is an audible click at
+        // sample zero, before the attack has opened.
+        self.pop_wait = [0.0; 1];
+        self.pop_amp = [0.0; 1];
     }
 }
 
-// PLAYGROUND: {"len":0.48,"attack":0.02,"decay":3.4,"level":0.36,"filter":{"mode":"lp","from":1900,"to":399,"q":4.2},"oscs":[{"on":true,"wave":"saw","from":66,"to":66,"curve":0.92,"duty":0.04,"dutyTo":0.08,"mix":1}]}
+// ⚠️ LEVEL BELOW IS 0.3, THE EXPORT'S. The shipped constant is 0.45 —
+// see MUTANT_BOOM_LEVEL. Re-importing this line gives Brian's voice as
+// he built it; the level is a mix decision made after, not part of it.
+// PLAYGROUND: {"len":0.575,"attack":0.1,"decay":2,"level":0.3,"filter":{"mode":"off","from":1840,"to":260,"q":5.5},"oscs":[{"on":true,"wave":"crackle","from":960,"to":480,"curve":2.43,"duty":0.5,"dutyTo":0.5,"mix":0.88,"delay":0,"snap":0.0255,"snapTo":0.009}]}
 
 // ---------------------------------------------------------------------
 

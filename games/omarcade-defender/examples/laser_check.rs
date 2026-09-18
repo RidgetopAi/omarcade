@@ -60,7 +60,7 @@ fn main() {
     // the other three are placeholders waiting for his ear.
     let deaths: [(&str, &mut dyn Voice, f32, &str); 4] = [
         ("lander", &mut sound::Boom::new(), 0.9, "BRIAN'S — subtle, like the original"),
-        ("mutant", &mut sound::MutantBoom::new(), 0.8, "placeholder — more intense"),
+        ("mutant", &mut sound::MutantBoom::new(), 0.8, "★ BRIAN'S — pure crackle, no body"),
         ("ship", &mut sound::ShipBoom::new(), 1.5, "placeholder — your own death"),
         ("person", &mut sound::PersonBoom::new(), 0.5, "placeholder — you broke the rule"),
     ];

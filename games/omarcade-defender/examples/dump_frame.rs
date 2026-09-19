@@ -220,6 +220,53 @@ fn main() {
             effects.update(0.14);
         }
 
+        // ★★ THE LASER, AS BRIAN'S REFERENCE FRAME SHOWS IT: several
+        // beams at different ages on screen at once, so BOTH mechanisms
+        // are visible in one image — the growth (each older beam is
+        // longer) and the colour cycling (each is a different hue).
+        // ⇒ This is the scene to scan against the arcade frames.
+        "laser" => {
+            camera.snap_to(&ship);
+            let base = ship.x;
+            // ⚠️ STAGGERED IN Y, and that is the point of the scene.
+            // Brian's reference frame caught four beams at four ages
+            // stacked vertically, which is the only way the growth is
+            // visible in a still — drawn at one height they overlap into
+            // a single line and the whole mechanism disappears.
+            // ⚠️ EACH BEAM IS FIRED INTO ITS OWN `Shots` AND AGED
+            // SEPARATELY, then the four are merged for drawing. Firing
+            // four from one pool cannot produce four ages: `fire` is
+            // rate-limited to FIRE_INTERVAL, and four of those in a row
+            // is 0.64s against a shot life of 0.46s — the oldest beams
+            // expire before the frame is drawn. `step` advances the
+            // cooldown and the shots together, so they cannot be
+            // separated from outside.
+            // ⇒ 20%, 45%, 70% and 92% of a shot's life, which is the
+            // spread Brian's reference frame happens to catch.
+            // ⚠️ AND EACH GETS ITS OWN TINT BY HAND. A fresh `Shots`
+            // starts its colour counter at zero, so four separate pools
+            // would fire four beams in the same colour — which would
+            // hide the second mechanism this scene exists to show.
+            // ⚠️ MUZZLES PLACED NEAR THE LEFT EDGE, not at the ship. A
+            // full-grown beam is ~600 units long and the ship sits about
+            // 270 in from the left, so a beam fired from it runs off one
+            // edge or the other whichever way it points. This scene is a
+            // ruler, not a screenshot of play — it puts all four beams
+            // fully in frame so they can be measured against the arcade.
+            let life = shot::SHOT_RANGE / shot::SHOT_SPEED;
+            for (i, age) in [0.20f32, 0.45, 0.70, 0.92].iter().enumerate() {
+                let mut one = shot::Shots::new();
+                let muzzle = world::wrap(base - 240.0);
+                one.fire(muzzle, ship.y + 70.0 - i as f32 * 45.0, 1.0);
+                one.step(life * age);
+                for s in one.iter() {
+                    let mut s = *s;
+                    s.tint = i as u8;
+                    shots.adopt(s);
+                }
+            }
+        }
+
         // At speed, east. What most of the game looks like.
         "cruise" => run(&mut ship, &mut camera, thrust_east, 4.0),
 

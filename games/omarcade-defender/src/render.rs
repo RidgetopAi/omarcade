@@ -220,9 +220,70 @@ fn draw_beams(canvas: &mut Canvas<'_>, landers: &Landers, people: &Humanoids, ca
 /// BETWEEN TWO WORLD COORDINATES. A bolt straddling the seam has a head
 /// near 0 and a tail near WORLD_W; subtracting those gives a streak
 /// almost four screens long across the whole window.
+/// The colours a player beam can be fired in.
+///
+/// ★★ READ OFF THE ORIGINAL, NOT INVENTED. Across Brian's four reference
+/// frames every beam is dominated by ONE hue and the hues differ between
+/// beams: a frame that is green throughout (856 green pixels to 15
+/// white), one that is purple-and-blue (242/151), one carrying white,
+/// green and yellow beams at the same time.
+///
+/// ⚠️⚠️ HARDCODED, NEVER THEMED, and this is the same rule the threat
+/// colours live under (L065). The beam is not decoration — it is how the
+/// player reads where their fire is — and a theme that tinted it toward
+/// the background would be a gameplay bug wearing a preference.
+const SHOT_PALETTE: [Color; 6] = [
+    Color::rgb(90, 255, 90),   // green — the most common in the frames
+    Color::rgb(255, 255, 255), // white
+    Color::rgb(170, 90, 255),  // purple
+    Color::rgb(90, 170, 255),  // blue
+    Color::rgb(255, 255, 110), // yellow
+    Color::rgb(110, 255, 230), // cyan
+];
+
+/// How long the SOLID leading section is, as a fraction of the beam.
+///
+/// ★ THE PATTERN BRIAN COULD NOT PIN DOWN, AND IT IS MEASURABLE. In
+/// every reference beam the run lengths are not uniform: the LAST run —
+/// the one at the head — is far longer than any other (33, 83, 118 and
+/// 143 px in the four-beam frame) and it GROWS with the beam's age,
+/// while everything behind it stays broken into short dashes.
+/// ⇒ So a beam is a solid leading section with a dashed tail, not an
+/// evenly dashed line. The front is the bolt; the dashes are what it
+/// left behind.
+const SHOT_SOLID_FRACTION: f32 = 0.35;
+
+/// The dash and gap lengths behind the solid head, in world units.
+///
+/// ★ THE GAPS ARE QUANTISED IN THE ORIGINAL. Measured across every
+/// reference beam, gap runs are overwhelmingly 2, 3 or 5 pixels and
+/// essentially never larger mid-beam; lit runs cluster around 3 to 10
+/// with the occasional 12-18.
+/// ⇒ A short table reproduces that far better than a random draw, which
+/// would produce the long gaps the reference never shows.
+///
+/// ⚠️ WALKED FROM A PER-SHOT OFFSET, NOT ALWAYS FROM ENTRY 0. A table
+/// walked from the same place every time gives every beam an identical
+/// pattern, and it measures as one: our first version came out at stdev
+/// 1.10 over 3 distinct run lengths against the arcade's 2.83 over 6.
+/// Same scale, visibly less variety — a repeating loop where the
+/// original wanders. Starting each beam at its own offset costs nothing
+/// and puts the numbers in the same country.
+const SHOT_DASHES: [(f32, f32); 9] = [
+    (7.0, 2.0),
+    (6.0, 5.0),
+    (4.0, 2.0),
+    (7.0, 3.0),
+    (12.0, 2.0),
+    (6.0, 2.0),
+    (3.0, 5.0),
+    (16.0, 3.0),
+    (7.0, 2.0),
+];
+
 fn draw_shots(canvas: &mut Canvas<'_>, shots: &Shots, camera: &Camera, theme: &Theme) {
     let h = canvas.height() as f32;
-    let hot = theme.foreground.lerp(Color::rgb(255, 255, 255), 0.6);
+    let _ = theme;
 
     for s in shots.iter() {
         let head = camera.to_screen(s.x);
@@ -233,28 +294,80 @@ fn draw_shots(canvas: &mut Canvas<'_>, shots: &Shots, camera: &Camera, theme: &T
         // flat and the one rule that makes them dangerous would be
         // invisible.
         let speed = (s.vx * s.vx + s.vy * s.vy).sqrt().max(1.0);
-        let len = crate::shot::SHOT_LENGTH;
-        let tail_x = head - (s.vx / speed) * len;
+        // ★ THE BEAM GROWS. See `Shot::beam_len` — the tail travels
+        // slower than the head, so the gap between them opens as the
+        // shot flies. A fixed length cannot express this.
+        let len = s.beam_len();
+        let (ux, uy) = (s.vx / speed, s.vy / speed);
         let y_head = h - s.y;
+
+        let tail_x = head - ux * len;
         // Screen y grows DOWN while world y grows UP, so the tail's
         // screen offset is the opposite sign of the world velocity.
-        let tail_y = y_head + (s.vy / speed) * len;
+        let tail_y = y_head + uy * len;
 
         let (x0, x1) = if tail_x < head { (tail_x, head) } else { (head, tail_x) };
         if x1 < 0.0 || x0 > canvas.width() as f32 {
             continue;
         }
 
-        let color = if s.owner == Owner::Enemy {
-            Color::rgb(255, 120, 60)
-        } else {
-            hot
-        };
+        if s.owner == Owner::Enemy {
+            // ⚠️ ENEMY BOLTS STAY SOLID AND STAY ONE COLOUR. Threat is
+            // game information (L065): a bolt broken into dashes is
+            // harder to see coming, and that difficulty is not a
+            // difficulty the designer chose.
+            let color = Color::rgb(255, 120, 60);
+            if s.vy.abs() < 0.001 {
+                canvas.fill_rect_add_f(x0, y_head - 1.5, x1 - x0, 3.0, color);
+            } else {
+                canvas.line_add_f(tail_x, tail_y, head, y_head, 3.0, color);
+            }
+            continue;
+        }
 
+        let color = SHOT_PALETTE[(s.tint as usize) % SHOT_PALETTE.len()];
+
+        // The solid leading section, measured back from the head.
+        let solid = len * SHOT_SOLID_FRACTION;
+        let sx = head - ux * solid;
+        let sy = y_head + uy * solid;
         if s.vy.abs() < 0.001 {
-            canvas.fill_rect_add_f(x0, y_head - 1.5, x1 - x0, 3.0, color);
+            let (a, b) = if sx < head { (sx, head) } else { (head, sx) };
+            canvas.fill_rect_add_f(a, y_head - 1.5, b - a, 3.0, color);
         } else {
-            canvas.line_add_f(tail_x, tail_y, head, y_head, 3.0, color);
+            canvas.line_add_f(sx, sy, head, y_head, 3.0, color);
+        }
+
+        // Then dashes, walking back from the end of the solid section to
+        // the tail. ⚠️ Walking from the HEAD rather than from the tail
+        // keeps the pattern anchored to the bolt: anchored at the tail,
+        // every dash would slide forward each frame as the beam grew and
+        // the whole thing would crawl.
+        let mut walked = solid;
+        // ★ EACH BEAM STARTS AT ITS OWN PLACE IN THE TABLE, keyed off
+        // the shot's own colour index so the choice is stable for the
+        // life of the beam — a pattern that reshuffled each frame would
+        // crawl and shimmer.
+        let mut i = (s.tint as usize) * 2;
+        while walked < len {
+            let (dash, gap) = SHOT_DASHES[i % SHOT_DASHES.len()];
+            i += 1;
+            let start = walked + gap;
+            let end = (start + dash).min(len);
+            if start >= len {
+                break;
+            }
+            let ax = head - ux * start;
+            let ay = y_head + uy * start;
+            let bx = head - ux * end;
+            let by = y_head + uy * end;
+            if s.vy.abs() < 0.001 {
+                let (p, q) = if bx < ax { (bx, ax) } else { (ax, bx) };
+                canvas.fill_rect_add_f(p, y_head - 1.5, q - p, 3.0, color);
+            } else {
+                canvas.line_add_f(ax, ay, bx, by, 3.0, color);
+            }
+            walked = end;
         }
     }
 }

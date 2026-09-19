@@ -32,8 +32,43 @@ pub const SHOT_SPEED: f32 = 2400.0;
 /// enough that the world does not fill with old shots.
 pub const SHOT_RANGE: f32 = world::VIEW_W * 1.15;
 
-/// How long the drawn streak is, in world units.
-pub const SHOT_LENGTH: f32 = 34.0;
+/// How fast the BEAM'S TAIL travels, as a fraction of the head's speed.
+///
+/// ★★ MEASURED OFF THE ORIGINAL MACHINE, not chosen. Brian supplied four
+/// frames; one of them (687x213) happened to catch four player beams at
+/// four different ages, stacked. Their spans were 148, 214, 304 and 411
+/// pixels — 22%, 31%, 44% and 60% of the frame — and both ENDS moved
+/// between them: the head advanced 187, 137, 148 px while the tail
+/// advanced 121, 47, 41. The tail travels at about 44% of the head's
+/// speed, so the beam STRETCHES as it flies.
+///
+/// ⇒ THIS IS THE MECHANISM, AND IT IS NOT A LONGER STREAK. Brian put it
+/// plainly: "they start on fire shorter and grow in length as they
+/// travel out." The old `SHOT_LENGTH` drew a fixed 34-unit tail behind
+/// the head, which is 3.5% of [`world::VIEW_W`] and never changed — the
+/// arcade's beam reaches 60% and gets there by growing. No value of a
+/// fixed length reproduces that, which is why the constant is gone
+/// rather than retuned.
+///
+/// ★ THE EXISTING PHYSICS ALREADY LANDS IT. At 0.45 against
+/// [`SHOT_SPEED`] and [`SHOT_RANGE`], a beam reaches 63% of a screen at
+/// the end of its life; the reference frames top out at 60%. Neither
+/// [`SHOT_SPEED`] nor [`SHOT_RANGE`] needed touching — only the drawing
+/// was ever wrong.
+pub const SHOT_TAIL_FRACTION: f32 = 0.45;
+
+/// How many distinct colours a beam can be fired in.
+///
+/// ★ ONE SHOT IS ONE COLOUR, PICKED WHEN IT IS FIRED. Measured across
+/// all four reference frames, every beam is dominated by a single hue
+/// and different beams differ: one frame is green throughout (856 green
+/// pixels against 15 white), another is purple-and-blue (242/151), a
+/// third mixes white, green and yellow beams on screen at once.
+/// ⇒ Brian read this as cycling — "might start a purpleish color and
+/// then change to green" — and the pixels agree, with the refinement
+/// that the change happens BETWEEN shots rather than along one beam.
+/// Same shape as the Mutant explosion, where colour is chosen per batch.
+pub const SHOT_TINTS: u8 = 6;
 
 /// The most shots that can be in flight at once.
 ///
@@ -93,6 +128,17 @@ pub struct Shot {
     pub vy: f32,
     /// How far this shot still has left to travel.
     pub remaining: f32,
+    /// How far this shot HAS travelled, in world units.
+    ///
+    /// ★ THE BEAM'S LENGTH IS A FUNCTION OF THIS, not of a constant. See
+    /// [`SHOT_TAIL_FRACTION`] and [`Shot::beam_len`].
+    pub travelled: f32,
+    /// Which colour this beam was fired in: `0..SHOT_TINTS`.
+    ///
+    /// ⚠️ CHOSEN AT FIRE TIME AND THEN FIXED. A beam that changed colour
+    /// along its own length would be a different mechanism, and the
+    /// reference frames rule it out — each beam is one hue.
+    pub tint: u8,
     pub owner: Owner,
 }
 
@@ -106,7 +152,22 @@ impl Shot {
         self.x = world::wrap(self.x + self.vx * dt);
         self.y += self.vy * dt;
         self.remaining -= travel;
+        self.travelled += travel;
         self.remaining > 0.0
+    }
+
+    /// How long the beam is right now, in world units.
+    ///
+    /// ★ ZERO AT THE MUZZLE, GROWING AS IT FLIES. The head moves at
+    /// [`SHOT_SPEED`] and the tail at [`SHOT_TAIL_FRACTION`] of it, so
+    /// the gap between them opens at the difference. That is the whole
+    /// formula: distance travelled times the speed difference.
+    ///
+    /// ⚠️ VISUAL ONLY. Collision tests the HEAD POINT (`main.rs` reads
+    /// `(s.x, s.y)`), so a beam that stretches across most of the screen
+    /// is not a hitbox that does. `the_beam_is_not_a_hitbox` pins that.
+    pub fn beam_len(&self) -> f32 {
+        self.travelled * (1.0 - SHOT_TAIL_FRACTION)
     }
 
     /// The tail of the drawn streak, behind the head.
@@ -116,7 +177,7 @@ impl Shot {
     /// along each frame — it reads as a blinking speck rather than as
     /// something travelling.
     pub fn tail(&self) -> f32 {
-        world::wrap(self.x - self.vx.signum() * SHOT_LENGTH)
+        world::wrap(self.x - self.vx.signum() * self.beam_len())
     }
 
     pub fn is_enemy(&self) -> bool {
@@ -129,11 +190,19 @@ impl Shot {
 pub struct Shots {
     live: Vec<Shot>,
     cooldown: f32,
+    /// Which colour the NEXT player shot will be fired in.
+    ///
+    /// ★ A ROTATING COUNTER, NOT A RANDOM DRAW, and that is the closer
+    /// reading of the hardware: a 1981 board cycling a colour register
+    /// steps it, it does not roll dice. It also makes the sequence
+    /// reproducible, which is the difference between a test that pins
+    /// the behaviour and one that hopes.
+    next_tint: u8,
 }
 
 impl Shots {
     pub fn new() -> Self {
-        Self { live: Vec::with_capacity(MAX_SHOTS), cooldown: 0.0 }
+        Self { live: Vec::with_capacity(MAX_SHOTS), cooldown: 0.0, next_tint: 0 }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Shot> {
@@ -173,8 +242,15 @@ impl Shots {
             vx: SHOT_SPEED * direction.signum(),
             vy: 0.0,
             remaining: SHOT_RANGE,
+            travelled: 0.0,
+            tint: self.next_tint,
             owner: Owner::Player,
         });
+        // ★ ADVANCE ONLY ON A SHOT THAT ACTUALLY LEFT THE BARREL, which
+        // is why this sits after the early return rather than at the top.
+        // Stepping it on refused shots would cycle the colour while the
+        // gun was merely cooling.
+        self.next_tint = (self.next_tint + 1) % SHOT_TINTS;
         self.cooldown = FIRE_INTERVAL;
         true
     }
@@ -196,6 +272,12 @@ impl Shots {
             vx: ENEMY_SHOT_SPEED * dx / len,
             vy: ENEMY_SHOT_SPEED * dy / len,
             remaining: SHOT_RANGE,
+            travelled: 0.0,
+            // ⚠️ ENEMY BOLTS DO NOT CYCLE. Threat colour is game
+            // information and is held fixed on purpose (L065) — a bolt
+            // that might arrive in any colour is a bolt the eye has to
+            // identify before it can dodge.
+            tint: 0,
             owner: Owner::Enemy,
         });
     }
@@ -217,6 +299,17 @@ impl Shots {
     pub fn step(&mut self, dt: f32) {
         self.cooldown = (self.cooldown - dt).max(0.0);
         self.live.retain_mut(|s| s.step(dt));
+    }
+
+    /// Take an already-built [`Shot`] into this set, bypassing the gun.
+    ///
+    /// ⚠️ FOR DIAGNOSTIC SCENES ONLY — `examples/dump_frame.rs` uses it
+    /// to place beams at chosen ages, which `fire` cannot do because it
+    /// is rate-limited and `step` ages the cooldown and the shots
+    /// together. Nothing in the game calls this; the gun is the only way
+    /// a shot enters play.
+    pub fn adopt(&mut self, shot: Shot) {
+        self.live.push(shot);
     }
 
     /// Remove the shot at `index`, which has hit something.
@@ -308,15 +401,143 @@ mod tests {
 
     #[test]
     fn the_tail_trails_behind_the_head() {
+        // ⚠️ STEPPED FIRST, AND THAT IS NOT A WORKAROUND. A beam now has
+        // ZERO length at the muzzle and grows as it flies, so at fire
+        // time the tail sits exactly ON the head and neither direction
+        // is "behind". This test used to pass without stepping because
+        // the old fixed `SHOT_LENGTH` made a shot born full-size.
         let mut shots = Shots::new();
         shots.fire(500.0, 300.0, 1.0);
+        shots.step(0.05);
         let s = *shots.iter().next().unwrap();
         // Eastward: the tail is west of the head.
         assert!(world::delta(s.tail(), s.x) > 0.0, "tail should be behind");
 
         let mut shots = Shots::new();
         shots.fire(500.0, 300.0, -1.0);
+        shots.step(0.05);
         let s = *shots.iter().next().unwrap();
         assert!(world::delta(s.tail(), s.x) < 0.0, "tail should be behind");
+    }
+
+    /// ★★ THE MECHANISM BRIAN DESCRIBED: "they start on fire shorter and
+    /// grow in length as they travel out."
+    #[test]
+    fn the_beam_grows_as_it_travels() {
+        let mut shots = Shots::new();
+        shots.fire(0.0, 300.0, 1.0);
+
+        // Born with no length at all — the beam leaves the muzzle as a
+        // point, which is why `the_tail_trails_behind_the_head` has to
+        // step before it can ask which end is which.
+        let born = shots.iter().next().unwrap().beam_len();
+        assert!(born < 1.0, "a beam should leave the muzzle as a point, got {born}");
+
+        let mut last = born;
+        for _ in 0..8 {
+            shots.step(0.02);
+            let Some(s) = shots.iter().next() else { break };
+            let now = s.beam_len();
+            assert!(now > last, "beam shrank: {last} -> {now}");
+            last = now;
+        }
+
+        // ★ AND IT REACHES THE SIZE THE ORIGINAL DOES. The reference
+        // frames top out at 60% of a screen; the physics lands at ~63%
+        // without either SHOT_SPEED or SHOT_RANGE being touched.
+        let mut shots = Shots::new();
+        shots.fire(0.0, 300.0, 1.0);
+        shots.step(SHOT_RANGE / SHOT_SPEED * 0.98);
+        let s = shots.iter().next().expect("should still be alive");
+        let frac = s.beam_len() / world::VIEW_W;
+        assert!(
+            (0.55..=0.70).contains(&frac),
+            "a full-grown beam spans {:.0}% of a screen; the reference is ~60%",
+            frac * 100.0
+        );
+    }
+
+    /// ★★ SUCCESSIVE SHOTS ARE DIFFERENT COLOURS — the cycling Brian
+    /// read off the machine ("might start a purpleish color and then
+    /// change to green"), which the pixels refined to: the change
+    /// happens BETWEEN shots, not along one beam.
+    #[test]
+    fn successive_shots_cycle_colour() {
+        let mut shots = Shots::new();
+        let mut seen = Vec::new();
+        for _ in 0..SHOT_TINTS {
+            shots.fire(0.0, 300.0, 1.0);
+            seen.push(shots.iter().last().unwrap().tint);
+            // Clear the cooldown without ageing anything into oblivion.
+            shots.step(FIRE_INTERVAL);
+        }
+        let mut sorted = seen.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            SHOT_TINTS as usize,
+            "{SHOT_TINTS} shots produced {} distinct colours: {seen:?}",
+            sorted.len()
+        );
+
+        // ⚠️ AND IT WRAPS rather than running off the end of the palette.
+        shots.fire(0.0, 300.0, 1.0);
+        let wrapped = shots.iter().last().unwrap().tint;
+        assert_eq!(wrapped, seen[0], "the cycle did not wrap");
+    }
+
+    /// ⚠️ A REFUSED SHOT MUST NOT ADVANCE THE COLOUR. The gun is asked on
+    /// every frame the key is held and says no most of them; cycling on
+    /// the refusals would race the colour forward while nothing fired.
+    #[test]
+    fn a_refused_shot_does_not_cycle_colour() {
+        let mut shots = Shots::new();
+        shots.fire(0.0, 300.0, 1.0);
+        let first = shots.iter().last().unwrap().tint;
+        // Still cooling: these all refuse.
+        for _ in 0..10 {
+            assert!(!shots.fire(0.0, 300.0, 1.0), "fired while cooling");
+        }
+        shots.step(FIRE_INTERVAL);
+        shots.fire(0.0, 300.0, 1.0);
+        let second = shots.iter().last().unwrap().tint;
+        assert_eq!(
+            second,
+            (first + 1) % SHOT_TINTS,
+            "ten refused shots moved the colour from {first} to {second}"
+        );
+    }
+
+    /// ⚠️ THE BEAM IS A PICTURE, NOT A WEAPON. It now stretches across
+    /// most of a screen, and if that length ever reached the collision
+    /// path a shot would kill things it visibly flew past — including
+    /// Humanoids, where the punishment is losing the rescue.
+    ///
+    /// Collision reads the HEAD POINT (`main.rs` passes `(s.x, s.y)` to
+    /// the hit tests). This pins that the two stay separate.
+    #[test]
+    fn the_beam_is_not_a_hitbox() {
+        let mut shots = Shots::new();
+        shots.fire(0.0, 300.0, 1.0);
+        shots.step(0.2);
+        let s = *shots.iter().next().unwrap();
+
+        // A long beam behind the head...
+        assert!(s.beam_len() > 200.0, "expected a grown beam, got {}", s.beam_len());
+
+        // ...and a target sitting squarely inside it, well behind the
+        // head, is NOT hit: `enemy_hit` and the player hit path both ask
+        // about the head only.
+        let mut enemy = Shots::new();
+        enemy.fire_enemy(0.0, 300.0, 1.0, 0.0);
+        enemy.step(0.4);
+        let e = *enemy.iter().next().unwrap();
+        let behind = world::wrap(e.x - e.vx.signum() * e.beam_len() * 0.5);
+        assert!(
+            enemy.enemy_hit(behind, 300.0, 4.0, 4.0).is_none(),
+            "a target inside the beam but behind the head was hit — \
+             the drawn length has reached collision"
+        );
     }
 }

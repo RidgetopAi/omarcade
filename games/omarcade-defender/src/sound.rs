@@ -673,6 +673,181 @@ impl Voice for PersonBoom {
 // PLAYGROUND: {"len":0.26,"attack":0.006,"decay":5.2,"level":0.18,"filter":{"mode":"lp","from":1400,"to":700,"q":3},"oscs":[{"on":true,"wave":"saw","from":150,"to":150,"curve":0.92,"duty":0.04,"dutyTo":0.08,"mix":1}]}
 
 // ---------------------------------------------------------------------
+// The warp-in
+// ---------------------------------------------------------------------
+
+// ★★ BRIAN'S, BUILT BY EAR in tools/sound-playground.html and exported
+// verbatim. The constants below are his; the `PLAYGROUND:` line at the
+// end of this block round-trips back into the tool.
+// ⚠️ DO NOT "improve" these numbers by reasoning about them. They are a
+// listening result. The way to change this sound is to open the tool.
+
+/// How long the whole sound lasts, in seconds.
+///
+/// ★ THIS ALL BUT MATCHES `enemy::WARP_SECONDS` (0.55) AND THAT IS THE
+/// POINT. The Lander spends exactly that long materialising and
+/// unhittable; a voice that outlasted it would still be arriving after
+/// the thing had arrived, and one that finished early would leave the
+/// last of the animation silent. They land together.
+const WARP_LEN: f32 = 0.575;
+
+/// ⚠️ A LONG ATTACK — 38% of the whole sound, where every other voice in
+/// this file opens in 2-10%. That is what makes this a warp-in rather
+/// than an event: it BUILDS. An explosion hits and decays; something
+/// arriving swells until it is there.
+const WARP_ATTACK: f32 = 0.380;
+const WARP_DECAY: f32 = 1.000;
+const WARP_LEVEL: f32 = 0.510;
+
+/// A Lander materialising: noise and crackle through a bandpass
+/// sweeping UP.
+///
+/// ★★ IT SWEEPS THE WRONG WAY ON PURPOSE. Every other filtered voice
+/// here falls — the laser 1940 → 260, the Lander boom 1060 → 260. This
+/// one climbs, 240 → 500 Hz. A falling sweep is something collapsing;
+/// a rising one is something assembling, and the ear reads the
+/// direction before it reads anything else.
+///
+/// ★ AND IT IS NOISE *PLUS* CRACKLE, the only voice in the file that
+/// layers the two. The Mutant explosion is pure crackle with no body;
+/// the laser is pure swept noise. This one has both: a bed that builds
+/// and pops that thicken over it as the shape resolves.
+pub struct Warp {
+    t: f32,
+    gain: f32,
+    alive: bool,
+    low: f32,
+    band: f32,
+    noise: u32,
+    /// Per-crackle: seconds until the next pop, the amplitude of
+    /// the pop ringing down now, and its sign.
+    pop_wait: [f32; 1],
+    pop_amp: [f32; 1],
+    pop_sign: [f32; 1],
+}
+
+impl Default for Warp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Warp {
+    pub fn new() -> Self {
+        Self {
+            t: 0.0,
+            gain: 1.0,
+            alive: false,
+            low: 0.0,
+            band: 0.0,
+            noise: 0x1234_5678,
+            pop_wait: [0.0; 1],
+            pop_amp: [0.0; 1],
+            pop_sign: [1.0; 1],
+        }
+    }
+
+    /// xorshift32 — deterministic, allocation-free, audio-thread safe.
+    fn white(&mut self) -> f32 {
+        self.noise ^= self.noise << 13;
+        self.noise ^= self.noise >> 17;
+        self.noise ^= self.noise << 5;
+        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+}
+
+impl Voice for Warp {
+    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
+        if !self.alive {
+            out.fill(0.0);
+            return;
+        }
+        let dt = 1.0 / sample_rate;
+
+        for sample in out.iter_mut() {
+            if self.t >= WARP_LEN {
+                *sample = 0.0;
+                self.alive = false;
+                continue;
+            }
+            let u = self.t / WARP_LEN;
+            let mut v = 0.0f32;
+
+            // noise, mix 0.920
+            v += self.white() * 0.920;
+
+            // crackle, mix 0.500
+            // ★ Pops, not a waveform. Short impulses at random
+            // times, thickening as the shape resolves — a continuous
+            // oscillator cannot make this at any setting.
+            if u >= 0.010 {
+                let cu = (u - 0.010) / 0.990;
+                let rate = 330.0 * 3.3939_f32.powf(cu.powf(0.580));
+                self.pop_wait[0] -= dt;
+                if self.pop_wait[0] <= 0.0 {
+                    // Exponential gaps. Evenly spaced pops sound
+                    // like a machine, not like something arriving.
+                    let r = (self.white() + 1.0) * 0.5;
+                    self.pop_wait[0] += -r.max(1e-6).ln() / rate.max(1e-6);
+                    self.pop_amp[0] = 1.0;
+                    self.pop_sign[0] = if self.white() < 0.0 { -1.0 } else { 1.0 };
+                }
+                let snap = 0.003 + (0.038 - 0.003) * cu;
+                v += self.pop_sign[0] * self.pop_amp[0] * 0.500;
+                self.pop_amp[0] *= (-dt / snap.max(1e-5)).exp();
+            }
+
+            // Normalised: the mixes sum above 1 and would clip.
+            v /= 1.420;
+
+            // A two-pole state-variable filter, corner sweeping UP.
+            let c = 240.0 * 2.0833_f32.powf(u);
+            // ⚠️ CLAMPED: a corner near Nyquist makes this blow up.
+            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);
+            let damp = (1.0 / 7.000_f32).min(1.0);
+            let high = v - self.low - damp * self.band;
+            self.band += g * high;
+            self.low += g * self.band;
+            v = self.band;
+
+            let env = if u < WARP_ATTACK {
+                u / WARP_ATTACK
+            } else {
+                (-(u - WARP_ATTACK) * WARP_DECAY).exp()
+            };
+
+            *sample = v * env * WARP_LEVEL * self.gain;
+            self.t += dt;
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.alive
+    }
+
+    fn retrigger(&mut self, gain: f32, _pitch: f32) {
+        self.t = 0.0;
+        // ⚠️ THE NOISE SEQUENCE IS NOT RESET — successive arrivals draw
+        // from where the last one left off, so each gets a slightly
+        // different texture for free.
+        self.gain = gain.clamp(0.0, 1.0);
+        self.alive = true;
+        self.low = 0.0;
+        self.band = 0.0;
+        // Pop state IS cleared — unlike the noise. A half-decayed pop
+        // carried into the next arrival is an audible click at sample
+        // zero, before the attack has opened.
+        self.pop_wait = [0.0; 1];
+        self.pop_amp = [0.0; 1];
+    }
+}
+
+// ── playground state, for round-tripping ──
+// Paste this line back into tools/sound-playground.html to keep tweaking
+// this sound by ear.
+// PLAYGROUND: {"len":0.575,"attack":0.38,"decay":1,"level":0.51,"filter":{"mode":"bp","from":240,"to":500,"q":7},"oscs":[{"on":true,"wave":"noise","from":960,"to":480,"curve":2.43,"duty":0.5,"dutyTo":0.5,"mix":0.92,"delay":0,"snap":0.0255,"snapTo":0.009},{"on":true,"wave":"crackle","from":330,"to":1120,"curve":0.58,"duty":0.5,"dutyTo":0.5,"mix":0.5,"delay":0.01,"snap":0.0025,"snapTo":0.0385}]}
+
+// ---------------------------------------------------------------------
 // The thrust
 // ---------------------------------------------------------------------
 
@@ -1170,12 +1345,13 @@ mod tests {
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 5] = [
+        let cases: [(&str, &mut dyn Voice, f32); 6] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
             ("lander", &mut Boom::new(), BOOM_LEN),
             ("mutant", &mut MutantBoom::new(), MUTANT_BOOM_LEN),
             ("ship", &mut ShipBoom::new(), SHIP_BOOM_LEN),
             ("person", &mut PersonBoom::new(), PERSON_BOOM_LEN),
+            ("warp", &mut Warp::new(), WARP_LEN),
         ];
         for (name, v, len) in cases {
             v.retrigger(1.0, 1.0);
@@ -1249,6 +1425,71 @@ mod tests {
         for s in render_all(&mut boom, BOOM_LEN * 2.0) {
             assert!(s.is_finite(), "boom emitted {s}");
         }
+    }
+
+    /// ★★ THE WARP-IN SWEEPS UP, where every other filtered voice in
+    /// this file sweeps DOWN.
+    ///
+    /// ⚠️ THIS IS THE CHARACTER, NOT A TUNING DETAIL. A falling sweep is
+    /// something collapsing; a rising one is something assembling, and
+    /// the ear reads the direction before it reads anything else. If
+    /// this ever inverts, the Lander will sound like it is leaving.
+    #[test]
+    fn the_warp_sweeps_upward() {
+        let mut w = Warp::new();
+        w.retrigger(1.0, 1.0);
+        let s = render_all(&mut w, WARP_LEN);
+        let n = s.len();
+        // Compare the first third against the last third, by the energy
+        // above and below the filter's own midpoint.
+        let early = &s[n / 8..n / 3];
+        let late = &s[n * 2 / 3..n * 7 / 8];
+        let lift = |x: &[f32]| {
+            let hi: f32 = x.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum::<f32>()
+                / (x.len() - 1) as f32;
+            let r: f32 = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
+            (hi / r.max(1e-12)).sqrt()
+        };
+        let (a, b) = (lift(early), lift(late));
+        assert!(
+            b > a * 1.10,
+            "the warp does not brighten as it arrives: early {a:.4} vs late {b:.4}"
+        );
+    }
+
+    /// ★ IT BUILDS RATHER THAN HITS. A 38% attack is what separates this
+    /// from every explosion in the file, which open in 2-10%.
+    #[test]
+    fn the_warp_builds_rather_than_hits() {
+        assert!(
+            WARP_ATTACK > 0.25,
+            "WARP_ATTACK {WARP_ATTACK} is short enough to read as an impact"
+        );
+        let mut w = Warp::new();
+        w.retrigger(1.0, 1.0);
+        let s = render_all(&mut w, WARP_LEN);
+        let n = s.len();
+        // The loudest moment is NOT at the start.
+        let first = peak(&s[..n / 8]);
+        let mid = peak(&s[n / 3..n * 2 / 3]);
+        assert!(
+            mid > first * 1.5,
+            "the warp peaks at its onset like an explosion: {first:.4} then {mid:.4}"
+        );
+    }
+
+    /// ★ IT LANDS WITH THE ANIMATION. `enemy::WARP_SECONDS` is 0.55 and
+    /// the voice is 0.575 — a voice that outlasted the materialising
+    /// would still be arriving after the Lander had arrived.
+    #[test]
+    fn the_warp_matches_the_animation() {
+        let diff = (WARP_LEN - crate::enemy::WARP_SECONDS).abs();
+        assert!(
+            diff < 0.08,
+            "the warp voice ({WARP_LEN}) and the warp animation ({}) have \
+             drifted apart by {diff:.3}s",
+            crate::enemy::WARP_SECONDS
+        );
     }
 
     /// Render a continuous voice at a HELD parameter value.

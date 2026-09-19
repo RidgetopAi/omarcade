@@ -69,6 +69,10 @@ fn main() {
         emit(&dir.join(format!("boom-{name}.wav")), &s, what);
     }
 
+    // ★ THE WARP-IN. Rendered past its own length so the retire lands.
+    let warp = render(&mut sound::Warp::new(), 0.8, &[0.0]);
+    emit(&dir.join("warp.wav"), &warp, "★ BRIAN'S — a Lander materialising");
+
     // ★★ THE ENGINE, DRIVEN THE WAY THE GAME DRIVES IT.
     // ⚠️ NOT at a held constant. `exhaust` is EASED in main.rs — attack
     // 14.0/s against release 6.0/s — and the asymmetry is most of what

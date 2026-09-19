@@ -147,6 +147,16 @@ struct Defender {
     /// continuous voices are `start`ed and `set` and never die.
 
     thrust: VoiceId,
+    /// A Lander materialising. ★ One of the six silent events, and the
+    /// first of them to get a voice.
+    warp: SoundId,
+    /// True until the first frame's spawns have been consumed.
+    ///
+    /// ★ `Defender::new` scatters the opening wave before the game has
+    /// drawn anything, so the counter is already at five on frame one.
+    /// Without this the game opens with an arrival sound for enemies the
+    /// player has not been shown yet.
+    opening_wave: bool,
     boom: SoundId,
     mutant_boom: SoundId,
     ship_boom: SoundId,
@@ -212,7 +222,7 @@ struct Booms {
 }
 
 impl Defender {
-    fn new(theme: Theme, laser: SoundId, thrust: VoiceId, booms: Booms) -> Self {
+    fn new(theme: Theme, laser: SoundId, thrust: VoiceId, warp: SoundId, booms: Booms) -> Self {
         let terrain = Terrain::generate(RIDGE_SAMPLES, 0x0DEF_E4DE);
         let ship = Ship::new(0.0);
         let mut camera = Camera::new(ship.x);
@@ -242,6 +252,8 @@ impl Defender {
             score: 0,
             laser,
             thrust,
+            warp,
+            opening_wave: true,
             boom: booms.lander,
             mutant_boom: booms.mutant,
             ship_boom: booms.ship,
@@ -655,6 +667,31 @@ impl Game for Defender {
         if self.world_ended_this_frame {
             audio.play_with(self.boom, 1.0, 1.0);
         }
+        // ★★ SOMETHING ARRIVED. One voice however many landed on the
+        // same frame — the opening wave drops five at once, and five
+        // retriggers of a single voice is four sounds cut dead at
+        // sample zero and only the last one heard.
+        // ⚠️ SCALED BY HOW MANY, so a group reads as bigger than one
+        // straggler without ever reaching the laser's level.
+        let arrived = self.landers.take_spawned();
+        if arrived > 0 && !self.opening_wave {
+            let gain = (0.55 + 0.12 * (arrived - 1) as f32).min(1.0);
+            audio.play_with(self.warp, gain, 1.0);
+        }
+        // ⚠️ THE OPENING WAVE IS SILENT, and that is not an oversight.
+        // Those five are placed by `Defender::new` before the player has
+        // seen a frame; announcing them would play an arrival for
+        // enemies that were simply always there. Every later spawn —
+        // S9's reinforcements, a Mutant fusing — goes through the same
+        // counter and does sound.
+        // ★ CLEARED ONLY ONCE SOMETHING HAS ACTUALLY BEEN CONSUMED, not
+        // on the first frame unconditionally. This runs below the pause
+        // guard, so a game that opened paused would otherwise clear the
+        // flag having never read the opening five, and then the FIRST
+        // REAL arrival after unpausing would be the one silenced.
+        if arrived > 0 {
+            self.opening_wave = false;
+        }
     }
 
     fn render(&mut self, canvas: &mut Canvas<'_>) {
@@ -684,13 +721,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // is enabled and fed, never played. Registering it as a one-shot
     // would hand it to `play`, which retriggers rather than sustains.
     let thrust = audio.register(Box::new(sound::Thrust::new()));
+    let warp = audio.register_sound(Box::new(sound::Warp::new()));
     let booms = Booms {
         lander: audio.register_sound(Box::new(sound::Boom::new())),
         mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
         ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
         person: audio.register_sound(Box::new(sound::PersonBoom::new())),
     };
-    let game = Defender::new(theme, laser, thrust, booms);
+    let game = Defender::new(theme, laser, thrust, warp, booms);
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
@@ -707,13 +745,63 @@ mod tests {
         let mut audio = AudioSystem::new();
         let laser = audio.register_sound(Box::new(sound::Laser::new()));
         let thrust = audio.register(Box::new(sound::Thrust::new()));
+        let warp = audio.register_sound(Box::new(sound::Warp::new()));
         let booms = Booms {
             lander: audio.register_sound(Box::new(sound::Boom::new())),
             mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
             ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
             person: audio.register_sound(Box::new(sound::PersonBoom::new())),
         };
-        Defender::new(Theme::fallback(), laser, thrust, booms)
+        Defender::new(Theme::fallback(), laser, thrust, warp, booms)
+    }
+
+    /// ⚠️ THE OPENING-WAVE FLAG IS SPENT BY AN ARRIVAL, NOT BY A FRAME.
+    ///
+    /// The opening five are placed by `Defender::new` before a frame is
+    /// drawn, so the flag exists to swallow exactly that one read. If it
+    /// cleared on the first frame REGARDLESS of whether anything was
+    /// read, any frame that consumed nothing would spend it — and the
+    /// first arrival the player could actually hear would be the one
+    /// treated as the opening wave and silenced.
+    ///
+    /// ⚠️ THIS IS A REAL PATH, NOT A HYPOTHETICAL. `Defender::new` seeds
+    /// the counter, but `update` only reaches the dispatch when the game
+    /// is not paused — and `Lives` can hold the player out of flight at
+    /// the start too. Any of those leaves a frame that clears nothing.
+    #[test]
+    fn the_opening_wave_flag_is_spent_by_an_arrival() {
+        let mut g = game();
+        // Drain the opening wave the way the first live frame does.
+        assert_eq!(g.landers.take_spawned(), OPENING_LANDERS, "expected the opening five");
+
+        // ★ A FRAME THAT READ NOTHING MUST LEAVE THE FLAG ALONE. Run
+        // several with the counter empty; the flag is only meaningful
+        // while it still has an arrival to swallow.
+        let mut audio = AudioSystem::new();
+        let before = g.opening_wave;
+        {
+            let mut a = audio.handle();
+            for _ in 0..5 {
+                g.update(1.0 / 60.0, &mut a);
+            }
+        }
+        // Nothing spawned in those frames, so nothing should have been
+        // consumed — and the flag must be exactly as it was.
+        assert_eq!(
+            g.opening_wave, before,
+            "a frame that consumed no arrival spent the opening-wave flag"
+        );
+
+        // And the next REAL arrival is the one that spends it.
+        g.landers.spawn(enemy::Lander::new(500.0, 300.0, 0.0));
+        {
+            let mut a = audio.handle();
+            g.update(1.0 / 60.0, &mut a);
+        }
+        assert!(
+            !g.opening_wave,
+            "an actual arrival did not spend the opening-wave flag"
+        );
     }
 
     #[test]

@@ -521,6 +521,18 @@ pub enum Outcome {
 #[derive(Debug, Default)]
 pub struct Landers {
     live: Vec<Lander>,
+    /// How many Landers have been added since this was last read.
+    ///
+    /// ★ A COUNT, NOT A FLAG, and the difference matters at the opening
+    /// wave: five arrive on the same frame, and a bool could only say
+    /// "something spawned". The count lets the caller play ONE arrival
+    /// scaled to how big it was, rather than retriggering one voice five
+    /// times and hearing only the last.
+    ///
+    /// ⚠️ CLEARED BY READING IT (`take_spawned`). A caller that forgets
+    /// to read it gets a number that grows forever, which is a louder
+    /// failure than a flag that silently stays true.
+    spawned: usize,
     /// Humanoid indices already spoken for, so two Landers never hunt
     /// the same person and end up stacked on the same spot.
     claimed: Vec<usize>,
@@ -531,7 +543,7 @@ pub struct Landers {
 
 impl Landers {
     pub fn new() -> Self {
-        Self { live: Vec::new(), claimed: Vec::new(), noise: 0x4D07_A17E }
+        Self { live: Vec::new(), claimed: Vec::new(), noise: 0x4D07_A17E, spawned: 0 }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Lander> {
@@ -554,6 +566,20 @@ impl Landers {
 
     pub fn spawn(&mut self, lander: Lander) {
         self.live.push(lander);
+        self.spawned += 1;
+    }
+
+    /// How many Landers have arrived since this was last asked, and
+    /// reset the count.
+    ///
+    /// ★ EVERY ARRIVAL GOES THROUGH `spawn`, including `scatter`'s
+    /// opening wave and whatever S9's reinforcements turn out to be, so
+    /// a caller wired to this needs no change when waves land.
+    /// ⚠️ MUTANTS COUNT TOO — `Lander::mutant` is spawned through here
+    /// when one fuses. That is correct: a Mutant appearing is also
+    /// something arriving, and it is one of the six silent events.
+    pub fn take_spawned(&mut self) -> usize {
+        std::mem::replace(&mut self.spawned, 0)
     }
 
     pub fn clear(&mut self) {
@@ -810,6 +836,33 @@ mod tests {
     /// the behaviour those tests were written against.
     fn nobody() -> Humanoids {
         Humanoids::new()
+    }
+
+    /// ★ EVERY ARRIVAL IS COUNTED, whatever path it came in by.
+    #[test]
+    fn spawning_is_counted_and_the_count_clears() {
+        let t = terrain();
+        let mut ls = Landers::new();
+        assert_eq!(ls.take_spawned(), 0, "a fresh world has not spawned anything");
+
+        ls.spawn(Lander::new(500.0, 300.0, 0.0));
+        ls.spawn(Lander::new(900.0, 300.0, 0.0));
+        assert_eq!(ls.take_spawned(), 2, "two arrivals should count as two");
+        assert_eq!(ls.take_spawned(), 0, "reading the count must clear it");
+
+        // ⚠️ `scatter` goes through `spawn`, so the opening wave counts
+        // too — which is why main.rs has to swallow the first read
+        // rather than assume nothing has arrived yet.
+        let mut ls = Landers::new();
+        ls.scatter(5, 0.0, &t, 99);
+        assert_eq!(ls.take_spawned(), 5, "scatter must report its arrivals");
+
+        // ⚠️ AND SO DOES A MUTANT FUSING. A Mutant appearing is also
+        // something arriving; if that ever stops being true it should be
+        // a decision, not an accident.
+        let mut ls = Landers::new();
+        ls.spawn(Lander::mutant(500.0, 300.0));
+        assert_eq!(ls.take_spawned(), 1, "a fused Mutant is an arrival");
     }
 
     #[test]

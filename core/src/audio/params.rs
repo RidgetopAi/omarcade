@@ -119,6 +119,23 @@ impl VoiceParams {
     pub fn surface(kind: f32, units_per_second: f32, fraction: f32) -> VoiceParams {
         VoiceParams([kind, units_per_second.max(0.0), fraction.clamp(0.0, 1.0), 0.0])
     }
+
+    /// A rocket engine at `exhaust` in 0..=1 — normally the ship's own
+    /// eased thrust level.
+    ///
+    /// ★ ONE PARAMETER, AND IT IS THE SAME ONE THE PICTURE USES. Defender
+    /// eases `exhaust` once (asymmetric attack and release, so fire
+    /// catches instantly and dies away) and feeds the single value to
+    /// both the plume and this voice. Sound and image then move together
+    /// by construction rather than by two easings that agree until one
+    /// is retuned.
+    ///
+    /// ⚠️ ALREADY EASED, so a voice reading this should NOT slew it
+    /// again — unlike [`VoiceParams::engine`], whose throttle comes
+    /// straight off a jumpy speed.
+    pub fn thrust(exhaust: f32) -> VoiceParams {
+        VoiceParams([exhaust.clamp(0.0, 1.0), 0.0, 0.0, 0.0])
+    }
 }
 
 impl Default for VoiceParams {

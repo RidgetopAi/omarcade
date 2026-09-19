@@ -672,6 +672,280 @@ impl Voice for PersonBoom {
 
 // PLAYGROUND: {"len":0.26,"attack":0.006,"decay":5.2,"level":0.18,"filter":{"mode":"lp","from":1400,"to":700,"q":3},"oscs":[{"on":true,"wave":"saw","from":150,"to":150,"curve":0.92,"duty":0.04,"dutyTo":0.08,"mix":1}]}
 
+// ---------------------------------------------------------------------
+// The thrust
+// ---------------------------------------------------------------------
+
+// ★★ THE FIRST CONTINUOUS VOICE IN DEFENDER, and it is a different KIND
+// of thing from the five above. Those are one-shots: an event fires, a
+// clip plays, `alive()` goes false, the mixer retires it. Thrust is HELD
+// — it starts when the key goes down, lasts as long as the player holds
+// it, and has no natural length at all.
+//
+// ⇒ SO IT HAS NO ENVELOPE. There is no attack, no decay, no LEN. The
+// loudness comes from `exhaust`, read live out of `VoiceParams` every
+// sample. THE PARAMETER IS THE ENVELOPE.
+//
+// ⚠️ IT ALSO NEVER IMPLEMENTS `alive()`. The trait defaults to `true`
+// (core/src/audio/mixer.rs:35, "Continuous voices leave this at the
+// default") and that default is exactly right here — a thrust voice that
+// retired itself would have to be re-registered on every keypress.
+//
+// ★ THE PATTERN IS THE RACER'S ENGINE (games/omarcade-racer/src/sound.rs
+// :243), which has shipped this shape all along: read a 0..=1 parameter
+// from slot 0, render continuously, never die. Thrust is that with
+// `exhaust` where the racer has `throttle`.
+
+// ★★ BUILT BY EAR — BRIAN'S, 2026-09-19. See ref:defender-thrust-bed.
+// ⚠️ NOT built in tools/sound-playground.html, and that is deliberate
+// rather than an oversight. The playground designs CLIPS: every sweep in
+// it runs against `u = i/n`, the position in a fixed buffer, and its
+// envelope is attack-then-exponential-decay with no sustain stage. It
+// cannot express a voice whose shape comes from outside itself. Brian
+// auditioned this one from rendered WAVs instead (tools/thrust-probe.py)
+// and picked the bed and the wobble depth off a ladder.
+// ⇒ THERE IS NO `PLAYGROUND:` LINE ON THIS VOICE. Do not add one; it
+// would round-trip into a tool that cannot represent what this is.
+
+/// Filter corner at rest, in Hz — the engine idling.
+///
+/// ★ BRIGHTNESS TRACKS LOAD, which is why this is not simply
+/// [`THRUST_CORNER_FULL`] at a lower level. A real engine opening up
+/// gets BRIGHTER as well as louder; level alone reads as the same sound
+/// through a volume knob. The corner rides up with `exhaust`.
+const THRUST_CORNER_IDLE: f32 = 180.0;
+
+/// Filter corner at full thrust, in Hz.
+///
+/// ★★ THIS IS THE NUMBER BRIAN APPROVED. He heard a five-file ladder and
+/// picked 250 Hz over 400: "you kind of nailed on #2". Do not drift it
+/// while tuning something else.
+const THRUST_CORNER_FULL: f32 = 250.0;
+
+/// Filter resonance. ★★★ LOW, AND THAT IS THE WHOLE TRICK.
+///
+/// ⚠️⚠️ EVERY OTHER VOICE IN THIS FILE USES Q 3.0–6.4 AND THIS ONE MUST
+/// NOT. A two-pole state-variable filter at high Q is a near-oscillator:
+/// it RINGS at its corner, and over noise that ring is heard as a PITCH
+/// sitting behind the hiss. Brian reported exactly that while trying to
+/// build this in the playground — "can hear the wave behind it" — and it
+/// measured out as the cause: at the same 400 Hz corner, Q 4.0 collapsed
+/// every harmonic above the fundamental to ~4% and pulled centroid/peak
+/// to 1.90, which is the signature of a tone, not of noise. At Q 0.7 the
+/// harmonics stay up (0.55, 0.35, 0.24) and centroid/peak sits at 3.93.
+/// ⇒ HIGH Q GIVES A PITCH WEARING A NOISE COAT. LOW Q GIVES A WALL.
+/// A held sound needs the wall. Raising this is not "more character",
+/// it is the bug he spent a session hearing.
+const THRUST_Q: f32 = 0.7;
+
+/// How far the corner wanders, in OCTAVES.
+///
+/// ★ BRIAN'S RUNG. Offered ±0.15 / 0.30 / 0.50 / 0.80 against a flat
+/// reference, he chose the quietest: "it's number 1". That matches what
+/// he asked for — "a little wobble in there to make is sound like
+/// rushing" — and matches the original machine, where thrust is a BED
+/// under the game rather than a feature on top of it.
+///
+/// ⚠️ THE UNITS ARE OCTAVES AND THEY ONLY STAY OCTAVES BECAUSE OF THE
+/// NORMALISATION IN `wobble()`. The first version of the probe wobbled
+/// by a raw smoother output and moved the corner about a HUNDREDTH of an
+/// octave — the scope measured the wobbled file as identical to the flat
+/// one to three decimal places. A control with no authority is worse
+/// than no control, because it reads as "tried it, did not help".
+const THRUST_WOBBLE_OCTAVES: f32 = 0.15;
+
+/// How fast the corner wanders, in Hz.
+///
+/// ★ THE RUSH RATE. Slower reads as swelling, faster as fluttering.
+/// This is independent of [`THRUST_WOBBLE_OCTAVES`] — depth is how far,
+/// this is how often — so it can be tuned without re-auditioning depth.
+const THRUST_WOBBLE_HZ: f32 = 8.0;
+
+/// How much the wobble moves the LEVEL, as a fraction of how much it
+/// moves the corner.
+///
+/// ★ A corner that wanders while the level sits perfectly still still
+/// reads as static — the ear takes the steady loudness as the truth and
+/// hears the timbre change as an artefact. Breathing them together is
+/// what makes it one moving thing. Kept well under 1.0 so the level
+/// follows rather than leads.
+const THRUST_WOBBLE_LEVEL: f32 = 0.25;
+
+/// Output gain, chosen to land the rendered peak near 0.45.
+///
+/// ⚠️⚠️ THIS IS A GAIN, NOT A PEAK, AND THE TWO ARE NOWHERE NEAR EACH
+/// OTHER HERE. A lowpass at Q 0.7 REMOVES energy: the raw filter output
+/// peaks around 0.276, so a gain of 0.45 renders at 0.124 — less than a
+/// third of what the name suggests. It takes ~1.63 to reach 0.45.
+/// ★ THIS IS THE `ShipBoom` LESSON RUNNING BACKWARDS. There, a RESONANT
+/// filter at Q 6.4 ADDED gain the level constant said nothing about and
+/// the voice clipped at 1.03. Here a gentle filter subtracts it. Either
+/// direction, the rule is the same: A `_LEVEL` CONSTANT IS NOT THE PEAK.
+/// Render and measure. `thrust_does_not_clip` guards the top end.
+///
+/// ⚠️ THE TARGET 0.45 IS NOT A LISTENING RESULT — it is my choice,
+/// pending Brian flying it. Set below the laser's measured 0.76 on
+/// purpose: a HELD sound fatigues far faster than a one-shot, and
+/// thrust is held for most of a game. ⇒ Revisit it BY FLYING IT.
+const THRUST_LEVEL: f32 = 1.632;
+
+/// Below this much exhaust the voice writes silence.
+///
+/// ★ WHY A FLOOR AT ALL: `exhaust` eases to zero asymptotically
+/// (main.rs EXHAUST_RELEASE), so without a floor the engine would
+/// whisper forever at an amplitude too small to hear but large enough to
+/// keep the filter working. The floor is low enough to be inaudible and
+/// high enough to actually reach.
+const THRUST_GATE: f32 = 0.002;
+
+/// The ship's engine: a wall of low noise that rides `exhaust`.
+///
+/// ★ WHAT THIS IS, PHYSICALLY: white noise through a lowpass held at a
+/// FIXED corner — fixed, not swept. A sweep is a one-shot's signature,
+/// the sound of an event with a beginning and an end. An engine holds
+/// its timbre and changes only with load. What moves here moves for a
+/// reason: the corner rides `exhaust` (load), and wanders slightly on
+/// its own (the rush).
+///
+/// ⚠️ THERE IS NO SLEW ON `exhaust` AND THAT IS DELIBERATE. The racer's
+/// engine slews its throttle internally (THROTTLE_SLEW) because raw
+/// speed is jumpy. `exhaust` is ALREADY eased, in main.rs:303, with an
+/// asymmetric attack of 14.0/s against a release of 6.0/s — fire catches
+/// instantly and dies away. Slewing it twice would soften the attack the
+/// visual was tuned for and put picture and sound out of step.
+/// ⇒ SOUND AND PLUME MOVE ON THE SAME NUMBER. That is the point.
+pub struct Thrust {
+    noise: u32,
+    /// Smoothed noise driving the wobble. Its own stream, so the
+    /// breathing is not correlated with the grain of the bed itself.
+    wobble_noise: u32,
+    wobble: f32,
+    /// Two-pole state-variable filter state.
+    low: f32,
+    band: f32,
+}
+
+impl Thrust {
+    pub fn new() -> Thrust {
+        Thrust {
+            noise: 0x1234_5678,
+            wobble_noise: 0xB7E1_5163,
+            wobble: 0.0,
+            low: 0.0,
+            band: 0.0,
+        }
+    }
+
+    fn white(&mut self) -> f32 {
+        self.noise ^= self.noise << 13;
+        self.noise ^= self.noise >> 17;
+        self.noise ^= self.noise << 5;
+        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+
+    fn white_wobble(&mut self) -> f32 {
+        self.wobble_noise ^= self.wobble_noise << 13;
+        self.wobble_noise ^= self.wobble_noise >> 17;
+        self.wobble_noise ^= self.wobble_noise << 5;
+        (self.wobble_noise as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+
+    /// Advance the wobble one sample and return it, normalised to roughly
+    /// unit variance.
+    ///
+    /// ★★ THE NORMALISATION IS THE WHOLE FUNCTION. A one-pole smoother
+    /// fed unit-variance noise outputs a standard deviation of only
+    /// `sqrt(k / (2 - k))` — at 8 Hz against 48 kHz that is 0.023. Using
+    /// it raw means a "depth" of 0.15 moves the corner by about three
+    /// THOUSANDTHS of an octave: inaudible, and indistinguishable from
+    /// the control being broken.
+    /// ⇒ Dividing by that standard deviation makes the output ~unit
+    /// variance, so depth reads directly as octaves AND STAYS octaves
+    /// if [`THRUST_WOBBLE_HZ`] is ever retuned. Deriving it from
+    /// `sample_rate` rather than hardcoding keeps that true at any rate.
+    fn wobble(&mut self, sample_rate: f32) -> f32 {
+        let k = 1.0 - (-2.0 * PI * THRUST_WOBBLE_HZ / sample_rate).exp();
+        let n = self.white_wobble();
+        self.wobble += k * (n - self.wobble);
+        // ⚠️ `k` is tiny, so `k / (2 - k)` is tiny and its square root is
+        // still safely above zero — but guard anyway, because this runs
+        // on the audio thread and a division by zero here would spray
+        // NaN through every voice in the mixer.
+        // ⚠️ THE `/ 3.0` IS NOT A FUDGE FACTOR. `sqrt(k / (2 - k))` is
+        // the output std of a one-pole smoother fed UNIT-VARIANCE noise,
+        // and `white_wobble` is not that: it is uniform on (-1, 1),
+        // whose variance is 1/3. The smoother scales the input std, so
+        // the real output std is `sqrt(k / (2 - k)) * sqrt(1/3)` — which
+        // is `sqrt(k / (2 - k) / 3)`, the divisor written here.
+        // ⇒ Without it the result lands at std 0.577 and every depth
+        // silently means 58% of what it says.
+        let std = (k / (2.0 - k) / 3.0).sqrt().max(1e-6);
+        self.wobble / std
+    }
+}
+
+impl Default for Thrust {
+    fn default() -> Thrust {
+        Thrust::new()
+    }
+}
+
+impl Voice for Thrust {
+    fn render(&mut self, out: &mut [f32], params: VoiceParams, sample_rate: f32) {
+        // Slot 0 is `exhaust`, straight off the ship. See
+        // `VoiceParams::thrust`.
+        let exhaust = params.get(0).clamp(0.0, 1.0);
+
+        if exhaust < THRUST_GATE {
+            out.fill(0.0);
+            // ⚠️ THE FILTER IS NOT CLEARED HERE. The gate is crossed
+            // every time the player lifts off, and clearing state on
+            // each crossing would put a click at the start of every
+            // re-ignition. The noise keeps running for the same reason
+            // the laser's does: continuity is free character.
+            return;
+        }
+
+        for sample in out.iter_mut() {
+            let w = self.wobble(sample_rate);
+
+            // Brightness rides load, then wanders. Both are
+            // MULTIPLICATIVE on the corner: timbre is heard
+            // logarithmically, so a fixed number of Hz is a far bigger
+            // move down low than it is up high.
+            let c = (THRUST_CORNER_IDLE
+                + (THRUST_CORNER_FULL - THRUST_CORNER_IDLE) * exhaust)
+                * (w * THRUST_WOBBLE_OCTAVES).exp2();
+
+            let v = self.white();
+
+            // ⚠️ CLAMPED, for the same reason as every other filter in
+            // this file: a corner near Nyquist walks the SVF past its
+            // stability limit and it self-oscillates to NaN, which the
+            // mixer then spreads across every voice. The corner here is
+            // nowhere near it, but the clamp costs nothing and the
+            // failure is catastrophic.
+            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);
+            let damp = (1.0 / THRUST_Q).min(1.0);
+            let high = v - self.low - damp * self.band;
+            self.band += g * high;
+            self.low += g * self.band;
+
+            // The level breathes with the corner, and rides exhaust.
+            let breath = 1.0 + w * THRUST_WOBBLE_OCTAVES * THRUST_WOBBLE_LEVEL;
+            *sample = self.low * breath * exhaust * THRUST_LEVEL;
+        }
+    }
+
+    // ★ NO `alive()`. The trait default is `true` and a continuous voice
+    // wants exactly that — see the block comment at the top of this
+    // section.
+
+    // ★ NO `retrigger()` EITHER. Nothing "fires" a held sound; it is
+    // driven by `set`, not by `play`. The trait default is a no-op,
+    // which is the correct behaviour if one is ever called by mistake.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -974,6 +1248,235 @@ mod tests {
         }
         for s in render_all(&mut boom, BOOM_LEN * 2.0) {
             assert!(s.is_finite(), "boom emitted {s}");
+        }
+    }
+
+    /// Render a continuous voice at a HELD parameter value.
+    ///
+    /// ⚠️ `render_all` feeds `VoiceParams::SILENT`, which is exactly
+    /// right for the five one-shots and useless for a voice whose whole
+    /// shape comes from its parameter — it would measure `Thrust` at
+    /// zero exhaust and conclude the engine is silent.
+    fn render_held(v: &mut dyn Voice, params: VoiceParams, seconds: f32) -> Vec<f32> {
+        let mut out = Vec::new();
+        let mut block = [0.0f32; 256];
+        let blocks = (seconds * SR / 256.0) as usize + 1;
+        for _ in 0..blocks {
+            v.render(&mut block, params, SR);
+            out.extend_from_slice(&block);
+        }
+        out
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    /// ★★ THE DEFINING PROPERTY OF A CONTINUOUS VOICE, AND THE ONE THAT
+    /// SEPARATES IT FROM EVERY OTHER VOICE IN THIS FILE.
+    ///
+    /// A one-shot is over when it is over. Thrust is over when the
+    /// player says so. If this ever retires itself, the engine goes
+    /// permanently silent mid-flight and nothing re-registers it.
+    #[test]
+    fn thrust_never_retires() {
+        let mut t = Thrust::new();
+        let held = VoiceParams::thrust(1.0);
+        // Far longer than the longest one-shot in the file.
+        let s = render_held(&mut t, held, 5.0);
+        assert!(t.alive(), "thrust retired itself — the engine would cut out");
+        // And it is still making sound at the end, not merely "alive".
+        let tail = &s[s.len() - 4096..];
+        assert!(
+            rms(tail) > 0.01,
+            "thrust went quiet while held: tail rms {:.5}",
+            rms(tail)
+        );
+    }
+
+    /// ★ LOUDNESS TRACKS `exhaust`. The parameter IS the envelope, so
+    /// this is the test that the voice is driven at all rather than
+    /// free-running.
+    #[test]
+    fn thrust_follows_exhaust() {
+        let mut quiet = Thrust::new();
+        let mut loud = Thrust::new();
+        let a = rms(&render_held(&mut quiet, VoiceParams::thrust(0.25), 0.5));
+        let b = rms(&render_held(&mut loud, VoiceParams::thrust(1.0), 0.5));
+        assert!(
+            b > a * 2.0,
+            "full thrust ({b:.4}) is not meaningfully louder than quarter ({a:.4})"
+        );
+    }
+
+    /// ★ AND SO DOES BRIGHTNESS — the corner rides load, which is what
+    /// makes it read as an engine opening up rather than a volume knob.
+    ///
+    /// Measured as high-band energy against low, so it cannot be passed
+    /// by simply getting louder: both signals are normalised by their
+    /// own RMS first.
+    #[test]
+    fn thrust_brightens_under_load() {
+        fn brightness(exhaust: f32) -> f32 {
+            let mut t = Thrust::new();
+            let s = render_held(&mut t, VoiceParams::thrust(exhaust), 0.5);
+            // Skip the filter's settling transient.
+            let s = &s[4096..];
+            let r = rms(s).max(1e-9);
+            // A crude one-pole highpass: the difference between
+            // successive samples is energy that survived the lowpass.
+            let hi: f32 = s.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum::<f32>()
+                / (s.len() - 1) as f32;
+            hi.sqrt() / r
+        }
+        let idle = brightness(0.15);
+        let full = brightness(1.0);
+        assert!(
+            full > idle * 1.15,
+            "brightness does not track load: idle {idle:.4} vs full {full:.4}"
+        );
+    }
+
+    /// ★★ THE WOBBLE HAS AUTHORITY — measured on the CORNER, not on
+    /// the output.
+    ///
+    /// ⚠️⚠️ THIS TEST EXISTS BECAUSE A DEAD CONTROL ONCE SHIPPED. An
+    /// un-normalised one-pole smoother moved the corner by about a
+    /// hundredth of an octave, and the wobbled render measured identical
+    /// to the flat one to three decimal places: wired, shipped, and
+    /// doing nothing.
+    ///
+    /// ⚠️ AND THE OBVIOUS TEST DOES NOT CATCH THAT. Window RMS over a
+    /// 2-second render drifts 0.118 with the wobble DEAD and 0.129 at
+    /// the shipped depth — white noise is lumpy enough at 50 ms to
+    /// swallow the signal whole. Brightness-per-window is no better
+    /// (0.073 dead, 0.079 live). ±0.15 octaves is genuinely subtle;
+    /// that is why Brian chose it, and it means no statistic over the
+    /// OUTPUT separates it from noise reliably.
+    /// ⇒ SO MEASURE THE MECHANISM. `wobble()` is deterministic given the
+    /// seed, and what it must deliver is a stated number of octaves.
+    #[test]
+    fn the_wobble_actually_moves() {
+        let mut t = Thrust::new();
+        // One second of the modulator alone.
+        let n = SR as usize;
+        let mut w = Vec::with_capacity(n);
+        for _ in 0..n {
+            w.push(t.wobble(SR));
+        }
+
+        let mean = w.iter().sum::<f32>() / n as f32;
+        let std = (w.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n as f32).sqrt();
+
+        // ★ THE NORMALISATION IS THE CLAIM: `wobble()` returns roughly
+        // unit variance, so `depth` reads directly as octaves. Without
+        // it this lands near 0.023 and the whole control is inert.
+        assert!(
+            (0.7..=1.4).contains(&std),
+            "wobble is not unit-variance: std {std:.4}. Depth no longer means \
+             octaves — this is exactly the dead-control bug."
+        );
+
+        // And what that buys, in the units the constant is written in:
+        // the corner actually swings by something close to the stated
+        // depth rather than a rounding error.
+        let swing = w.iter().fold(0.0f32, |m, x| m.max(x.abs())) * THRUST_WOBBLE_OCTAVES;
+        assert!(
+            swing > 0.10,
+            "the corner barely moves: peak swing {swing:.4} octaves against a \
+             depth of {THRUST_WOBBLE_OCTAVES}"
+        );
+    }
+
+    /// ★★ THE RESONANCE STAYS LOW, and this is a design constraint
+    /// rather than a tuning preference.
+    ///
+    /// ⚠️ At high Q the state-variable filter rings at its corner, and
+    /// that ring is heard as a PITCH behind the noise — the exact fault
+    /// Brian reported while trying to build this in the playground:
+    /// "can hear the wave behind it".
+    ///
+    /// ⚠️⚠️ MEASURED BY AUTOCORRELATION AT THE CORNER PERIOD, and the
+    /// first version of this test did NOT. It compared high-band energy
+    /// against total, which sounds like it should detect a ring and does
+    /// not: that ratio tracks the CORNER and is flat across Q (0.0324 at
+    /// Q 0.5, 0.0327 at Q 6.0). It would have passed at Q 6.0 — the very
+    /// bug it claimed to guard. Ringing is PERIODICITY, so the measure
+    /// has to be periodicity: 0.018 flat through Q 1.0, then 0.19 at
+    /// Q 2.0 and 0.58 at Q 6.0.
+    #[test]
+    fn thrust_is_a_wall_not_a_tone() {
+        let mut t = Thrust::new();
+        let s = render_held(&mut t, VoiceParams::thrust(1.0), 1.0);
+        // Skip the filter's settling transient.
+        let s = &s[4096..];
+
+        let mean = s.iter().sum::<f32>() / s.len() as f32;
+        let d: Vec<f32> = s.iter().map(|x| x - mean).collect();
+
+        // A filter ringing at its corner repeats at that period. Sweep
+        // lags around it rather than assuming one exactly, because the
+        // wobble moves the corner while this renders.
+        let period = SR / THRUST_CORNER_FULL;
+        let mut best = 0.0f32;
+        for lag in (period * 0.6) as usize..(period * 1.8) as usize {
+            let mut num = 0.0f32;
+            let mut den = 0.0f32;
+            // Every 7th sample: this is O(n * lags) and the estimate is
+            // identical to three decimals at full density.
+            let mut i = 0;
+            while i + lag < d.len() {
+                num += d[i] * d[i + lag];
+                den += d[i] * d[i];
+                i += 7;
+            }
+            if den > 0.0 {
+                best = best.max(num / den);
+            }
+        }
+        assert!(
+            best < 0.10,
+            "thrust RINGS — autocorrelation {best:.4} at the corner period. \
+             THRUST_Q is {THRUST_Q}; anything from about 2.0 up reads as a \
+             pitch behind the noise."
+        );
+    }
+
+    /// The engine shares a mixer with five one-shots and must not clip.
+    #[test]
+    fn thrust_does_not_clip() {
+        let mut t = Thrust::new();
+        let p = peak(&render_held(&mut t, VoiceParams::thrust(1.0), 2.0));
+        assert!(p <= 1.0, "thrust CLIPS at full exhaust: peak {p:.3}");
+        assert!(p < 0.95, "thrust has no headroom: peak {p:.3}");
+    }
+
+    /// ★ SILENT AT REST. `exhaust` eases to zero asymptotically, so
+    /// without the gate the engine whispers forever.
+    #[test]
+    fn thrust_is_silent_at_rest() {
+        let mut t = Thrust::new();
+        let s = render_held(&mut t, VoiceParams::thrust(0.0), 0.2);
+        assert!(
+            peak(&s) == 0.0,
+            "thrust is audible at zero exhaust: peak {:.6}",
+            peak(&s)
+        );
+    }
+
+    /// No NaN reaches the mixer. ⚠️ One NaN in one voice is spread across
+    /// every other voice by the summing mixer, so this is not a local
+    /// failure.
+    #[test]
+    fn thrust_never_emits_nan() {
+        for exhaust in [0.0, 0.001, 0.5, 1.0] {
+            let mut t = Thrust::new();
+            for s in render_held(&mut t, VoiceParams::thrust(exhaust), 1.0) {
+                assert!(s.is_finite(), "thrust emitted {s} at exhaust {exhaust}");
+            }
         }
     }
 }

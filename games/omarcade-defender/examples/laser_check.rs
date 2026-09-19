@@ -68,6 +68,63 @@ fn main() {
         let s = render(v, secs, &[0.0]);
         emit(&dir.join(format!("boom-{name}.wav")), &s, what);
     }
+
+    // ★★ THE ENGINE, DRIVEN THE WAY THE GAME DRIVES IT.
+    // ⚠️ NOT at a held constant. `exhaust` is EASED in main.rs — attack
+    // 14.0/s against release 6.0/s — and the asymmetry is most of what
+    // the sound is: fire catches instantly and dies away. Rendering it
+    // at a flat 1.0 would measure a voice nobody ever hears.
+    let held = render_thrust(1.2, &[(0.1, 0.9)]);
+    emit(&dir.join("thrust-held.wav"), &held, "one long burn, eased in and out");
+
+    // What flying actually sounds like: short taps, the way a player
+    // feathers it. ★ THE RELEASE NEVER FINISHES between taps, which is
+    // the whole reason the release is slower than the attack.
+    let taps = render_thrust(2.0, &[(0.1, 0.25), (0.5, 0.65), (0.9, 1.1), (1.4, 1.5)]);
+    emit(&dir.join("thrust-taps.wav"), &taps, "four taps — feathering it");
+}
+
+/// Render the thrust voice over a timeline of held intervals, easing
+/// `exhaust` exactly the way `Defender::step` does.
+///
+/// ⚠️ THE EASING CONSTANTS ARE DUPLICATED FROM main.rs AND THAT IS A
+/// KNOWN COST. This example cannot `include!` main.rs the way it does
+/// sound.rs — main.rs is a binary root with a `fn main`. If the easing
+/// is ever retuned, retune it here too or this file starts lying about
+/// what the game sounds like.
+fn render_thrust(seconds: f32, holds: &[(f32, f32)]) -> Vec<f32> {
+    const EXHAUST_ATTACK: f32 = 14.0;
+    const EXHAUST_RELEASE: f32 = 6.0;
+    // The game eases once per FIXED_DT step, not once per sample.
+    const FIXED_DT: f32 = 1.0 / 120.0;
+
+    let mut v = sound::Thrust::new();
+    let total = (seconds * SR) as usize;
+    let mut out: Vec<f32> = Vec::with_capacity(total);
+    let mut block = [0.0f32; 256];
+    let mut exhaust = 0.0f32;
+    let mut stepped = 0.0f32;
+
+    while out.len() < total {
+        let t = out.len() as f32 / SR;
+        // Catch the simulation up to this block, one fixed step at a
+        // time, so the easing sees the same dt the game gives it.
+        while stepped < t {
+            let want = if holds.iter().any(|&(a, b)| stepped >= a && stepped < b) {
+                1.0
+            } else {
+                0.0
+            };
+            let rate = if want > exhaust { EXHAUST_ATTACK } else { EXHAUST_RELEASE };
+            exhaust += (want - exhaust).clamp(-rate * FIXED_DT, rate * FIXED_DT);
+            exhaust = exhaust.clamp(0.0, 1.0);
+            stepped += FIXED_DT;
+        }
+        v.render(&mut block, VoiceParams::thrust(exhaust), SR);
+        out.extend_from_slice(&block);
+    }
+    out.truncate(total);
+    out
 }
 
 /// Render a voice for `seconds`, retriggering it at each time in `fires`,

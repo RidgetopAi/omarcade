@@ -41,7 +41,7 @@ mod shot;
 mod sound;
 mod world;
 
-use omarcade_core::audio::SoundId;
+use omarcade_core::audio::{SoundId, VoiceId, VoiceParams};
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::{Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Pause, Theme};
 
@@ -139,6 +139,14 @@ struct Defender {
     world_ended: bool,
 
     laser: SoundId,
+
+    /// ★ A `VoiceId`, NOT a `SoundId`, and the type is the whole
+
+    /// distinction: one-shots are `play`ed and retire themselves,
+
+    /// continuous voices are `start`ed and `set` and never die.
+
+    thrust: VoiceId,
     boom: SoundId,
     mutant_boom: SoundId,
     ship_boom: SoundId,
@@ -204,7 +212,7 @@ struct Booms {
 }
 
 impl Defender {
-    fn new(theme: Theme, laser: SoundId, booms: Booms) -> Self {
+    fn new(theme: Theme, laser: SoundId, thrust: VoiceId, booms: Booms) -> Self {
         let terrain = Terrain::generate(RIDGE_SAMPLES, 0x0DEF_E4DE);
         let ship = Ship::new(0.0);
         let mut camera = Camera::new(ship.x);
@@ -233,6 +241,7 @@ impl Defender {
             world_ended: false,
             score: 0,
             laser,
+            thrust,
             boom: booms.lander,
             mutant_boom: booms.mutant,
             ship_boom: booms.ship,
@@ -499,6 +508,37 @@ impl Defender {
             face: None,
         }
     }
+
+    /// Whether the engine should be sounding at all this frame.
+    ///
+    /// ⚠️ DERIVED, NEVER CACHED — the racer's rule, and it cost it a
+    /// whole race of silence to learn. A `thrust_sounding: bool` field
+    /// can disagree with what the mixer was actually told, and nothing
+    /// ever reconciles the two. A predicate over the state that decides
+    /// it cannot drift from that state.
+    ///
+    /// ★ A PAUSED SHIP GOES QUIET like a dead one, reusing this switch
+    /// rather than adding a parallel one.
+    fn thrust_should_run(&self) -> bool {
+        !self.pause.is_paused() && self.lives.is_flying()
+    }
+
+    /// Feed the engine this frame's `exhaust`.
+    ///
+    /// ★★ THE SAME NUMBER THE PLUME USES. `exhaust` is eased once, in
+    /// `step`, with an asymmetric attack and release; the picture and
+    /// the sound then both read it. They cannot drift apart, because
+    /// there is nothing to drift — it is one value.
+    fn thrust_sound(&mut self, audio: &mut Audio<'_>) {
+        if self.thrust_should_run() {
+            audio.start(self.thrust);
+        } else {
+            audio.stop(self.thrust);
+        }
+        // `set` is idempotent, so there is deliberately no change
+        // detection here.
+        audio.set(self.thrust, VoiceParams::thrust(self.exhaust));
+    }
 }
 
 impl Game for Defender {
@@ -550,6 +590,20 @@ impl Game for Defender {
     }
 
     fn update(&mut self, dt: f32, audio: &mut Audio<'_>) {
+        // ★ THE ENGINE IS FED BEFORE THE PAUSE GUARD, NOT AFTER.
+        // `update` returns early while paused, so a feed placed below
+        // this point would leave the mixer holding the last `exhaust`
+        // the ship had when the player hit P — a thrust drone under a
+        // PAUSED overlay, which is the audio version of a frozen screen
+        // with nothing to say why.
+        // ⚠️ RESTATED UNCONDITIONALLY EVERY FRAME, never gated on a
+        // cached "is it running" flag. `Command::Enable` is a plain
+        // assignment in the mixer — idempotent and free — so a dropped
+        // command heals on the very next frame instead of lasting the
+        // whole run. The racer learned this the expensive way; see the
+        // note above its own start/stop block.
+        self.thrust_sound(audio);
+
         if self.pause.is_paused() {
             return;
         }
@@ -626,13 +680,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let theme = Theme::load();
     let mut audio = AudioSystem::new();
     let laser = audio.register_sound(Box::new(sound::Laser::new()));
+    // ⚠️ `register`, NOT `register_sound`. The engine is continuous: it
+    // is enabled and fed, never played. Registering it as a one-shot
+    // would hand it to `play`, which retriggers rather than sustains.
+    let thrust = audio.register(Box::new(sound::Thrust::new()));
     let booms = Booms {
         lander: audio.register_sound(Box::new(sound::Boom::new())),
         mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
         ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
         person: audio.register_sound(Box::new(sound::PersonBoom::new())),
     };
-    let game = Defender::new(theme, laser, booms);
+    let game = Defender::new(theme, laser, thrust, booms);
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
@@ -648,13 +706,14 @@ mod tests {
     fn game() -> Defender {
         let mut audio = AudioSystem::new();
         let laser = audio.register_sound(Box::new(sound::Laser::new()));
+        let thrust = audio.register(Box::new(sound::Thrust::new()));
         let booms = Booms {
             lander: audio.register_sound(Box::new(sound::Boom::new())),
             mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
             ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
             person: audio.register_sound(Box::new(sound::PersonBoom::new())),
         };
-        Defender::new(Theme::fallback(), laser, booms)
+        Defender::new(Theme::fallback(), laser, thrust, booms)
     }
 
     #[test]

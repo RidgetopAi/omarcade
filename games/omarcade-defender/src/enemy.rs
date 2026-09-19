@@ -533,6 +533,20 @@ pub struct Landers {
     /// to read it gets a number that grows forever, which is a louder
     /// failure than a flag that silently stays true.
     spawned: usize,
+    /// How many Landers have FUSED into Mutants since this was last read.
+    ///
+    /// ★★ A SEPARATE COUNT FROM `spawned`, BECAUSE BRIAN HEARS THEM AS
+    /// DIFFERENT EVENTS: "we have a different sound for when the lander
+    /// merges with the humanoid and spawns in. but the sound I just made
+    /// we will use for spawns of landers and baiters."
+    /// ⇒ An arrival is something appearing out of nothing. A fusion is a
+    /// thing you failed to stop becoming worse — the arcade's cruellest
+    /// arithmetic — and the game should not say the same word for both.
+    ///
+    /// ⚠️ FUSION DOES NOT GO THROUGH `spawn`. A Lander reaching the top
+    /// calls `mutate()` and transforms IN PLACE; nothing is ever pushed.
+    /// That is exactly why the arrival voice was silent in play.
+    fused: usize,
     /// Humanoid indices already spoken for, so two Landers never hunt
     /// the same person and end up stacked on the same spot.
     claimed: Vec<usize>,
@@ -543,7 +557,7 @@ pub struct Landers {
 
 impl Landers {
     pub fn new() -> Self {
-        Self { live: Vec::new(), claimed: Vec::new(), noise: 0x4D07_A17E, spawned: 0 }
+        Self { live: Vec::new(), claimed: Vec::new(), noise: 0x4D07_A17E, spawned: 0, fused: 0 }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Lander> {
@@ -567,6 +581,15 @@ impl Landers {
     pub fn spawn(&mut self, lander: Lander) {
         self.live.push(lander);
         self.spawned += 1;
+    }
+
+    /// How many Landers have fused into Mutants since this was last
+    /// asked, and reset the count.
+    ///
+    /// ★ THE EVENT IS THE TRANSFORMATION, not an appearance. See
+    /// [`Landers::take_spawned`] for the other half of the pair.
+    pub fn take_fused(&mut self) -> usize {
+        std::mem::replace(&mut self.fused, 0)
     }
 
     /// How many Landers have arrived since this was last asked, and
@@ -635,6 +658,10 @@ impl Landers {
     ) -> Vec<(usize, f32, f32)> {
         let mut shots_wanted = Vec::new();
         let mut noise = self.noise;
+        // ⚠️ ACCUMULATED LOCALLY, not written straight to `self.fused`.
+        // The loop below holds `&mut` borrows of `self.live`, so the
+        // field cannot be touched from inside it.
+        let mut fused = 0usize;
         for (index, l) in self.live.iter_mut().enumerate() {
             // Resolve the target's position, and drop a target that has
             // stopped being valid — shot while carried, or already taken.
@@ -700,6 +727,7 @@ impl Landers {
                         self.claimed.retain(|&c| c != i);
                     }
                     l.mutate();
+                    fused += 1;
                     // Come back down into the playfield rather than
                     // hunting from somewhere the player cannot reach.
                     l.y = world::VIEW_H * 0.9;
@@ -730,6 +758,7 @@ impl Landers {
         self.claimed.retain(|c| live_claims.contains(c));
 
         self.noise = noise;
+        self.fused += fused;
         self.live.retain(|l| l.is_alive());
         shots_wanted
     }
@@ -747,6 +776,12 @@ impl Landers {
             }
         }
         self.claimed.clear();
+        // ⚠️ DELIBERATELY DOES NOT TOUCH `fused`. The world ending is
+        // ONE event with its own voice (`world_ended_this_frame` plays
+        // the Lander boom at full gain); a dozen fusion sounds stacked
+        // on top of it would bury the thing they were announcing. The
+        // per-Lander fusion voice is for the ordinary case — one you
+        // failed to stop — where it carries information.
     }
 
     /// Drop whatever the Lander at `index` was carrying, and report who
@@ -849,6 +884,14 @@ mod tests {
         ls.spawn(Lander::new(900.0, 300.0, 0.0));
         assert_eq!(ls.take_spawned(), 2, "two arrivals should count as two");
         assert_eq!(ls.take_spawned(), 0, "reading the count must clear it");
+        // ⚠️ AND AN ARRIVAL IS NOT A FUSION. The two counters feed two
+        // different voices; a spawn that also bumped `fused` would play
+        // the Mutant-forming sound every time a Lander appeared.
+        assert_eq!(
+            ls.take_fused(),
+            0,
+            "an arrival leaked into the fusion count — they must stay distinct"
+        );
 
         // ⚠️ `scatter` goes through `spawn`, so the opening wave counts
         // too — which is why main.rs has to swallow the first read
@@ -857,12 +900,31 @@ mod tests {
         ls.scatter(5, 0.0, &t, 99);
         assert_eq!(ls.take_spawned(), 5, "scatter must report its arrivals");
 
-        // ⚠️ AND SO DOES A MUTANT FUSING. A Mutant appearing is also
-        // something arriving; if that ever stops being true it should be
-        // a decision, not an accident.
+        // ⚠️⚠️ A MUTANT FUSING IS *NOT* COUNTED, AND THIS TEST USED TO
+        // CLAIM IT WAS. The old version called `spawn(Lander::mutant(…))`
+        // and asserted the count went up — which is true, and proves
+        // nothing, because THE GAME NEVER TAKES THAT PATH. A Lander that
+        // reaches the top calls `l.mutate()` and transforms IN PLACE
+        // (see `Outcome::ReachedTop`); no Lander is ever pushed. The test
+        // was exercising my assumption instead of the code.
+        // ⇒ Brian heard the consequence before any test did: "I didn't
+        // hear it at all". With `scatter` called once at startup and
+        // fusion mutating in place, `spawn` is never reached during play
+        // and the arrival voice could not sound.
         let mut ls = Landers::new();
-        ls.spawn(Lander::mutant(500.0, 300.0));
-        assert_eq!(ls.take_spawned(), 1, "a fused Mutant is an arrival");
+        ls.spawn(Lander::new(500.0, 300.0, 0.0));
+        ls.take_spawned();
+        let before = ls.len();
+        if let Some(l) = ls.live.first_mut() {
+            l.mutate();
+        }
+        assert_eq!(ls.len(), before, "fusion must transform, not add");
+        assert_eq!(
+            ls.take_spawned(),
+            0,
+            "fusion counted as an arrival — it mutates in place, so if this \
+             ever becomes true it is a real change and not a refactor"
+        );
     }
 
     #[test]
@@ -1138,6 +1200,9 @@ mod tests {
 
         let mut ls = Landers::new();
         ls.spawn(Lander::new(590.0, t.height_at(600.0) + HOVER_HEIGHT, DRIFT_SPEED));
+        // Drain the test's own setup arrival, so the counts asserted
+        // below are about the FUSION and nothing else.
+        assert_eq!(ls.take_spawned(), 1, "the setup spawn should count once");
 
         // No ship, so the Mutant has nothing to chase once it forms.
         for _ in 0..6000 {
@@ -1150,6 +1215,24 @@ mod tests {
 
         assert_eq!(ls.mutants(), 1, "the Lander never mutated");
         assert_eq!(people.alive(), 0, "the person should be gone");
+
+        // ★★ AND THE FUSION IS COUNTED, THROUGH THE REAL PATH. This
+        // assertion rides on the test that already drives an actual
+        // Lander to the top rather than calling `mutate()` by hand —
+        // which matters, because the FIRST version of the arrival test
+        // did call a method directly, asserted the count moved, passed,
+        // and proved nothing. Brian found the consequence by ear: "I
+        // didn't hear it at all."
+        assert_eq!(ls.take_fused(), 1, "a fusion must be counted");
+        assert_eq!(ls.take_fused(), 0, "reading the count must clear it");
+        // ⚠️ AND IT IS NOT AN ARRIVAL. The two are separate events with
+        // separate voices; a fusion that also counted as a spawn would
+        // play the arrival sound for a Mutant forming.
+        assert_eq!(
+            ls.take_spawned(),
+            0,
+            "fusion counted as an arrival — they must stay distinct"
+        );
         let m = ls.iter().next().unwrap();
         assert!(m.is_mutant());
         assert_eq!(m.points(), MUTANT_POINTS, "a Mutant is worth 150");

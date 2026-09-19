@@ -673,6 +673,26 @@ impl Game for Defender {
         // sample zero and only the last one heard.
         // ⚠️ SCALED BY HOW MANY, so a group reads as bigger than one
         // straggler without ever reaching the laser's level.
+        // ★★ A LANDER BECAME A MUTANT — counted, and DELIBERATELY NOT
+        // PLAYED YET.
+        //
+        // Brian hears this as a different event from an arrival, and he
+        // is right that it is one: an arrival is something appearing out
+        // of nothing, a fusion is something you failed to stop becoming
+        // worse. He has said he wants a separate sound for it and has
+        // not built it.
+        //
+        // ⚠️ SO IT STAYS SILENT RATHER THAN BORROWING THE ARRIVAL'S.
+        // Reusing `warp` here would say the wrong word for the event,
+        // and the near-miss is worse than the silence: it sounds
+        // finished, so nobody revisits it. The count is live and the
+        // wiring is one line away the moment the voice exists.
+        // ⚠️ AND PITCH IS NOT A SHORTCUT EITHER — every voice in
+        // sound.rs takes `_pitch` and ignores it, so a "pitched down"
+        // placeholder would be the SAME sound while looking like a
+        // different one in the source.
+        let _fused = self.landers.take_fused();
+
         let arrived = self.landers.take_spawned();
         if arrived > 0 && !self.opening_wave {
             let gain = (0.55 + 0.12 * (arrived - 1) as f32).min(1.0);

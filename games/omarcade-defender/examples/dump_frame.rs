@@ -59,6 +59,9 @@ fn main() {
     let mut shots = Shots::new();
     let mut landers = Landers::new();
     let mut effects = Effects::new();
+    // ★ Hull-flare intensity for this dump. Scenes that are thrusting
+    // set it; everything else stays cold.
+    let mut exhaust = 0.0f32;
     let mut people = Humanoids::new();
     let lives = Lives::new();
 
@@ -220,6 +223,39 @@ fn main() {
         // At speed, east. What most of the game looks like.
         "cruise" => run(&mut ship, &mut camera, thrust_east, 4.0),
 
+        // ★★ THRUST. The plume and the lit hull flare, together.
+        //
+        // ⚠️ THE PLUME MUST BE BUILT UP OVER SEVERAL FRAMES, NOT ONE.
+        // It is emitted per frame and each particle lives ~0.17s, so a
+        // single call renders two to four specks and would look like a
+        // bug. This runs the emitter the way the game does — a frame of
+        // flight, a frame of plume — so the dump shows the STEADY STATE
+        // a player actually sees.
+        "thrust" => {
+            run(&mut ship, &mut camera, thrust_east, 4.0);
+            let dt = 1.0 / 60.0;
+            for _ in 0..12 {
+                run(&mut ship, &mut camera, thrust_east, dt);
+                effects.thrust_plume(ship.x, ship.y, ship.vx, ship.facing.sign());
+                effects.update(dt);
+            }
+            exhaust = 1.0;
+        }
+
+        // ★ THRUST FACING WEST — the plume must move to the other side
+        // of the ship. A plume that stayed on the right when the ship
+        // turned would be the sign error this mirrors out.
+        "thrust-west" => {
+            run(&mut ship, &mut camera, thrust_west, 4.0);
+            let dt = 1.0 / 60.0;
+            for _ in 0..12 {
+                run(&mut ship, &mut camera, thrust_west, dt);
+                effects.thrust_plume(ship.x, ship.y, ship.vx, ship.facing.sign());
+                effects.update(dt);
+            }
+            exhaust = 1.0;
+        }
+
         // At speed, west — the mirrored ship and the camera leading the
         // other way.
         "west" => run(&mut ship, &mut camera, thrust_west, 4.0),
@@ -255,7 +291,10 @@ fn main() {
 
         other => {
             eprintln!("unknown scene: {other}");
-            eprintln!("scenes: rest | cruise | west | turn | low | seam");
+            eprintln!(
+                "scenes: rest | cruise | west | turn | low | seam | \
+                 thrust | thrust-west | mutants | apocalypse | rescue | combat"
+            );
             std::process::exit(2);
         }
     }
@@ -279,6 +318,7 @@ fn main() {
             // screenshot shows the Mutant blips at their brightest —
             // which is the state worth checking they are visible in.
             time: 0.37,
+            exhaust,
         };
         render::draw(&mut canvas, &scene, &Theme::load());
     }

@@ -36,6 +36,9 @@ pub struct Scene<'a> {
     pub lives: &'a Lives,
     /// Seconds of simulated time, for the scanner's Mutant pulse.
     pub time: f32,
+    /// ★ How hard the engine is burning, 0.0 at rest. Drives the hull
+    /// flare; the trailing cloud is [`Effects`]' business.
+    pub exhaust: f32,
 }
 
 /// Draw a frame.
@@ -56,7 +59,7 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     // answers both questions, so this does not need to know which state
     // the ship is in.
     if scene.lives.is_visible() {
-        draw_ship(canvas, scene.ship, scene.camera, theme);
+        draw_ship(canvas, scene.ship, scene.camera, theme, scene.exhaust);
     }
     draw_hud(canvas, scene.ship, scene.camera, theme);
     draw_score(canvas, scene.score, theme);
@@ -269,7 +272,8 @@ fn draw_lives(canvas: &mut Canvas<'_>, lives: &Lives, _theme: &Theme) {
     // things that happen to occupy the same corner.
     for i in 0..lives.remaining {
         let x = HUD_MARGIN + 14.0 + i as f32 * 42.0;
-        art::draw_ship(canvas, &Transform::at(x, 66.0).scaled(0.55));
+        // ⚠️ 0.0 — THE LIVES ROW NEVER BURNS. See art::draw_ship.
+        art::draw_ship(canvas, &Transform::at(x, 66.0).scaled(0.55), 0.0);
     }
 }
 
@@ -379,7 +383,7 @@ const RIDGE_LINE_PX: u32 = 2;
 /// The art is vector, authored in `tools/vector-playground.html` and
 /// living in [`crate::art`]. Nothing about the shape is decided here —
 /// this only says where it goes and which way it faces.
-fn draw_ship(canvas: &mut Canvas<'_>, ship: &Ship, camera: &Camera, _theme: &Theme) {
+fn draw_ship(canvas: &mut Canvas<'_>, ship: &Ship, camera: &Camera, _theme: &Theme, exhaust: f32) {
     let sx = camera.to_screen(ship.x);
     let sy = canvas.height() as f32 - ship.y;
 
@@ -391,7 +395,7 @@ fn draw_ship(canvas: &mut Canvas<'_>, ship: &Ship, camera: &Camera, _theme: &The
         .scaled(art::SCALE)
         .flipped(ship.facing.sign() < 0.0);
 
-    art::draw_ship(canvas, &t);
+    art::draw_ship(canvas, &t, exhaust);
 }
 
 /// The minimum a pilot needs: how fast, and where in the world.
@@ -552,6 +556,9 @@ mod tests {
                 score: 0,
                 lives: &lives,
                 time: 0.37,
+                // ★ Lit, so the thrust flare is exercised by the
+                // phase sweep rather than only ever drawn cold.
+                exhaust: 1.0,
             };
             draw(&mut c, &scene, &theme);
         }
@@ -600,7 +607,19 @@ mod tests {
         effects: &'a Effects,
         lives: &'a Lives,
     ) -> Scene<'a> {
-        Scene { terrain, ship, camera, shots, landers, people, effects, score: 0, lives, time: 0.0 }
+        Scene {
+            terrain,
+            ship,
+            camera,
+            shots,
+            landers,
+            people,
+            effects,
+            score: 0,
+            lives,
+            time: 0.0,
+            exhaust: 0.0,
+        }
     }
 
     /// ⚠️ THE SEAM, IN THE RENDERER. With the camera at x = 0 the left

@@ -100,6 +100,18 @@ const MUZZLE_FORWARD: f32 = 20.0 * art::SCALE;
 /// finished at the catch, it is finished at the delivery.
 const DROP_OFF_HEIGHT: f32 = 90.0;
 
+/// How fast the hull flare comes up when thrust is pressed, per second.
+///
+/// Fast: an engine that took a visible moment to light would feel like
+/// input lag on the one control the whole game is about.
+const EXHAUST_ATTACK: f32 = 14.0;
+
+/// How fast the hull flare dies when thrust is released, per second.
+///
+/// ★ SLOWER THAN THE ATTACK, and that asymmetry is the point — fire
+/// catches instantly and dies away. Equal rates read as a light switch.
+const EXHAUST_RELEASE: f32 = 6.0;
+
 /// The ship's hitbox, in world units.
 ///
 /// ★ FROM THE ART, and deliberately TIGHTER than it. The ship draws 70
@@ -134,6 +146,8 @@ struct Defender {
 
     // Held keys, resolved into an `Input` each step.
     thrust_held: bool,
+    /// ★ Eased engine intensity, 0.0 at rest. Drives the hull flare only.
+    exhaust: f32,
     up_held: bool,
     down_held: bool,
     fire_held: bool,
@@ -224,6 +238,7 @@ impl Defender {
             ship_boom: booms.ship,
             person_boom: booms.person,
             thrust_held: false,
+            exhaust: 0.0,
             up_held: false,
             down_held: false,
             fire_held: false,
@@ -261,10 +276,33 @@ impl Defender {
         let ship_pos = if self.lives.is_flying() {
             self.ship.step(input, &self.terrain, dt);
             self.camera.follow(&self.ship, dt);
+
+            // ★ THE PLUME. Emitted per frame while the key is held, and
+            // only while the ship is actually flying — a dead ship that
+            // still trailed fire would advertise a position the player
+            // does not have.
+            if input.thrust {
+                self.effects.thrust_plume(
+                    self.ship.x,
+                    self.ship.y,
+                    self.ship.vx,
+                    self.ship.facing.sign(),
+                );
+            }
+
             Some((self.ship.x, self.ship.y))
         } else {
             None
         };
+
+        // ⚠️ EASED, NOT SNAPPED. The hull flare jumping to full and back
+        // on the key edge reads as a light switch; the engine should
+        // catch and die away. The plume itself is instant — the cloud is
+        // made of particles that already outlive the keypress.
+        let want = if input.thrust && self.lives.is_flying() { 1.0 } else { 0.0 };
+        let rate = if want > self.exhaust { EXHAUST_ATTACK } else { EXHAUST_RELEASE };
+        self.exhaust += (want - self.exhaust).clamp(-rate * dt, rate * dt);
+        self.exhaust = self.exhaust.clamp(0.0, 1.0);
 
         if self.fire_held && self.lives.is_flying() && self.shots.ready() {
             let (mx, my) = self.muzzle();
@@ -577,6 +615,7 @@ impl Game for Defender {
             score: self.score,
             lives: &self.lives,
             time: self.elapsed,
+            exhaust: self.exhaust,
         };
         render::draw(canvas, &scene, &self.theme);
         self.pause.draw(canvas, &self.theme);

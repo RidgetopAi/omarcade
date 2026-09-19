@@ -202,7 +202,20 @@ pub const SCALE: f32 = 2.0;
 /// the details on top. The exhaust comes last and is ADDITIVE, because an
 /// engine is light rather than paint — drawn earlier it was simply buried
 /// under the wing.
-pub fn draw_ship(canvas: &mut Canvas<'_>, t: &Transform) {
+/// The ship.
+///
+/// ★ `exhaust` IS THE FLARE'S INTENSITY, 0.0 AT REST. The hull flare has
+/// always been drawn — it is the warmth visible in Brian's no-thrust
+/// frame — but it was a CONSTANT, so the ship looked equally lit whether
+/// the engine was firing or not. Measuring his frames, thrust roughly
+/// DOUBLES the warm pixel count (93 -> ~196), and about half of that
+/// arrives as a trailing cloud; the rest is the ship's own tail getting
+/// hotter. This is that half.
+///
+/// ⚠️ THE LIVES ROW PASSES 0.0 AND MUST KEEP DOING SO. A row of little
+/// ships showing live exhaust would read as five engines burning in the
+/// HUD.
+pub fn draw_ship(canvas: &mut Canvas<'_>, t: &Transform, exhaust: f32) {
     HULL.fill(canvas, t, Color::rgb(45, 81, 225));
     WING_SHADOW.fill(canvas, t, Color::rgb(0, 5, 138));
     WING.fill(canvas, t, Color::rgb(140, 146, 222));
@@ -215,8 +228,31 @@ pub fn draw_ship(canvas: &mut Canvas<'_>, t: &Transform) {
     WING_HIGHLIGHT.fill(canvas, t, Color::rgb(86, 118, 215));
     GUN_MOUNT.fill(canvas, t, Color::rgb(211, 198, 170));
     GUN.fill(canvas, t, Color::rgb(211, 198, 170));
-    EXHAUST.fill_add(canvas, t, Color::rgb(248, 140, 18));
+    // ★ THE FLARE. At rest this is the original constant, byte for byte,
+    // so a ship sitting still looks exactly as it always has. Under
+    // thrust it grows toward the pale-yellow hot end AND grows in size,
+    // because a flare that only changed colour stayed the same shape and
+    // read as a recolour rather than as more fire.
+    let e = exhaust.clamp(0.0, 1.0);
+    let flare = Color::rgb(
+        248 + ((255 - 248) as f32 * e) as u8,
+        140 + ((236 - 140) as f32 * e) as u8,
+        18 + ((170 - 18) as f32 * e) as u8,
+    );
+    if e > 0.0 {
+        // ⚠️ MULTIPLIES THE EXISTING SCALE. `Transform::scaled` REPLACES
+        // the scale rather than compounding it, so passing the growth
+        // factor alone would draw the hot flare at 1.55px instead of at
+        // `art::SCALE` times 1.55 — a flare that got SMALLER under
+        // thrust. Read the builder, do not assume it multiplies.
+        let hot = t.scaled(t.scale * (1.0 + EXHAUST_GROWTH * e));
+        EXHAUST.fill_add(canvas, &hot, flare);
+    }
+    EXHAUST.fill_add(canvas, t, flare);
 }
+
+/// How much bigger the hull flare gets at full thrust.
+const EXHAUST_GROWTH: f32 = 0.55;
 
 // =====================================================================
 // THE ENEMIES

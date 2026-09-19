@@ -52,6 +52,84 @@ pub const WORLD_PIECES: usize = 150;
 /// How fast the debris leaves, in world units per second.
 const BURST_SPEED: f32 = 210.0;
 
+// =====================================================================
+// ★★ THE THRUST PLUME
+//
+// EVERY NUMBER HERE IS A DIAL, DELIBERATELY. The last sound went the
+// same way (L068): the mechanism was right and the design layered on
+// top of it was wrong, and the only reason Brian could reach his own
+// answer was that the thing was built as a CONTROL rather than as a
+// commitment. So none of this is argued for — it is a starting position
+// to be turned.
+// =====================================================================
+
+/// ★ THE FLASH PALETTE — sampled from Brian's own thrust frames.
+///
+/// Measured with a hue-family histogram over the bright warm pixels of
+/// frames 33 and 34, then snapped: pale yellow and amber at the hot end,
+/// falling through orange and red to a near-black ember.
+///
+/// ⚠️ ORDER IS HOT -> COOL AND IS NOT MEANINGFUL TO THE EFFECT — one
+/// entry is drawn at random per frame. It is written in order so that
+/// reading it tells you the range it spans.
+const PLUME_COLORS: [Color; 6] = [
+    Color::rgb(255, 236, 170),
+    Color::rgb(255, 196, 96),
+    Color::rgb(248, 140, 18),
+    Color::rgb(214, 64, 32),
+    Color::rgb(150, 30, 24),
+    Color::rgb(92, 12, 10),
+];
+
+/// Fewest particles emitted in one frame of held thrust.
+const PLUME_MIN_PER_FRAME: usize = 6;
+
+/// Most particles emitted in one frame of held thrust.
+///
+/// ⚠️ BOUNDED ON PURPOSE. The pool is a SHARED 512 that recycles its
+/// oldest, so a plume that emits freely would evict explosion debris
+/// while you hold the key. At ~8/frame average and an 0.085s life the
+/// plume's steady state is roughly 40 particles at 60fps — under a
+/// tenth of the pool, and it is the LIFE rather than the rate that
+/// keeps it there.
+const PLUME_MAX_PER_FRAME: usize = 11;
+
+/// How far behind the ship's centre the nozzle sits, in world units.
+///
+/// The hull runs to x = -14.5 in art units at `art::SCALE` 2.0, so the
+/// tail is ~29 units back; this clears it by a little.
+const PLUME_NOZZLE_OFFSET: f32 = 26.0;
+
+/// Width of the nozzle mouth, in world units. Particles are born spread
+/// across it so the plume has a thickness where it meets the ship.
+const PLUME_MOUTH: f32 = 5.0;
+
+/// How wide the plume fans out behind the ship. Radians-ish: applied as
+/// a fraction of the backward speed, so bigger means a broader cone.
+const PLUME_CONE: f32 = 0.34;
+
+/// How fast plume particles leave the nozzle, in world units per second.
+const PLUME_SPEED: f32 = 130.0;
+
+/// How much of the ship's own velocity the plume carries.
+///
+/// ⚠️ NOT 1.0. At full inheritance the cloud flies along WITH the ship
+/// and never falls behind it; at zero it hangs where it was born and the
+/// ship abandons it. Below one means the plume trails.
+const PLUME_MOTION_INHERIT: f32 = 0.78;
+
+/// How long a plume particle lives, in seconds, before jitter.
+///
+/// Short: this is a cloud at the tail, not a smoke trail across the
+/// screen.
+const PLUME_LIFE: f32 = 0.085;
+
+/// Smallest plume particle, in world units.
+const PLUME_SIZE_MIN: f32 = 1.5;
+
+/// Largest plume particle, in world units.
+const PLUME_SIZE_MAX: f32 = 4.5;
+
 /// How long a piece lives, in seconds, before and after jitter.
 const PIECE_LIFE: f32 = 0.55;
 
@@ -252,6 +330,74 @@ impl Effects {
         }
     }
 
+    /// ★★ THE THRUST PLUME. Emitted EVERY FRAME while thrust is held,
+    /// not thrown once like an explosion.
+    ///
+    /// ★ THE FLASH IS THE EFFECT, AND IT IS NOT A GRADIENT. Measuring
+    /// Brian's two thrust frames, every hue family in a single frame sat
+    /// at the SAME mean x (52.2..53.8 px) — the colours are mixed
+    /// through one cloud, not sorted hot-core-to-cool-tail. What changed
+    /// between his frames was the MIX: pale yellow fell 44 -> 16 pixels
+    /// while red rose 28 -> 56, at the same plume position. So the whole
+    /// cloud changes hue frame to frame, and that is what reads as a
+    /// flicker. A fixed ramp would be a still image of a flame; this is
+    /// a flame.
+    ///
+    /// ⚠️ THE COLOUR IS THEREFORE CHOSEN PER BATCH, NOT PER PARTICLE. A
+    /// [`Particle`] stores the colour it was spawned with, so per-frame
+    /// is the only level at which a flash can exist at all.
+    ///
+    /// `facing` is the ship's facing sign: the plume leaves the TAIL, so
+    /// it is emitted on `-facing` and thrown that way.
+    pub fn thrust_plume(&mut self, x: f32, y: f32, vx: f32, facing: f32) {
+        // How many particles leave per frame. Jittered, because a fixed
+        // count is a machine — the same reasoning that made the mutant's
+        // crackle use exponential gaps rather than even ones.
+        let count = PLUME_MIN_PER_FRAME
+            + ((self.rand() * (PLUME_MAX_PER_FRAME - PLUME_MIN_PER_FRAME + 1) as f32) as usize)
+                .min(PLUME_MAX_PER_FRAME - PLUME_MIN_PER_FRAME);
+
+        // ★ THE FLASH. One family for the whole batch, redrawn every
+        // frame, so the cloud pulses between yellow-hot and deep red the
+        // way his frames do.
+        let flash = PLUME_COLORS[(self.rand() * PLUME_COLORS.len() as f32) as usize
+            % PLUME_COLORS.len()];
+
+        // The nozzle sits behind the hull. The ship art runs to x = -14.5
+        // at SCALE 2.0, so the tail is ~29 units behind centre; the plume
+        // starts just clear of it and is mirrored by facing.
+        let nozzle_x = x - facing * PLUME_NOZZLE_OFFSET;
+
+        for _ in 0..count {
+            // A narrow cone pointing backward, jittered both ways.
+            let spread = (self.rand() - 0.5) * PLUME_CONE;
+            let speed = PLUME_SPEED * (0.45 + 0.85 * self.rand());
+
+            // ⚠️ THROWN BACKWARD IN WORLD SPACE AND THEN GIVEN THE SHIP'S
+            // OWN vx. Without the inherited motion the plume hangs in the
+            // air where it was born while the ship flies away from it,
+            // which reads as the ship shedding sparks rather than
+            // pushing against them. With it, the cloud trails.
+            let vel_x = -facing * speed + vx * PLUME_MOTION_INHERIT;
+            let vel_y = spread * speed;
+
+            let size = PLUME_SIZE_MIN + (PLUME_SIZE_MAX - PLUME_SIZE_MIN) * self.rand();
+            let life = PLUME_LIFE * (0.55 + 0.9 * self.rand());
+
+            // Spawn spread across the nozzle mouth rather than from one
+            // point, so the plume has a width where it leaves the ship.
+            let mouth = (self.rand() - 0.5) * PLUME_MOUTH;
+
+            self.pool.spawn(Particle::new(
+                Vec2::new(nozzle_x, y + mouth),
+                Vec2::new(vel_x, vel_y),
+                size,
+                flash,
+                life,
+            ));
+        }
+    }
+
     /// Draw every particle through the camera.
     ///
     /// ⚠️ NOT `ParticlePool::draw`. See the module note: the pool draws
@@ -277,6 +423,78 @@ impl Effects {
 mod tests {
     use super::*;
     use crate::world;
+
+    /// ⚠️ THE PLUME LEAVES THE TAIL, AND THE TAIL MOVES WITH FACING.
+    /// A sign error here puts the fire out of the ship's NOSE, which is
+    /// the single most likely mistake in this whole effect and is
+    /// invisible in a test that only ever flies east.
+    #[test]
+    fn the_plume_comes_out_of_the_tail_whichever_way_the_ship_faces() {
+        let mut east = Effects::new();
+        east.thrust_plume(1000.0, 400.0, 0.0, 1.0);
+        let ex: f32 =
+            east.pool.particles().iter().map(|p| p.pos.x).sum::<f32>() / east.len() as f32;
+        assert!(ex < 1000.0, "facing east, the plume spawned in FRONT of the ship: {ex}");
+
+        let mut west = Effects::new();
+        west.thrust_plume(1000.0, 400.0, 0.0, -1.0);
+        let wx: f32 =
+            west.pool.particles().iter().map(|p| p.pos.x).sum::<f32>() / west.len() as f32;
+        assert!(wx > 1000.0, "facing west, the plume spawned in FRONT of the ship: {wx}");
+    }
+
+    /// The cloud must fall BEHIND the ship, not fly along with it.
+    #[test]
+    fn the_plume_trails_a_moving_ship_rather_than_keeping_up() {
+        let mut fx = Effects::new();
+        fx.thrust_plume(1000.0, 400.0, 600.0, 1.0);
+        let vx: f32 = fx.pool.particles().iter().map(|p| p.vel.x).sum::<f32>() / fx.len() as f32;
+        assert!(
+            vx < 600.0,
+            "the plume is keeping pace with the ship ({vx} vs 600) — it will never trail"
+        );
+    }
+
+    /// ★ THE FLASH. One colour per batch, and it must actually CHANGE
+    /// between batches — a plume that drew the same colour every frame
+    /// would be a still image of a flame.
+    #[test]
+    fn the_plume_flashes_a_different_colour_between_frames() {
+        let mut fx = Effects::new();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..40 {
+            fx.clear();
+            fx.thrust_plume(1000.0, 400.0, 0.0, 1.0);
+            let c = fx.pool.particles()[0].color;
+            // Every particle in ONE batch shares the batch's colour.
+            for p in fx.pool.particles() {
+                assert_eq!(p.color, c, "a single batch used more than one colour");
+            }
+            seen.insert((c.r, c.g, c.b));
+        }
+        assert!(
+            seen.len() > 1,
+            "the plume drew the same colour every frame — there is no flash"
+        );
+    }
+
+    /// ⚠️ A HELD KEY MUST NOT EAT THE POOL. The plume emits every frame
+    /// forever; if its steady state crept toward CAPACITY it would start
+    /// evicting explosion debris mid-firefight.
+    #[test]
+    fn holding_thrust_forever_does_not_fill_the_pool() {
+        let mut fx = Effects::new();
+        let dt = 1.0 / 60.0;
+        for _ in 0..600 {
+            fx.thrust_plume(1000.0, 400.0, 300.0, 1.0);
+            fx.update(dt);
+        }
+        assert!(
+            fx.len() < CAPACITY / 4,
+            "ten seconds of held thrust used {} of {CAPACITY} particles",
+            fx.len()
+        );
+    }
 
     #[test]
     fn an_explosion_fills_the_pool_and_then_empties_it() {

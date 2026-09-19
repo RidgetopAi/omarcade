@@ -53,7 +53,7 @@ fn main() {
 
     // ---- the ship, the reference everything else is judged against ----
     let ship_y = H as f32 * 0.30;
-    art::draw_ship(&mut canvas, &Transform::at(200.0, ship_y).scaled(art::SCALE));
+    art::draw_ship(&mut canvas, &Transform::at(200.0, ship_y).scaled(art::SCALE), 0.0);
     label(&mut canvas, "SHIP  35 x 11 units  ->  70 x 22 px", 40, (ship_y + 40.0) as i32, fg);
 
     // ---- landers: as drawn, and at 2x ----
@@ -89,7 +89,7 @@ fn main() {
     // ---- the real question: all three together, at the proposed sizes ----
     let scene = H as f32 * 0.88;
     label(&mut canvas, "TOGETHER, AT THE PROPOSED SIZES", 40, (scene - 118.0) as i32, fg);
-    art::draw_ship(&mut canvas, &Transform::at(180.0, scene - 70.0).scaled(art::SCALE));
+    art::draw_ship(&mut canvas, &Transform::at(180.0, scene - 70.0).scaled(art::SCALE), 0.0);
     lander_big::draw_lander(&mut canvas, &Transform::at(430.0, scene - 78.0).scaled(art::SCALE));
     lander_big::draw_lander(&mut canvas, &Transform::at(530.0, scene - 62.0).scaled(art::SCALE));
     humanoid_big::draw_humanoid(&mut canvas, &Transform::at(430.0, scene - 12.0).scaled(art::SCALE));

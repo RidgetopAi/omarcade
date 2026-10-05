@@ -458,7 +458,15 @@ impl Warden {
         if !self.flying() {
             return;
         }
-        let x = self.roll() * world::WORLD_W;
+        // ⚠️ NEVER ONTO THE SCREEN YOU LEFT. Brian flew it: "not taking
+        // you to another part of the map, just respawning in same map
+        // area just lower or higher". A uniform draw over a world only
+        // four screens round lands within one screen of the start about
+        // half the time, and similar mountains make that read as not
+        // having moved. So the jump is at least one screen and at most
+        // three, either way round — always somewhere else.
+        let away = world::VIEW_W + self.roll() * (world::WORLD_W - 2.0 * world::VIEW_W);
+        let x = world::wrap(self.ship.x + away);
         let y = world::VIEW_H * (0.25 + 0.55 * self.roll());
         self.ship.x = world::wrap(x);
         self.ship.y = y.max(self.terrain.height_at(x) + 60.0);
@@ -1323,7 +1331,9 @@ mod tests {
         g.people.spawn(short);
         g.people.spawn(long);
 
-        for _ in 0..(240 * 3) {
+        // Six seconds: at the arcade's gravity the long fall alone takes
+        // about 3.4.
+        for _ in 0..(240 * 6) {
             g.step(Input::default(), FIXED_DT);
         }
         assert_eq!(g.people.get(0).unwrap().state, humanoid::State::Walking);
@@ -1536,7 +1546,7 @@ mod tests {
         g.on_input(InputEvent::KeyDown(Key::H));
 
         assert!(g.hyperspace.is_some());
-        assert!(world::delta(from, g.ship.x).abs() > 1.0, "it did not go anywhere");
+        assert!(world::delta(from, g.ship.x).abs() >= world::VIEW_W, "it stayed on the same screen");
         assert_eq!(g.ship.vx, 0.0, "it kept its speed");
         assert!(g.shots.iter().all(|s| !s.is_enemy()), "enemy bolts survived the jump");
         assert_eq!(g.shots.iter().count(), 1, "your own bolt was taken too");
@@ -1554,6 +1564,23 @@ mod tests {
             t += FIXED_DT;
         }
         assert!((t - HYPERSPACE_SECONDS).abs() < 0.02, "arrived after {t:.3} s");
+    }
+
+    /// ★ BRIAN'S NOTE, AS A TEST: a jump always lands somewhere else —
+    /// at least a screen from where it started, over many jumps.
+    #[test]
+    fn hyperspace_always_leaves_the_screen_you_were_on() {
+        let mut g = game();
+        g.enemies.clear();
+        let mut nearest = f32::MAX;
+        for _ in 0..500 {
+            g.lives.reset();
+            let from = g.ship.x;
+            g.on_input(InputEvent::KeyDown(Key::H));
+            nearest = nearest.min(world::delta(from, g.ship.x).abs());
+            g.hyperspace = None;
+        }
+        assert!(nearest >= world::VIEW_W, "one jump landed only {nearest:.0} away");
     }
 
     /// ★ THE GAMBLE, MEASURED: about one jump in four ends in an

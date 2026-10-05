@@ -395,6 +395,37 @@ const SHOT_DASHES: [(f32, f32); 9] = [
     (7.0, 2.0),
 ];
 
+/// An enemy bolt: a short, hot pellet, not a beam.
+///
+/// ★ BRIAN, HAVING FLOWN IT: "landers bullets are currently long orange
+/// laser type...in original game it is just a dot ... I think we need a
+/// short shot not long laser type." The beam is the PLAYER's weapon and
+/// only the player's; an enemy shot drawn the same way made the two
+/// read alike. The original's is a single "+" — this is the modern
+/// version of that: a bright core, a glow, and a stub of trail along the
+/// line of flight so the direction can be read before it arrives.
+///
+/// ⚠️ ONE FIXED COLOUR, NEVER THE THEME'S, NEVER CYCLING (L065). Threat
+/// is game information: a bolt the eye has to identify is a bolt it
+/// cannot dodge.
+fn draw_enemy_bolt(canvas: &mut Canvas<'_>, x: f32, y: f32, ux: f32, uy: f32) {
+    if x < -8.0 || x > canvas.width() as f32 + 8.0 {
+        return;
+    }
+    let hot = Color::rgb(255, 140, 60);
+    // Screen y grows down, world y up: the trail's screen offset takes
+    // the opposite sign of the world velocity's y.
+    let (tx, ty) = (x - ux * ENEMY_BOLT_TRAIL, y + uy * ENEMY_BOLT_TRAIL);
+    canvas.line_add_f(tx, ty, x, y, 2.0, hot.lerp(Color::rgb(0, 0, 0), 0.55));
+    canvas.circle_add_f(x, y, 5.0, hot.lerp(Color::rgb(0, 0, 0), 0.6));
+    canvas.circle_add_f(x, y, 2.6, hot);
+    canvas.circle_add_f(x, y, 1.2, Color::rgb(255, 240, 200));
+}
+
+/// How long an enemy bolt's trail is, in pixels: a stub that gives the
+/// direction, never long enough to read as a beam.
+const ENEMY_BOLT_TRAIL: f32 = 10.0;
+
 fn draw_shots(canvas: &mut Canvas<'_>, shots: &Shots, camera: &Camera, theme: &Theme) {
     let h = canvas.height() as f32;
     let _ = theme;
@@ -416,9 +447,6 @@ fn draw_shots(canvas: &mut Canvas<'_>, shots: &Shots, camera: &Camera, theme: &T
         let y_head = h - s.y;
 
         let tail_x = head - ux * len;
-        // Screen y grows DOWN while world y grows UP, so the tail's
-        // screen offset is the opposite sign of the world velocity.
-        let tail_y = y_head + uy * len;
 
         let (x0, x1) = if tail_x < head { (tail_x, head) } else { (head, tail_x) };
         if x1 < 0.0 || x0 > canvas.width() as f32 {
@@ -426,16 +454,7 @@ fn draw_shots(canvas: &mut Canvas<'_>, shots: &Shots, camera: &Camera, theme: &T
         }
 
         if s.owner == Owner::Enemy {
-            // ⚠️ ENEMY BOLTS STAY SOLID AND STAY ONE COLOUR. Threat is
-            // game information (L065): a bolt broken into dashes is
-            // harder to see coming, and that difficulty is not a
-            // difficulty the designer chose.
-            let color = Color::rgb(255, 120, 60);
-            if s.vy.abs() < 0.001 {
-                canvas.fill_rect_add_f(x0, y_head - 1.5, x1 - x0, 3.0, color);
-            } else {
-                canvas.line_add_f(tail_x, tail_y, head, y_head, 3.0, color);
-            }
+            draw_enemy_bolt(canvas, head, y_head, ux, uy);
             continue;
         }
 

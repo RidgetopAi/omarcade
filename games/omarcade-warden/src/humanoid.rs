@@ -31,11 +31,21 @@ pub const WALK_SPEED: f32 = 18.0;
 const TURN_SECONDS: f32 = 3.2;
 
 /// How fast a dropped Humanoid falls, in world units per second squared.
-pub const FALL_GRAVITY: f32 = 620.0;
+///
+/// ★ MEASURED FROM THE ORIGINAL, after Brian flew it: "people falling -
+/// fall rate way to fast". It was 620, more than 7× the arcade's. The
+/// original (`AFALL`, defb6.src) adds 8/256 of a line per frame to the
+/// fall speed once every 4 frames: 1/128 line/frame². At 60 Hz and our
+/// scale (240 visible lines ↔ 720 units, 3 units per line) that is
+/// 1/128 × 3600 × 3 = 84.4 u/s². A drop from carrying height takes
+/// about 4 s — the original's ~3.75 s — which is what makes a catch a
+/// chase rather than a reflex.
+pub const FALL_GRAVITY: f32 = 84.4;
 
-/// The terminal speed of a fall, so a long drop does not become
-/// uncatchable.
-pub const FALL_TERMINAL: f32 = 420.0;
+/// The terminal speed of a fall: the original's cap of $300 (3 lines per
+/// frame) × 60 × 3. At this gravity it is only reached after a fall of
+/// well over two screens, so it is a ceiling, not a feel.
+pub const FALL_TERMINAL: f32 = 540.0;
 
 /// How far a Humanoid can fall and survive, in world units.
 ///
@@ -336,6 +346,29 @@ mod tests {
 
     fn terrain() -> Terrain {
         Terrain::generate(256, 0x0DEF_E4DE)
+    }
+
+    /// ★ THE ARCADE'S FALL, TIMED. Brian: "fall rate way to fast". A
+    /// person dropped from where a Lander carries them should take about
+    /// four seconds to reach the ground (the original's ~3.75 s over its
+    /// playfield) — long enough that a catch is a chase. At the old
+    /// gravity it took under 1.5 s.
+    #[test]
+    fn a_drop_from_carrying_height_takes_about_four_seconds() {
+        let t = terrain();
+        let mut hs = Humanoids::new();
+        let ground = t.height_at(500.0);
+        let mut h = Humanoid::new(500.0, ground + world::VIEW_H * 0.95, 0.0);
+        h.state = State::Falling;
+        h.fell_from = h.y;
+        hs.spawn(h);
+        let dt = 1.0 / 240.0;
+        let mut seconds = 0.0;
+        while hs.get(0).unwrap().state == State::Falling && seconds < 20.0 {
+            hs.step(&t, dt);
+            seconds += dt;
+        }
+        assert!((3.5..=4.8).contains(&seconds), "the drop took {seconds:.2} s");
     }
 
     #[test]

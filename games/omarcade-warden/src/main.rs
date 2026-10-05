@@ -157,6 +157,18 @@ const HYPERSPACE_DEATH: f32 = 64.0 / 256.0;
 const BOMB_FLASH_SECONDS: f32 = 16.0 / 60.0;
 const BOMB_FLASH_PERIOD: f32 = 4.0 / 60.0;
 
+/// How long the smart bomb's shockwave takes to sweep out past the edges
+/// of the screen.
+const BLAST_SECONDS: f32 = 0.55;
+
+/// A smart bomb going off: where (world), and how long ago.
+#[derive(Debug, Clone, Copy)]
+struct Blast {
+    x: f32,
+    y: f32,
+    age: f32,
+}
+
 struct Warden {
     theme: Theme,
     terrain: Terrain,
@@ -185,8 +197,16 @@ struct Warden {
     /// ★ W2. Seconds into a hyperspace jump, while the ship is between
     /// places. `None` when it is not jumping.
     hyperspace: Option<f32>,
-    /// Seconds since the last smart bomb went off, while it is flashing.
-    bomb_flash: Option<f32>,
+    /// The last smart bomb, while its flash and shockwave are still
+    /// playing out.
+    blast: Option<Blast>,
+    /// A bomb went off since the last frame's sounds: play its voice.
+    ///
+    /// ⚠️ NOT A `*_this_frame` FLAG. The bomb fires from `on_input`,
+    /// between frames, and `update` clears those flags before it plays
+    /// anything — which is exactly why the bomb's kills were silent when
+    /// Brian flew it. This one is cleared only by being played.
+    bomb_pending: bool,
     /// Noise for hyperspace: where it lands and whether it survives.
     rng: u32,
     /// This game's seed; every random placement in it derives from this.
@@ -219,6 +239,7 @@ struct Warden {
     mutant_boom: SoundId,
     ship_boom: SoundId,
     person_boom: SoundId,
+    bomb_sound: SoundId,
 
     // Held keys, resolved into an `Input` each step.
     thrust_held: bool,
@@ -277,6 +298,8 @@ struct Booms {
     mutant: SoundId,
     ship: SoundId,
     person: SoundId,
+    /// ★ The smart bomb: everything on screen going at once.
+    smart_bomb: SoundId,
 }
 
 impl Warden {
@@ -312,7 +335,8 @@ impl Warden {
             smart_bombs: STARTING_SMART_BOMBS,
             next_award: AWARD_EVERY,
             hyperspace: None,
-            bomb_flash: None,
+            blast: None,
+            bomb_pending: false,
             rng: 1,
             seed,
             squads: 0,
@@ -327,6 +351,7 @@ impl Warden {
             mutant_boom: booms.mutant,
             ship_boom: booms.ship,
             person_boom: booms.person,
+            bomb_sound: booms.smart_bomb,
             thrust_held: false,
             exhaust: 0.0,
             up_held: false,
@@ -382,7 +407,8 @@ impl Warden {
         self.smart_bombs = STARTING_SMART_BOMBS;
         self.next_award = AWARD_EVERY;
         self.hyperspace = None;
-        self.bomb_flash = None;
+        self.blast = None;
+        self.bomb_pending = false;
         self.rng = mix(seed, 0x4859_5045);
         self.recorded = false;
         self.accumulator = 0.0;
@@ -436,7 +462,12 @@ impl Warden {
             return;
         }
         self.smart_bombs -= 1;
-        self.bomb_flash = Some(0.0);
+        self.blast = Some(Blast { x: self.ship.x, y: self.ship.y, age: 0.0 });
+        self.bomb_pending = true;
+        // ★ BRIAN: "particles explode on screen and go out from center of
+        // craft". The burst starts AT the ship, so the bomb reads as
+        // something the ship did rather than something that happened.
+        self.effects.smart_bomb(self.ship.x, self.ship.y);
         for i in 0..self.enemies.len() {
             let on_screen = self.enemies.get(i).is_some_and(|e| {
                 let sx = self.camera.to_screen(e.x);
@@ -448,6 +479,13 @@ impl Warden {
                 self.destroy_enemy(i);
             }
         }
+    }
+
+    /// Is this frame one of the bomb's white flashes?
+    fn flash_on(&self) -> bool {
+        self.blast.is_some_and(|b| {
+            b.age < BOMB_FLASH_SECONDS && (b.age / (BOMB_FLASH_PERIOD * 0.5)) as u32 % 2 == 0
+        })
     }
 
     /// ★ HYPERSPACE (H). Out of here, to anywhere: a random place in the
@@ -591,8 +629,11 @@ impl Warden {
         self.elapsed += dt;
         self.lives.step(dt);
         self.step_hyperspace(dt);
-        if let Some(t) = self.bomb_flash {
-            self.bomb_flash = (t + dt < BOMB_FLASH_SECONDS).then_some(t + dt);
+        if let Some(b) = &mut self.blast {
+            b.age += dt;
+            if b.age >= BLAST_SECONDS.max(BOMB_FLASH_SECONDS) {
+                self.blast = None;
+            }
         }
 
         // ⚠️ A DEAD SHIP DOES NOT FLY, AND MUTANTS MUST NOT TRACK IT.
@@ -1059,6 +1100,15 @@ impl Game for Warden {
         // different one in the source.
         let _fused = self.enemies.take_fused();
 
+        // ★ THE SMART BOMB SPEAKS FOR EVERYTHING IT KILLED. Its kills set
+        // no per-death flags (they happen between frames, see
+        // `bomb_pending`), and that is the original's behaviour too: the
+        // board was monophonic and the bomb's sound was the one you heard.
+        if self.bomb_pending {
+            self.bomb_pending = false;
+            audio.play(self.bomb_sound);
+        }
+
         // ★ W1: SQUADS ARRIVE, AND EVERY ONE IS HEARD — the first
         // included. The opening five used to be placed before frame one
         // and kept silent by a flag; now the director brings them in on
@@ -1091,9 +1141,11 @@ impl Game for Warden {
                 smart_bombs: self.smart_bombs,
                 best: self.best.max(self.score),
                 hyperspace: self.hyperspace.map(|t| t / HYPERSPACE_SECONDS),
-                flash: self
-                    .bomb_flash
-                    .is_some_and(|t| (t / (BOMB_FLASH_PERIOD * 0.5)) as u32 % 2 == 0),
+                flash: self.flash_on(),
+                blast: self
+                    .blast
+                    .filter(|b| b.age < BLAST_SECONDS)
+                    .map(|b| (b.x, b.y, b.age / BLAST_SECONDS)),
             },
         };
         render::draw(canvas, &scene, &self.theme);
@@ -1137,6 +1189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
         ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
         person: audio.register_sound(Box::new(sound::PersonBoom::new())),
+        smart_bomb: audio.register_sound(Box::new(sound::SmartBomb::new())),
     };
     let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
     let mut game = Warden::new(theme, laser, thrust, warp, booms, scores, clock_seed());
@@ -1163,6 +1216,7 @@ mod tests {
             mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
             ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
             person: audio.register_sound(Box::new(sound::PersonBoom::new())),
+            smart_bomb: audio.register_sound(Box::new(sound::SmartBomb::new())),
         };
         // ⚠️ AN IN-MEMORY SCORE FILE, never loaded or saved: a test that
         // reaches game over must not write a player's real high scores.
@@ -1487,7 +1541,8 @@ mod tests {
         assert_eq!(g.people.alive(), 1, "the bomb killed a person");
         assert_eq!(g.score, 2 * enemy::LANDER_POINTS);
         assert_eq!(g.smart_bombs, bombs - 1);
-        assert!(g.bomb_flash.is_some(), "no flash");
+        assert!(g.blast.is_some(), "no blast");
+        assert!(g.bomb_pending, "the bomb's voice was not queued");
     }
 
     /// No bombs, no bomb — and not while paused or between places.
@@ -1521,14 +1576,14 @@ mod tests {
         g.on_input(InputEvent::KeyDown(Key::B));
         let mut lit = Vec::new();
         let mut t = 0.0;
-        while t < BOMB_FLASH_SECONDS + 0.1 {
+        while t < BLAST_SECONDS + 0.1 {
             g.step(Input::default(), FIXED_DT);
-            lit.push(g.bomb_flash.is_some_and(|t| (t / (BOMB_FLASH_PERIOD * 0.5)) as u32 % 2 == 0));
+            lit.push(g.flash_on());
             t += FIXED_DT;
         }
         let rises = lit.windows(2).filter(|w| !w[0] && w[1]).count() + usize::from(lit[0]);
         assert_eq!(rises, 4, "expected four flashes");
-        assert!(g.bomb_flash.is_none(), "the flash never ended");
+        assert!(g.blast.is_none(), "the blast never ended");
     }
 
     /// ★ H, THROUGH THE KEY: somewhere else, stopped dead, enemy bolts

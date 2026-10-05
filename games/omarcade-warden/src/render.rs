@@ -57,6 +57,8 @@ pub struct Hud {
     pub hyperspace: Option<f32>,
     /// Whether this frame is one of the smart bomb's white flashes.
     pub flash: bool,
+    /// A smart bomb's shockwave: world x, y, and how far through, 0..1.
+    pub blast: Option<(f32, f32, f32)>,
 }
 
 /// Draw a frame.
@@ -86,6 +88,9 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
             draw_ship(canvas, scene.ship, scene.camera, theme, scene.exhaust)
         }
         None => {}
+    }
+    if let Some((x, y, t)) = scene.hud.blast {
+        draw_shockwave(canvas, scene.camera, x, y, t);
     }
     // ★ THE SMART BOMB'S FLASH, over the world and under the HUD: the
     // whole sky goes white, the readouts stay legible.
@@ -118,6 +123,38 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     }
     if scene.lives.is_game_over() {
         draw_game_over(canvas, scene.score, scene.hud.best, theme);
+    }
+}
+
+/// ★ THE SMART BOMB'S SHOCKWAVE: a ring of light sweeping out from where
+/// the ship fired it, past every edge of the screen — the reach of the
+/// bomb, drawn. `t` is 0..1 through it.
+///
+/// Elliptical because the screen is wider than tall, and it has to clear
+/// the corners at the same moment it clears the sides.
+fn draw_shockwave(canvas: &mut Canvas<'_>, camera: &Camera, x: f32, y: f32, t: f32) {
+    let cx = camera.to_screen(x);
+    let cy = canvas.height() as f32 - y;
+    // Ease out: fast at first, the way a blast front is.
+    let reach = 1.0 - (1.0 - t) * (1.0 - t);
+    let (rx, ry) = (reach * 900.0, reach * 620.0);
+    let fade = 1.0 - t;
+    let ring = Color::rgb(170, 235, 255).lerp(Color::rgb(0, 0, 0), 1.0 - fade);
+    let inner = Color::rgb(255, 245, 210).lerp(Color::rgb(0, 0, 0), 1.0 - fade * 0.6);
+    const SEGMENTS: usize = 72;
+    for (radius, colour, width) in [(1.0, ring, 5.0), (0.86, inner, 2.0)] {
+        for i in 0..SEGMENTS {
+            let a0 = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            let a1 = (i + 1) as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            canvas.line_add_f(
+                cx + a0.cos() * rx * radius,
+                cy + a0.sin() * ry * radius,
+                cx + a1.cos() * rx * radius,
+                cy + a1.sin() * ry * radius,
+                width,
+                colour,
+            );
+        }
     }
 }
 
@@ -862,7 +899,7 @@ mod tests {
 
     /// Wave 1, mid-fight: the HUD as it looks for most of a game.
     fn quiet_hud() -> Hud {
-        Hud { wave: 1, phase: WavePhase::Fighting, smart_bombs: 3, best: 0, hyperspace: None, flash: false }
+        Hud { wave: 1, phase: WavePhase::Fighting, smart_bombs: 3, best: 0, hyperspace: None, flash: false, blast: None }
     }
 
     /// ⚠️ THE SEAM, IN THE RENDERER. With the camera at x = 0 the left

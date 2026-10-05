@@ -73,6 +73,11 @@ fn main() {
     let warp = render(&mut sound::Warp::new(), 0.8, &[0.0]);
     emit(&dir.join("warp.wav"), &warp, "★ BRIAN'S — a Lander materialising");
 
+    // ★★ THE SMART BOMB — built from the Williams mechanism, not by ear.
+    // A/B against the emulated ROM: LITE ×6 at 64 ms, then CANNON.
+    let bomb = render(&mut sound::SmartBomb::new(), 3.2, &[0.0]);
+    emit(&dir.join("smartbomb.wav"), &bomb, "Williams LITE x6 + CANNON");
+
     // ★★ THE ENGINE, DRIVEN THE WAY THE GAME DRIVES IT.
     // ⚠️ NOT at a held constant. `exhaust` is EASED in main.rs — attack
     // 14.0/s against release 6.0/s — and the asymmetry is most of what

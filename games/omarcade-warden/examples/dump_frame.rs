@@ -78,6 +78,7 @@ fn main() {
         best: 0,
         hyperspace: None,
         flash: false,
+        blast: None,
     };
     let mut score = 0u32;
 
@@ -124,6 +125,19 @@ fn main() {
             }
             effects.update(0.05);
             hud.flash = true;
+            hud.smart_bombs = 2;
+        }
+
+        // ★ Brian's polish: the bomb's burst and shockwave from the ship,
+        // between flashes so the burst itself can be seen.
+        "bombburst" => {
+            camera.snap_to(&ship);
+            effects.smart_bomb(ship.x, ship.y);
+            for dx in [180.0f32, 380.0, 560.0] {
+                effects.explode_lander(world::wrap(ship.x + dx), ship.y + 40.0, 0.0);
+            }
+            effects.update(0.16);
+            hud.blast = Some((ship.x, ship.y, 0.16 / 0.55));
             hud.smart_bombs = 2;
         }
 
@@ -407,7 +421,7 @@ fn main() {
             eprintln!(
                 "scenes: rest | cruise | west | turn | low | seam | \
                  thrust | thrust-west | mutants | apocalypse | rescue | combat | \
-                 tally | gameover | popups | hyperspace | smartbomb"
+                 tally | gameover | popups | hyperspace | smartbomb | bombburst"
             );
             std::process::exit(2);
         }

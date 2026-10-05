@@ -49,6 +49,12 @@ pub const SHIP_PIECES: usize = 40;
 /// How many pieces the world throws up when it ends.
 pub const WORLD_PIECES: usize = 150;
 
+/// Pieces in a smart bomb's burst, how fast its front travels (world
+/// units per second), and how long a piece lives.
+pub const BOMB_PIECES: usize = 180;
+const BOMB_SPEED: f32 = 1100.0;
+const BOMB_LIFE: f32 = 0.6;
+
 /// How fast the debris leaves, in world units per second.
 const BURST_SPEED: f32 = 210.0;
 
@@ -228,6 +234,44 @@ impl Effects {
                 Vec2::new(angle.cos() * speed + vx * 0.35, -angle.sin() * speed),
                 size,
                 color,
+                life,
+            ));
+        }
+    }
+
+    /// ★ THE SMART BOMB, going off at the ship.
+    ///
+    /// Brian: "I would also like to see more visual representation of
+    /// bomb going off, particles explode on screen and go out from center
+    /// of craft". Fast enough to reach the edges of the screen in under
+    /// half a second — the bomb clears the SCREEN, and the debris says how
+    /// far it reached — and dense enough to read as a wall of light rather
+    /// than a scatter of sparks.
+    ///
+    /// ⚠️ FIXED COLOURS, hot white through gold to the laser's cyan: the
+    /// player's own weapon, never confusable with an enemy's burst.
+    pub fn smart_bomb(&mut self, x: f32, y: f32) {
+        const COLORS: [Color; 4] = [
+            Color::rgb(255, 255, 255),
+            Color::rgb(255, 236, 150),
+            Color::rgb(140, 230, 255),
+            Color::rgb(255, 190, 90),
+        ];
+        for i in 0..BOMB_PIECES {
+            let spread = (i as f32 + self.rand()) / BOMB_PIECES as f32;
+            let angle = spread * std::f32::consts::TAU;
+            // Squared toward the fast end this time: the bomb is a
+            // shockwave, so most of it should be OUT at the front.
+            let r = self.rand();
+            let speed = BOMB_SPEED * (0.45 + 0.55 * (1.0 - (1.0 - r) * (1.0 - r)));
+            let size = 2.0 + 3.0 * self.rand();
+            let life = BOMB_LIFE * (0.6 + 0.5 * self.rand());
+            self.pool.spawn(Particle::new(
+                Vec2::new(x, y),
+                // Wider than tall, like the screen it is clearing.
+                Vec2::new(angle.cos() * speed * 1.3, -angle.sin() * speed),
+                size,
+                COLORS[i % COLORS.len()],
                 life,
             ));
         }

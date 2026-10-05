@@ -1121,6 +1121,258 @@ impl Voice for Thrust {
     // which is the correct behaviour if one is ever called by mistake.
 }
 
+// ---------------------------------------------------------------------
+// The smart bomb
+// ---------------------------------------------------------------------
+
+// ★★ THE FIRST VOICE BUILT FROM THE WILLIAMS MECHANISM RATHER THAN BY EAR
+// (docs/warden-plan.md W5, pulled forward because Brian flew the bomb and
+// heard nothing: "the bomb when pressed has no sound effect").
+//
+// The original (docs/warden/research-sound.md §2): LITE retriggered 6×
+// every 64 ms, then CANNON. Read from Sam Dicker's own source
+// (vsndrm1.src, `LITEN` and `FNOISE`) and rebuilt as the board ran it:
+// a state machine writing 8-bit DAC values on a virtual 894,886 Hz cycle
+// clock, held between writes, integrated down to the output rate. The
+// stair-steps and the aliasing ARE the sound; a modern noise generator
+// through a filter would be a different instrument.
+//
+// ⚠️ OUR PARAMETERS, THE ORIGINAL'S TECHNIQUE. No ROM table is used.
+// The numbers below are mechanism (a clock, a step, a count), measured
+// against the emulated ROM renders in ~/projects/omarcade-reference.
+
+/// The sound board's CPU clock: 3.579545 MHz ÷ 4.
+const WILLIAMS_CLOCK: f32 = 894_886.0;
+
+/// LITE bursts in the stutter, and how far apart (64 ms).
+const BOMB_STUTTERS: u8 = 6;
+const BOMB_STUTTER_CYCLES: f32 = 0.064 * WILLIAMS_CLOCK;
+
+/// LITE: cycles per sample are `LITE_BASE + LITE_PER_STEP × L`, and L
+/// climbs by one every `LITE_SAMPLES_PER_STEP` samples — so the crackle's
+/// clock falls from ~18.6 kHz as it runs. Each restart snaps it back.
+const LITE_BASE: f32 = 42.0;
+const LITE_PER_STEP: f32 = 6.0;
+const LITE_SAMPLES_PER_STEP: u8 = 3;
+
+/// CANNON: cycles per sample (measured: 72,000 samples in the 2.58 s the
+/// emulator times it at → 35.8 µs), samples between slope decays, and the
+/// slope it starts from (8.8 fixed point).
+const CANNON_CYCLES: f32 = 32.0;
+const CANNON_DECAY_SAMPLES: u16 = 1000;
+const CANNON_START_SLOPE: u16 = 0xFF00;
+
+/// The AC coupling of the real amplifier: a one-pole high-pass at ~20 Hz.
+const DC_BLOCK_HZ: f32 = 20.0;
+
+/// Output level. ⚠️ NOT THE PEAK — the crackle is full-scale 1-bit noise
+/// and the DC block overshoots its edges. Rendered and measured: see
+/// `no_voice_clips_at_full_gain`.
+const BOMB_LEVEL: f32 = 0.42;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BombStage {
+    /// The crackle, on burst `n` of [`BOMB_STUTTERS`].
+    Lite { burst: u8 },
+    /// The explosion tail.
+    Cannon,
+    Done,
+}
+
+/// The smart bomb: a stuttering crackle, then the big explosion.
+pub struct SmartBomb {
+    gain: f32,
+    stage: BombStage,
+    /// The board's 16-bit random shift register.
+    hi: u8,
+    lo: u8,
+    /// The DAC, and how many cycles it has left to hold its value.
+    dac: u8,
+    hold: f32,
+    /// Cycles spent in the current LITE burst.
+    burst_cycles: f32,
+    /// LITE's period step L, and samples left at this L.
+    lite_l: u8,
+    lite_count: u8,
+    /// CANNON's slope ceiling (8.8 fixed point), fractional position,
+    /// target, and samples to the next decay.
+    fmax: u16,
+    frac: u8,
+    target: u8,
+    decay_in: u16,
+    /// DC blocker state.
+    dc_x: f32,
+    dc_y: f32,
+}
+
+impl Default for SmartBomb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SmartBomb {
+    pub fn new() -> Self {
+        Self {
+            gain: 1.0,
+            stage: BombStage::Done,
+            hi: 0x3C,
+            lo: 0,
+            dac: 0x80,
+            hold: 0.0,
+            burst_cycles: 0.0,
+            lite_l: 1,
+            lite_count: LITE_SAMPLES_PER_STEP,
+            fmax: CANNON_START_SLOPE,
+            frac: 0,
+            target: 0x80,
+            decay_in: CANNON_DECAY_SAMPLES,
+            dc_x: 0.0,
+            dc_y: 0.0,
+        }
+    }
+
+    /// One step of the board's shift register, with `feed` mixed into the
+    /// new top bit. Returns the bit shifted out.
+    fn shift(&mut self, feed: u8) -> bool {
+        let new_top = ((feed >> 3) ^ self.lo) & 1;
+        let out_hi = self.hi & 1;
+        self.hi = (self.hi >> 1) | (new_top << 7);
+        let out = self.lo & 1 == 1;
+        self.lo = (self.lo >> 1) | (out_hi << 7);
+        out
+    }
+
+    fn start_lite(&mut self, burst: u8) {
+        self.stage = BombStage::Lite { burst };
+        self.burst_cycles = 0.0;
+        self.lite_l = 1;
+        self.lite_count = LITE_SAMPLES_PER_STEP;
+        self.dac = 0xFF;
+    }
+
+    /// Advance the board by one DAC write; sets `dac` and `hold`.
+    fn next_write(&mut self) {
+        match self.stage {
+            BombStage::Lite { burst } => {
+                // ★ THE STUTTER: every 64 ms the crackle restarts from its
+                // fastest clock, six times, before the explosion takes over.
+                if self.burst_cycles >= BOMB_STUTTER_CYCLES {
+                    if burst + 1 < BOMB_STUTTERS {
+                        self.start_lite(burst + 1);
+                    } else {
+                        self.stage = BombStage::Cannon;
+                        self.fmax = CANNON_START_SLOPE;
+                        self.frac = 0;
+                        self.decay_in = CANNON_DECAY_SAMPLES;
+                        self.target = self.dac;
+                        return self.next_write();
+                    }
+                }
+                // LITE: 1-bit noise — the DAC inverts on every random 1.
+                let lo = self.lo;
+                if self.shift(lo) {
+                    self.dac = !self.dac;
+                }
+                self.hold = LITE_BASE + LITE_PER_STEP * self.lite_l as f32;
+                self.burst_cycles += self.hold;
+                self.lite_count -= 1;
+                if self.lite_count == 0 {
+                    self.lite_count = LITE_SAMPLES_PER_STEP;
+                    self.lite_l = self.lite_l.saturating_add(1);
+                }
+            }
+
+            BombStage::Cannon => {
+                // FNOISE with distortion: slew toward a random target at
+                // a random slope no steeper than the decaying ceiling.
+                let reached = self.dac == self.target;
+                if reached {
+                    let dac = self.dac;
+                    self.shift(dac);
+                    self.target = self.lo;
+                }
+                let slope_hi = ((self.fmax >> 8) as u8) & self.hi;
+                let step = ((slope_hi as u16) << 8) | (self.fmax & 0xFF);
+                let pos = ((self.dac as u16) << 8) | self.frac as u16;
+                let t = (self.target as u16) << 8;
+                let next = if pos < t {
+                    pos.saturating_add(step).min(t)
+                } else {
+                    pos.saturating_sub(step).max(t)
+                };
+                self.dac = (next >> 8) as u8;
+                self.frac = next as u8;
+                self.hold = CANNON_CYCLES;
+
+                self.decay_in -= 1;
+                if self.decay_in == 0 {
+                    self.decay_in = CANNON_DECAY_SAMPLES;
+                    // ×7/8, truncating — it settles at 7/256 and stops,
+                    // exactly where the original's routine returns.
+                    let next = self.fmax - (self.fmax >> 3);
+                    if next == self.fmax || self.fmax <= 7 {
+                        self.stage = BombStage::Done;
+                    }
+                    self.fmax = next;
+                }
+            }
+
+            BombStage::Done => {
+                self.dac = 0x80;
+                self.hold = f32::MAX;
+            }
+        }
+    }
+}
+
+impl Voice for SmartBomb {
+    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
+        let per_sample = WILLIAMS_CLOCK / sample_rate;
+        let r = 1.0 - (2.0 * PI * DC_BLOCK_HZ / sample_rate);
+        for sample in out.iter_mut() {
+            if self.stage == BombStage::Done {
+                *sample = 0.0;
+                continue;
+            }
+            // ★ ZERO-ORDER HOLD, INTEGRATED: average the DAC over exactly
+            // the cycles this output sample spans, so every write lands
+            // with its true weight and nothing is resampled away.
+            let mut need = per_sample;
+            let mut acc = 0.0f32;
+            while need > 0.0 {
+                if self.hold <= 0.0 {
+                    self.next_write();
+                }
+                let take = need.min(self.hold);
+                acc += self.dac as f32 * take;
+                need -= take;
+                self.hold -= take;
+            }
+            let x = (acc / per_sample - 128.0) / 128.0;
+            // The amplifier was AC-coupled; so is this.
+            let y = x - self.dc_x + r * self.dc_y;
+            self.dc_x = x;
+            self.dc_y = y;
+            *sample = y * BOMB_LEVEL * self.gain;
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.stage != BombStage::Done
+    }
+
+    fn retrigger(&mut self, gain: f32, _pitch: f32) {
+        self.gain = gain.clamp(0.0, 1.0);
+        self.hold = 0.0;
+        self.dc_x = 0.0;
+        self.dc_y = 0.0;
+        // The shift register keeps running between bombs, as the board's
+        // did: two bombs are never the same crackle.
+        self.start_lite(0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1345,8 +1597,9 @@ mod tests {
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 6] = [
+        let cases: [(&str, &mut dyn Voice, f32); 7] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
+            ("smart bomb", &mut SmartBomb::new(), 3.0),
             ("lander", &mut Boom::new(), BOOM_LEN),
             ("mutant", &mut MutantBoom::new(), MUTANT_BOOM_LEN),
             ("ship", &mut ShipBoom::new(), SHIP_BOOM_LEN),
@@ -1424,6 +1677,61 @@ mod tests {
         }
         for s in render_all(&mut boom, BOOM_LEN * 2.0) {
             assert!(s.is_finite(), "boom emitted {s}");
+        }
+    }
+
+    /// Brightness of a slice: RMS of the first difference over RMS. High
+    /// for crackle, near zero for a slow rumble.
+    fn brightness(samples: &[f32]) -> f32 {
+        let d: Vec<f32> = samples.windows(2).map(|w| w[1] - w[0]).collect();
+        let r = |s: &[f32]| (s.iter().map(|x| x * x).sum::<f32>() / s.len().max(1) as f32).sqrt();
+        r(&d) / r(samples).max(1e-9)
+    }
+
+    /// ★ THE SMART BOMB RUNS AS LONG AS THE ORIGINAL'S: the stutter
+    /// (384 ms) plus CANNON's 72 decays (~2.58 s), audible to ~2.9 s in
+    /// the emulated ROM render. Then it retires.
+    #[test]
+    fn the_smart_bomb_lasts_as_long_as_the_original_and_retires() {
+        let mut b = SmartBomb::new();
+        assert!(!b.alive());
+        b.retrigger(1.0, 1.0);
+        let s = render_all(&mut b, 3.4);
+        assert!(!b.alive(), "the bomb never retired");
+        let end = s.iter().rposition(|x| x.abs() > 1e-4).unwrap() as f32 / SR;
+        assert!((2.8..=3.1).contains(&end), "it ended at {end:.2} s");
+        assert!(s.iter().all(|x| x.is_finite()));
+    }
+
+    /// ★ CRACKLE, THEN EXPLOSION. The stutter is 1-bit noise and bright;
+    /// the CANNON tail darkens as its slope decays. Measured on the ROM
+    /// render: brightness 0.32 in the stutter, ~0.01 by 2 s.
+    #[test]
+    fn the_smart_bomb_crackles_and_then_rumbles() {
+        let mut b = SmartBomb::new();
+        b.retrigger(1.0, 1.0);
+        let s = render_all(&mut b, 3.0);
+        let at = |t: f32| (t * SR) as usize;
+        let crackle = brightness(&s[at(0.05)..at(0.35)]);
+        let tail = brightness(&s[at(1.8)..at(2.2)]);
+        assert!(crackle > 0.2, "the stutter is not crackle: {crackle:.3}");
+        assert!(tail < crackle * 0.15, "the tail did not darken: {crackle:.3} → {tail:.3}");
+    }
+
+    /// ★ THE STUTTER IS SIX RESTARTS. Each one snaps LITE back to its
+    /// fastest clock, so the crackle is brighter just after every 64 ms
+    /// boundary than just before it.
+    #[test]
+    fn the_smart_bomb_stutters_six_times() {
+        let mut b = SmartBomb::new();
+        b.retrigger(1.0, 1.0);
+        let s = render_all(&mut b, 0.5);
+        let win = (0.006 * SR) as usize;
+        for k in 1..6 {
+            let edge = (k as f32 * 0.064 * SR) as usize;
+            let before = brightness(&s[edge - win..edge]);
+            let after = brightness(&s[edge + win / 4..edge + win]);
+            assert!(after > before * 1.2, "no restart at {} ms: {before:.3} → {after:.3}", k * 64);
         }
     }
 

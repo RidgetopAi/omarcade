@@ -155,10 +155,12 @@ impl Effects {
         }
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.pool.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.pool.is_empty()
     }

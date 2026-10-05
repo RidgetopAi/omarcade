@@ -138,6 +138,15 @@ impl Lives {
     }
 
     /// Start over.
+    /// One more ship — the 10,000-point award. Never wakes a game that
+    /// is already over: an award landing on the frame of the last death
+    /// must not resurrect it.
+    pub fn award(&mut self) {
+        if self.state != State::GameOver {
+            self.remaining += 1;
+        }
+    }
+
     pub fn reset(&mut self) {
         *self = Lives::new();
     }

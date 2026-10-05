@@ -36,14 +36,17 @@ mod enemy;
 mod flight;
 mod humanoid;
 mod lives;
+mod popup;
 mod render;
 mod scanner;
 mod shot;
 mod sound;
+mod waves;
 mod world;
 
 use omarcade_core::audio::{SoundId, VoiceId, VoiceParams};
 use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
+use omarcade_core::scores::ScoreFile;
 use omarcade_core::{Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Pause, Theme};
 
 use effects::Effects;
@@ -51,10 +54,16 @@ use enemy::Enemies;
 use flight::{Camera, Facing, Input, Ship};
 use humanoid::Humanoids;
 use lives::Lives;
+use popup::Popups;
 use shot::Shots;
+use waves::{Director, Event};
 use world::Terrain;
 
-const TITLE: &str = "Omarcade";
+/// Names the score file, and the cabinet discovers games by it — so it
+/// is public surface: renaming it orphans everyone's high scores.
+const GAME_ID: &str = "omarcade-warden";
+const GAME_NAME: &str = "Warden";
+const TITLE: &str = GAME_NAME;
 const WIDTH: u32 = world::VIEW_W as u32;
 const HEIGHT: u32 = world::VIEW_H as u32;
 
@@ -72,12 +81,6 @@ const RIDGE_SAMPLES: usize = 1024;
 /// reversal timing in `flight` is exactly the kind of thing that would
 /// drift between a 60Hz and a 144Hz machine.
 const FIXED_DT: f32 = 1.0 / 240.0;
-
-/// How many Landers arrive at the start.
-///
-/// Brian's spec says Landers come in groups of 4-5. S9 owns waves; this
-/// is one group, so that S5 has something to shoot.
-const OPENING_LANDERS: usize = 5;
 
 /// How many people live on the surface.
 ///
@@ -122,6 +125,20 @@ const EXHAUST_RELEASE: f32 = 6.0;
 const SHIP_HALF_W: f32 = 22.0;
 const SHIP_HALF_H: f32 = 10.0;
 
+/// Smart bombs at the start of a game (the original's default; W2 makes
+/// them do something).
+const STARTING_SMART_BOMBS: u32 = 3;
+
+/// A ship and a smart bomb every this many points.
+const AWARD_EVERY: u32 = 10_000;
+
+/// Catching a falling Humanoid in the air.
+const CATCH_POINTS: u32 = 500;
+/// Setting a caught Humanoid back down — a whole rescue is 1000.
+const SET_DOWN_POINTS: u32 = 500;
+/// A Humanoid that survives its own short fall.
+const SAFE_LANDING_POINTS: u32 = 250;
+
 struct Warden {
     theme: Theme,
     terrain: Terrain,
@@ -139,6 +156,28 @@ struct Warden {
     /// ends exactly once rather than every frame the population is zero.
     world_ended: bool,
 
+    /// ★ W1. Who arrives when, and when a wave is over. See `waves`.
+    director: Director,
+    popups: Popups,
+    /// Held but not yet usable — W2 gives them a key. Shown in the HUD
+    /// now because the 10,000-point award already grants them.
+    smart_bombs: u32,
+    /// The score at which the next ship and bomb are awarded.
+    next_award: u32,
+    /// This game's seed; every random placement in it derives from this.
+    seed: u32,
+    /// Squads called so far this game, so each lands somewhere new.
+    squads: u32,
+
+    scores: ScoreFile,
+    /// Whether game over writes the score file. Off in tests, which
+    /// must never touch a player's real high scores.
+    persist: bool,
+    /// Whether this game's score has been banked, so game over records
+    /// it once rather than every frame it is on screen.
+    recorded: bool,
+    best: u32,
+
     laser: SoundId,
 
     /// ★ A `VoiceId`, NOT a `SoundId`, and the type is the whole
@@ -151,13 +190,6 @@ struct Warden {
     /// A Lander materialising. ★ One of the six silent events, and the
     /// first of them to get a voice.
     warp: SoundId,
-    /// True until the first frame's spawns have been consumed.
-    ///
-    /// ★ `Warden::new` scatters the opening wave before the game has
-    /// drawn anything, so the counter is already at five on frame one.
-    /// Without this the game opens with an arrival sound for enemies the
-    /// player has not been shown yet.
-    opening_wave: bool,
     boom: SoundId,
     mutant_boom: SoundId,
     ship_boom: SoundId,
@@ -223,38 +255,46 @@ struct Booms {
 }
 
 impl Warden {
-    fn new(theme: Theme, laser: SoundId, thrust: VoiceId, warp: SoundId, booms: Booms) -> Self {
-        let terrain = Terrain::generate(RIDGE_SAMPLES, 0x0DEF_E4DE);
+    fn new(
+        theme: Theme,
+        laser: SoundId,
+        thrust: VoiceId,
+        warp: SoundId,
+        booms: Booms,
+        scores: ScoreFile,
+        seed: u32,
+    ) -> Self {
+        let terrain = Terrain::generate(RIDGE_SAMPLES, seed);
         let ship = Ship::new(0.0);
-        let mut camera = Camera::new(ship.x);
-        // Snap rather than ease on the first frame: easing in from a
-        // default position would read as an opening swoop nobody asked
-        // for.
-        camera.snap_to(&ship);
+        let camera = Camera::new(ship.x);
+        let best = scores.best().unwrap_or(0);
 
-        let mut enemies = Enemies::new();
-        enemies.scatter(OPENING_LANDERS, ship.x, &terrain, 0x5EED_1234);
-
-        let mut people = Humanoids::new();
-        people.scatter(POPULATION, &terrain, 0x50C1_A15E);
-
-        Self {
+        let mut g = Self {
             theme,
             terrain,
             ship,
             camera,
             pause: Pause::new(),
             shots: Shots::new(),
-            enemies,
-            people,
+            enemies: Enemies::new(),
+            people: Humanoids::new(),
             effects: Effects::new(),
             lives: Lives::new(),
             world_ended: false,
             score: 0,
+            director: Director::new(),
+            popups: Popups::new(),
+            smart_bombs: STARTING_SMART_BOMBS,
+            next_award: AWARD_EVERY,
+            seed,
+            squads: 0,
+            scores,
+            persist: false,
+            recorded: false,
+            best,
             laser,
             thrust,
             warp,
-            opening_wave: true,
             boom: booms.lander,
             mutant_boom: booms.mutant,
             ship_boom: booms.ship,
@@ -274,7 +314,136 @@ impl Warden {
             enemy_fired_this_frame: false,
             died_this_frame: false,
             world_ended_this_frame: false,
+        };
+        g.new_game(seed);
+        g
+    }
+
+    /// Everything a fresh game needs, from `seed`.
+    ///
+    /// ★ ONE PATH FOR THE FIRST GAME AND EVERY RESTART, so a restart
+    /// cannot quietly inherit something the first game never had — a
+    /// mutated enemy list, a destroyed surface, a pause.
+    ///
+    /// ⚠️ NO ENEMIES ARE PLACED HERE. The director brings the first squad
+    /// on the first step, through `spawn`, so it arrives the way every
+    /// later squad does — warping in, and audibly. The old opening five
+    /// were placed silently before frame one and needed a flag to keep
+    /// their arrival quiet; a wave the player watches arrive should sound.
+    fn new_game(&mut self, seed: u32) {
+        self.seed = seed;
+        self.squads = 0;
+        self.terrain = Terrain::generate(RIDGE_SAMPLES, seed);
+        self.ship = Ship::new(0.0);
+        self.camera = Camera::new(self.ship.x);
+        // Snap rather than ease on the first frame: easing in from a
+        // default position would read as an opening swoop nobody asked
+        // for.
+        self.camera.snap_to(&self.ship);
+        self.shots.clear();
+        self.enemies = Enemies::new();
+        self.enemies.reseed(mix(seed, 0x4D07_A17E));
+        self.people = Humanoids::new();
+        self.people.scatter(POPULATION, &self.terrain, mix(seed, 0x50C1_A15E));
+        self.effects.clear();
+        self.lives.reset();
+        self.score = 0;
+        self.world_ended = false;
+        self.director = Director::new();
+        self.popups.clear();
+        self.smart_bombs = STARTING_SMART_BOMBS;
+        self.next_award = AWARD_EVERY;
+        self.recorded = false;
+        self.accumulator = 0.0;
+        self.elapsed = 0.0;
+        // ⚠️ A restart must never inherit a pause: a fresh game frozen
+        // behind a PAUSED overlay reads as a hang.
+        self.pause.resume();
+    }
+
+    /// Add `points`, showing them at `(x, y)` when `at` is given, and pay
+    /// out the 10,000-point award as many times as it was crossed.
+    fn add_score(&mut self, points: u32, at: Option<(f32, f32)>) {
+        self.score += points;
+        if let Some((x, y)) = at {
+            self.popups.add(x, y, points);
         }
+        // ⚠️ `while`, NOT `if`: a single big award — a wave bonus late in
+        // the game — can cross two thresholds at once.
+        while self.score >= self.next_award {
+            self.next_award += AWARD_EVERY;
+            self.lives.award();
+            self.smart_bombs += 1;
+        }
+    }
+
+    /// Bank the score the first time a game ends.
+    ///
+    /// Save failures are swallowed on purpose (Pixel Break's rule): a
+    /// scoreboard that cannot be written is not a reason to interrupt
+    /// anyone's game.
+    fn bank_score(&mut self) {
+        if self.recorded {
+            return;
+        }
+        self.recorded = true;
+        self.scores.record(self.score);
+        self.best = self.scores.best().unwrap_or(0);
+        if self.persist {
+            let _ = self.scores.save();
+        }
+    }
+
+    /// Hostiles still to deal with this wave: in the world now, not yet
+    /// dying.
+    fn hostiles(&self) -> usize {
+        self.enemies.remaining()
+    }
+
+    /// Run the wave director for one step and apply what it asks for.
+    fn direct(&mut self, dt: f32) {
+        self.enemies.set_pressure(self.director.pressure());
+        let event = self.director.step(dt, self.hostiles(), self.people.alive());
+        match event {
+            None => {}
+            Some(Event::Squad(n)) => {
+                self.squads += 1;
+                let seed = mix(self.seed, 0x5EED_0000 ^ self.squads);
+                // ★ After the world has ended they come through as Mutants.
+                self.enemies.squad(n, self.ship.x, &self.terrain, seed, self.world_ended);
+            }
+            Some(Event::Cleared) => {
+                // The wave is held. Nothing in flight may still kill the
+                // player while the survivors are being counted.
+                self.shots.clear();
+            }
+            Some(Event::BonusTick) => {
+                let per = waves::bonus_per_humanoid(self.director.wave());
+                self.add_score(per, None);
+            }
+            Some(Event::NextWave) if waves::restores(self.director.wave()) => {
+                self.restore_planet();
+            }
+            Some(Event::NextWave) => {}
+        }
+    }
+
+    /// ★ EVERY FIFTH WAVE THE PLANET IS REBUILT: the surface comes back
+    /// and ten people with it.
+    ///
+    /// ⚠️ ONLY AT A WAVE BOUNDARY, and that is what keeps the humanoid
+    /// index invariant: Landers hold indices into the people list, and
+    /// replacing the list under a live carrier would re-point it at a
+    /// stranger. Between waves there are no enemies at all, so there is
+    /// no index to break — and the claims are cleared regardless.
+    fn restore_planet(&mut self) {
+        debug_assert_eq!(self.enemies.remaining(), 0, "restore with enemies alive");
+        self.enemies.clear();
+        self.terrain.restore();
+        self.world_ended = false;
+        self.people.clear();
+        let seed = mix(self.seed, 0x50C1_A15E ^ self.director.wave());
+        self.people.scatter(POPULATION, &self.terrain, seed);
     }
 
     /// Where a bolt leaves the ship, in world coordinates.
@@ -335,28 +504,54 @@ impl Warden {
 
         self.shots.step(dt);
 
-        // Mutants that want to shoot say so; the bolts are built here,
-        // because `Landers` does not know what a Shot is.
+        // Enemies that want to shoot say so; the bolts are built here,
+        // because `Enemies` does not know what a Shot is.
         let wants = self.enemies.step(&self.terrain, &mut self.people, ship_pos, dt);
         if let Some((sx, sy)) = ship_pos {
             for (index, mx, my) in wants {
                 let mut noise = self.enemies.next_noise();
-                let (dx, dy) = match self.enemies.get(index) {
-                    Some(m) => m.aim_at(sx, sy, &mut noise),
+                let (dx, dy, speed) = match self.enemies.get(index) {
+                    // ⚠️ A MUTANT NEVER SHOOTS STRAIGHT (Brian's rule,
+                    // enforced in `aim_at`); a Lander's slow shot may.
+                    Some(m) if m.is_mutant() => {
+                        let (dx, dy) = m.aim_at(sx, sy, &mut noise);
+                        (dx, dy, m.shot_speed())
+                    }
+                    Some(l) => {
+                        let (dx, dy) = l.lander_aim(sx, sy, &mut noise);
+                        (dx, dy, l.shot_speed())
+                    }
                     None => continue,
                 };
-                self.shots.fire_enemy(mx, my, dx, dy);
+                self.shots.fire_enemy_at(mx, my, dx, dy, speed);
                 self.enemy_fired_this_frame = true;
             }
         }
 
-        self.people.step(&self.terrain, dt);
+        // ★ A SHORT FALL SURVIVED ON ITS OWN is worth 250.
+        for i in self.people.step(&self.terrain, dt) {
+            if let Some(h) = self.people.get(i) {
+                let (x, y) = (h.x, h.y);
+                self.add_score(SAFE_LANDING_POINTS, Some((x, y)));
+            }
+        }
         self.effects.update(dt);
+        self.popups.step(dt);
 
         self.resolve_hits();
         self.resolve_catches();
         self.resolve_ship_hit();
         self.check_world_end();
+
+        // ⚠️ NO WAVES AFTER THE LAST LIFE. A game that is over keeps
+        // drawing the world, but nothing new arrives in it — and the
+        // score is banked the moment it ends, not when the player
+        // presses a key, so quitting from the game-over card keeps it.
+        if self.lives.is_game_over() {
+            self.bank_score();
+        } else {
+            self.direct(dt);
+        }
     }
 
     /// An enemy bolt finding the ship.
@@ -364,12 +559,22 @@ impl Warden {
         if !self.lives.is_vulnerable() {
             return;
         }
-        if self
-            .shots
-            .enemy_hit(self.ship.x, self.ship.y, SHIP_HALF_W, SHIP_HALF_H)
-            .is_some()
-            && self.lives.hit()
-        {
+        let shot = self.shots.enemy_hit(self.ship.x, self.ship.y, SHIP_HALF_W, SHIP_HALF_H).is_some();
+        // ★ FLYING INTO ONE KILLS YOU TOO, and takes it with you — the
+        // original's rule, and what makes a Mutant at point-blank range a
+        // threat rather than an easy kill. The wreck still scores: it is
+        // dead, and the player paid for it.
+        let body = if shot {
+            None
+        } else {
+            self.enemies.body_hit(self.ship.x, self.ship.y, SHIP_HALF_W, SHIP_HALF_H)
+        };
+        if let Some(i) = body {
+            if self.lives.is_vulnerable() {
+                self.destroy_enemy(i);
+            }
+        }
+        if (shot || body.is_some()) && self.lives.hit() {
             self.effects.explode_ship(self.ship.x, self.ship.y, self.ship.vx);
             self.died_this_frame = true;
             // ⚠️ THE PASSENGER GOES WITH YOU. A rescued Humanoid riding
@@ -406,10 +611,16 @@ impl Warden {
     /// its whole risk/reward around: you are safest high up and you can
     /// only return someone by going low.
     fn resolve_catches(&mut self) {
+        // ⚠️ A DEAD SHIP CATCHES NO ONE. It is not there to catch with.
+        if !self.lives.is_flying() {
+            return;
+        }
         if let Some(i) = self.people.catch_test(self.ship.x, self.ship.y) {
             if let Some(h) = self.people.get_mut(i) {
                 h.rescued();
                 self.rescued_this_frame = true;
+                let (x, y) = (h.x, h.y);
+                self.add_score(CATCH_POINTS, Some((x, y)));
             }
         }
 
@@ -417,12 +628,47 @@ impl Warden {
         self.people.carry_with_ship(self.ship.x, self.ship.y);
         let ground = self.terrain.height_at(self.ship.x);
         if self.ship.y - ground < DROP_OFF_HEIGHT {
-            let terrain = &self.terrain;
+            let mut set_down = Vec::new();
             for i in 0..self.people.len() {
                 if let Some(h) = self.people.get_mut(i) {
-                    h.released_to_ground(terrain);
+                    if h.released_to_ground(&self.terrain) {
+                        set_down.push((h.x, h.y));
+                    }
                 }
             }
+            for at in set_down {
+                self.add_score(SET_DOWN_POINTS, Some(at));
+            }
+        }
+    }
+
+    /// Kill the enemy at `index`: drop its passenger, score it, blow it
+    /// up, and say which death it was. Shared by your laser and by your
+    /// hull, so the two can never disagree about what a kill means.
+    fn destroy_enemy(&mut self, target: usize) {
+        let (lx, ly, lvx) = match self.enemies.get(target) {
+            Some(l) => (l.x, l.y, l.vx),
+            None => return,
+        };
+        // ⚠️ DROP THE PASSENGER BEFORE KILLING THE CARRIER.
+        // `kill` clears the target, so doing this after would
+        // take the Humanoid with it silently and the whole
+        // catch-and-rescue loop would never fire.
+        self.enemies.release_passenger(target, &mut self.people);
+        // ⚠️ ASK WHAT IT IS *BEFORE* KILLING IT. `kill` sets
+        // Phase::Dying, and a Mutant that has started dying is
+        // still a Mutant — but reading the kind afterwards means
+        // reaching back into a list this line just mutated, and
+        // the next person to touch it would have to prove that
+        // still works. Read it first; it is one bool.
+        let was_mutant = self.enemies.get(target).map(|l| l.is_mutant()).unwrap_or(false);
+        let points = self.enemies.kill(target);
+        self.add_score(points, None);
+        self.effects.explode_lander(lx, ly, lvx);
+        if was_mutant {
+            self.mutant_killed_this_frame = true;
+        } else {
+            self.lander_killed_this_frame = true;
         }
     }
 
@@ -460,31 +706,8 @@ impl Warden {
             }
 
             if let Some(target) = self.enemies.hit_test(sx, sy) {
-                let (lx, ly, lvx) = {
-                    let l = self.enemies.iter().nth(target).unwrap();
-                    (l.x, l.y, l.vx)
-                };
-                // ⚠️ DROP THE PASSENGER BEFORE KILLING THE CARRIER.
-                // `kill` clears the target, so doing this after would
-                // take the Humanoid with it silently and the whole
-                // catch-and-rescue loop would never fire.
-                self.enemies.release_passenger(target, &mut self.people);
-                // ⚠️ ASK WHAT IT IS *BEFORE* KILLING IT. `kill` sets
-                // Phase::Dying, and a Mutant that has started dying is
-                // still a Mutant — but reading the kind afterwards means
-                // reaching back into a list this line just mutated, and
-                // the next person to touch it would have to prove that
-                // still works. Read it first; it is one bool.
-                let was_mutant =
-                    self.enemies.get(target).map(|l| l.is_mutant()).unwrap_or(false);
-                self.score += self.enemies.kill(target);
-                self.effects.explode_lander(lx, ly, lvx);
+                self.destroy_enemy(target);
                 self.shots.consume(i);
-                if was_mutant {
-                    self.mutant_killed_this_frame = true;
-                } else {
-                    self.lander_killed_this_frame = true;
-                }
                 continue;
             }
 
@@ -592,6 +815,16 @@ impl Game for Warden {
             InputEvent::KeyDown(Key::T) => self.thrust_held = true,
             InputEvent::KeyUp(Key::T) => self.thrust_held = false,
 
+            // ★ ENTER STARTS A NEW GAME, but only once this one is over —
+            // otherwise a stray press wipes a game in progress. Not
+            // Space: fire is HELD, and a player still holding it as the
+            // last ship goes down would restart without meaning to.
+            InputEvent::KeyDown(Key::Enter) if self.lives.is_game_over() => {
+                self.bank_score();
+                let seed = mix(self.seed, 0x9E37_79B9);
+                self.new_game(seed);
+            }
+
             InputEvent::KeyDown(Key::Up) => self.up_held = true,
             InputEvent::KeyUp(Key::Up) => self.up_held = false,
             InputEvent::KeyDown(Key::Down) => self.down_held = true,
@@ -694,24 +927,15 @@ impl Game for Warden {
         // different one in the source.
         let _fused = self.enemies.take_fused();
 
+        // ★ W1: SQUADS ARRIVE, AND EVERY ONE IS HEARD — the first
+        // included. The opening five used to be placed before frame one
+        // and kept silent by a flag; now the director brings them in on
+        // the first step, warping, so the player watches (and hears) the
+        // wave begin.
         let arrived = self.enemies.take_spawned();
-        if arrived > 0 && !self.opening_wave {
+        if arrived > 0 {
             let gain = (0.55 + 0.12 * (arrived - 1) as f32).min(1.0);
             audio.play_with(self.warp, gain, 1.0);
-        }
-        // ⚠️ THE OPENING WAVE IS SILENT, and that is not an oversight.
-        // Those five are placed by `Warden::new` before the player has
-        // seen a frame; announcing them would play an arrival for
-        // enemies that were simply always there. Every later spawn —
-        // S9's reinforcements, a Mutant fusing — goes through the same
-        // counter and does sound.
-        // ★ CLEARED ONLY ONCE SOMETHING HAS ACTUALLY BEEN CONSUMED, not
-        // on the first frame unconditionally. This runs below the pause
-        // guard, so a game that opened paused would otherwise clear the
-        // flag having never read the opening five, and then the FIRST
-        // REAL arrival after unpausing would be the one silenced.
-        if arrived > 0 {
-            self.opening_wave = false;
         }
     }
 
@@ -728,10 +952,39 @@ impl Game for Warden {
             lives: &self.lives,
             time: self.elapsed,
             exhaust: self.exhaust,
+            popups: &self.popups,
+            hud: render::Hud {
+                wave: self.director.wave(),
+                phase: self.director.phase(),
+                smart_bombs: self.smart_bombs,
+                best: self.best.max(self.score),
+            },
         };
         render::draw(canvas, &scene, &self.theme);
         self.pause.draw(canvas, &self.theme);
     }
+}
+
+/// Mix two numbers into a seed. Never zero: xorshift's one fixed point.
+fn mix(a: u32, b: u32) -> u32 {
+    let mut h = a ^ b.rotate_left(16);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7FEB_352D);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846C_A68B);
+    h ^= h >> 16;
+    h | 1
+}
+
+/// ★ A DIFFERENT GAME EVERY LAUNCH. The seeds were fixed constants, so
+/// every game had the same mountains, the same people in the same
+/// places and the same Landers coming from the same directions.
+fn clock_seed() -> u32 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x0DEF_E4DE);
+    mix(nanos as u32, (nanos >> 32) as u32)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -749,7 +1002,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
         person: audio.register_sound(Box::new(sound::PersonBoom::new())),
     };
-    let game = Warden::new(theme, laser, thrust, warp, booms);
+    let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
+    let mut game = Warden::new(theme, laser, thrust, warp, booms, scores, clock_seed());
+    game.persist = true;
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
@@ -773,56 +1028,292 @@ mod tests {
             ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
             person: audio.register_sound(Box::new(sound::PersonBoom::new())),
         };
-        Warden::new(Theme::fallback(), laser, thrust, warp, booms)
+        // ⚠️ AN IN-MEMORY SCORE FILE, never loaded or saved: a test that
+        // reaches game over must not write a player's real high scores.
+        let scores = ScoreFile::new(GAME_ID, GAME_NAME);
+        Warden::new(Theme::fallback(), laser, thrust, warp, booms, scores, 0x0DEF_E4DE)
     }
 
-    /// ⚠️ THE OPENING-WAVE FLAG IS SPENT BY AN ARRIVAL, NOT BY A FRAME.
-    ///
-    /// The opening five are placed by `Warden::new` before a frame is
-    /// drawn, so the flag exists to swallow exactly that one read. If it
-    /// cleared on the first frame REGARDLESS of whether anything was
-    /// read, any frame that consumed nothing would spend it — and the
-    /// first arrival the player could actually hear would be the one
-    /// treated as the opening wave and silenced.
-    ///
-    /// ⚠️ THIS IS A REAL PATH, NOT A HYPOTHETICAL. `Warden::new` seeds
-    /// the counter, but `update` only reaches the dispatch when the game
-    /// is not paused — and `Lives` can hold the player out of flight at
-    /// the start too. Any of those leaves a frame that clears nothing.
-    #[test]
-    fn the_opening_wave_flag_is_spent_by_an_arrival() {
-        let mut g = game();
-        // Drain the opening wave the way the first live frame does.
-        assert_eq!(g.enemies.take_spawned(), OPENING_LANDERS, "expected the opening five");
-
-        // ★ A FRAME THAT READ NOTHING MUST LEAVE THE FLAG ALONE. Run
-        // several with the counter empty; the flag is only meaningful
-        // while it still has an arrival to swallow.
-        let mut audio = AudioSystem::new();
-        let before = g.opening_wave;
-        {
-            let mut a = audio.handle();
-            for _ in 0..5 {
-                g.update(1.0 / 60.0, &mut a);
+    /// Kill every enemy that can be killed right now, through the same
+    /// `destroy_enemy` the laser and the hull use.
+    fn kill_all_targets(g: &mut Warden) {
+        for i in 0..g.enemies.len() {
+            if g.enemies.get(i).is_some_and(|e| e.is_target()) {
+                g.destroy_enemy(i);
             }
         }
-        // Nothing spawned in those frames, so nothing should have been
-        // consumed — and the flag must be exactly as it was.
-        assert_eq!(
-            g.opening_wave, before,
-            "a frame that consumed no arrival spent the opening-wave flag"
-        );
+    }
 
-        // And the next REAL arrival is the one that spends it.
-        g.enemies.spawn(enemy::Enemy::lander(500.0, 300.0, 0.0));
-        {
+    /// Run real frames through `update`, killing everything as it
+    /// becomes killable, until `done` says stop. Returns frames run.
+    fn play_until(g: &mut Warden, max_seconds: f32, done: impl Fn(&Warden) -> bool) -> usize {
+        let mut audio = AudioSystem::new();
+        let frames = (max_seconds * 60.0) as usize;
+        for f in 0..frames {
+            {
+                let mut a = audio.handle();
+                g.update(1.0 / 60.0, &mut a);
+            }
+            kill_all_targets(g);
+            if done(g) {
+                return f;
+            }
+        }
+        panic!("not done after {max_seconds} s (wave {}, phase {:?})", g.director.wave(), g.director.phase());
+    }
+
+    /// A ship that cannot run out — the wave tests are about waves, and a
+    /// stray Lander shot ending the game would end the test with it.
+    fn immortal(g: &mut Warden) {
+        g.lives.remaining = 1_000;
+    }
+
+    /// ★ THE FIRST SQUAD ARRIVES THROUGH `spawn` ON THE FIRST STEP — the
+    /// counter Warp is wired to. Before W1 nothing ever reached it in
+    /// play (1edd4a7); this is the path that makes the arrival audible.
+    #[test]
+    fn the_first_squad_arrives_through_spawn_on_the_first_step() {
+        let mut g = game();
+        assert_eq!(g.enemies.remaining(), 0, "nothing is placed before the game runs");
+        g.step(Input::default(), FIXED_DT);
+        assert_eq!(g.enemies.take_spawned(), waves::SQUAD_SIZE);
+    }
+
+    /// ★★ A WHOLE WAVE, THROUGH THE REAL LOOP (L069). Fifteen Landers
+    /// arrive in squads, die, the survivors are counted, the bonus is
+    /// paid, and wave 2 begins.
+    #[test]
+    fn a_whole_wave_plays_through_update_and_pays_its_bonus() {
+        let mut g = game();
+        immortal(&mut g);
+        play_until(&mut g, 120.0, |g| g.director.wave() == 2);
+        let arrived = waves::landers(1);
+        let people = g.people.alive() as u32;
+        assert_eq!(people, POPULATION as u32, "nobody should have been taken");
+        assert_eq!(
+            g.score,
+            arrived as u32 * enemy::LANDER_POINTS + people * waves::bonus_per_humanoid(1),
+            "fifteen Landers and the survivors' bonus"
+        );
+    }
+
+    /// ★ EVERY FIFTH WAVE REBUILDS THE PLANET: the surface comes back and
+    /// so do ten people, even after the world has ended.
+    #[test]
+    fn wave_five_restores_the_planet_and_its_people() {
+        let mut g = game();
+        immortal(&mut g);
+        // End the world by hand: every person gone.
+        for i in 0..g.people.len() {
+            g.people.get_mut(i).unwrap().kill();
+        }
+        play_until(&mut g, 5.0, |g| g.world_ended);
+        assert!(g.terrain.is_destroyed());
+
+        play_until(&mut g, 600.0, |g| g.director.wave() == 5);
+        assert!(!g.terrain.is_destroyed(), "wave 5 should rebuild the surface");
+        assert!(!g.world_ended);
+        assert_eq!(g.people.alive(), POPULATION, "wave 5 should bring ten people back");
+    }
+
+    /// ★ AFTER THE WORLD ENDS, SQUADS COME THROUGH AS MUTANTS — and they
+    /// still finish arriving. A Mutant stuck in `Warping` could never be
+    /// shot and the wave could never end.
+    #[test]
+    fn after_the_world_ends_squads_arrive_as_mutants_that_can_be_shot() {
+        let mut g = game();
+        immortal(&mut g);
+        for i in 0..g.people.len() {
+            g.people.get_mut(i).unwrap().kill();
+        }
+        // The first squad is already in; let the world end and the next
+        // squad arrive into a dead world.
+        play_until(&mut g, 60.0, |g| g.world_ended && g.director.reserve() < waves::landers(1) - waves::SQUAD_SIZE);
+        let newest: Vec<_> = g.enemies.iter().filter(|e| e.phase == enemy::Phase::Warping).collect();
+        assert!(!newest.is_empty(), "the second squad should be warping in");
+        assert!(newest.iter().all(|e| e.is_mutant()), "a squad after the end should be Mutants");
+
+        // In slices: `update` caps one call at 0.25 s.
+        let mut audio = AudioSystem::new();
+        for _ in 0..((enemy::WARP_SECONDS + 0.05) * 60.0) as usize {
             let mut a = audio.handle();
             g.update(1.0 / 60.0, &mut a);
         }
         assert!(
-            !g.opening_wave,
-            "an actual arrival did not spend the opening-wave flag"
+            g.enemies.iter().filter(|e| e.is_mutant()).all(|e| e.is_target() || e.phase == enemy::Phase::Dying),
+            "a Mutant that warped in never finished arriving"
         );
+    }
+
+    /// Catch 500, set down 500 — through `step`, the way a rescue is
+    /// actually flown.
+    #[test]
+    fn a_rescue_pays_for_the_catch_and_again_for_the_set_down() {
+        let mut g = game();
+        g.enemies.clear();
+        g.people.clear();
+        g.lives.state = lives::State::Alive;
+        // High enough that the drop-off height is not reached at once.
+        g.ship.y = 400.0;
+        let mut h = humanoid::Humanoid::new(g.ship.x, g.ship.y + 10.0, 0.0);
+        h.state = humanoid::State::Falling;
+        h.fell_from = h.y;
+        g.people.spawn(h);
+
+        g.step(Input::default(), FIXED_DT);
+        assert_eq!(g.score, CATCH_POINTS, "the catch did not pay");
+        assert_eq!(g.people.get(0).unwrap().state, humanoid::State::Rescued);
+
+        // Fly down until they are set down.
+        let down = Input { vertical: 1.0, ..Default::default() };
+        for _ in 0..(240 * 3) {
+            g.step(down, FIXED_DT);
+            if g.people.get(0).unwrap().state == humanoid::State::Walking {
+                break;
+            }
+        }
+        assert_eq!(g.people.get(0).unwrap().state, humanoid::State::Walking);
+        assert_eq!(g.score, CATCH_POINTS + SET_DOWN_POINTS, "the set-down did not pay");
+    }
+
+    /// A short fall survived on its own is worth 250; a long one is not.
+    #[test]
+    fn a_safe_landing_pays_and_a_fatal_one_does_not() {
+        let mut g = game();
+        g.enemies.clear();
+        g.people.clear();
+        // Far from the ship, so it cannot be caught on the way down.
+        let x = world::wrap(g.ship.x + world::VIEW_W * 1.5);
+        let ground = g.terrain.height_at(x);
+        let mut short = humanoid::Humanoid::new(x, ground + 40.0, 0.0);
+        short.state = humanoid::State::Falling;
+        short.fell_from = short.y;
+        let mut long = humanoid::Humanoid::new(world::wrap(x + 200.0), 0.0, 0.0);
+        long.y = g.terrain.height_at(long.x) + humanoid::SURVIVABLE_FALL * 2.0;
+        long.state = humanoid::State::Falling;
+        long.fell_from = long.y;
+        g.people.spawn(short);
+        g.people.spawn(long);
+
+        for _ in 0..(240 * 3) {
+            g.step(Input::default(), FIXED_DT);
+        }
+        assert_eq!(g.people.get(0).unwrap().state, humanoid::State::Walking);
+        assert_eq!(g.people.get(1).unwrap().state, humanoid::State::Dead);
+        assert_eq!(g.score, SAFE_LANDING_POINTS);
+    }
+
+    /// Every 10,000: a ship and a smart bomb — twice, if one award
+    /// crosses two thresholds.
+    #[test]
+    fn every_ten_thousand_awards_a_ship_and_a_bomb() {
+        let mut g = game();
+        let (ships, bombs) = (g.lives.remaining, g.smart_bombs);
+        g.add_score(9_990, None);
+        assert_eq!((g.lives.remaining, g.smart_bombs), (ships, bombs));
+        g.add_score(10, None);
+        assert_eq!((g.lives.remaining, g.smart_bombs), (ships + 1, bombs + 1));
+        g.add_score(20_000, None);
+        assert_eq!((g.lives.remaining, g.smart_bombs), (ships + 3, bombs + 3));
+    }
+
+    /// ★ FLYING INTO AN ENEMY KILLS YOU, and it.
+    #[test]
+    fn flying_into_an_enemy_costs_a_life_and_kills_it() {
+        let mut g = game();
+        g.enemies.clear();
+        g.people.clear();
+        g.lives.state = lives::State::Alive;
+        let lives = g.lives.remaining;
+        let mut l = enemy::Enemy::lander(g.ship.x, g.ship.y, 0.0);
+        l.phase = enemy::Phase::Hovering;
+        g.enemies.spawn(l);
+
+        g.step(Input::default(), FIXED_DT);
+        assert_eq!(g.lives.remaining, lives - 1, "the collision cost nothing");
+        // ⚠️ THAT ONE, not "no enemies": the director brings wave 1's
+        // first squad on this same step.
+        assert_eq!(
+            g.enemies.get(0).unwrap().phase,
+            enemy::Phase::Dying,
+            "the enemy survived the collision"
+        );
+        assert_eq!(g.score, enemy::LANDER_POINTS);
+    }
+
+    /// But not while the ship is still blinking back in.
+    #[test]
+    fn a_respawning_ship_passes_through_enemies() {
+        let mut g = game();
+        g.enemies.clear();
+        let lives = g.lives.remaining;
+        assert!(!g.lives.is_vulnerable());
+        let mut l = enemy::Enemy::lander(g.ship.x, g.ship.y, 0.0);
+        l.phase = enemy::Phase::Hovering;
+        g.enemies.spawn(l);
+        g.step(Input::default(), FIXED_DT);
+        assert_eq!(g.lives.remaining, lives);
+        assert_eq!(g.enemies.get(0).unwrap().phase, enemy::Phase::Hovering);
+    }
+
+    /// ★ LANDERS SHOOT — slowly. Through `step`, so the bolt really is
+    /// built and really is the slow kind.
+    #[test]
+    fn a_lander_fires_a_slow_shot_at_the_ship() {
+        let mut g = game();
+        g.enemies.clear();
+        g.people.clear();
+        let mut l = enemy::Enemy::lander(g.ship.x + 300.0, g.ship.y + 100.0, 0.0);
+        l.phase = enemy::Phase::Hovering;
+        l.fire_cooldown = 0.0;
+        g.enemies.spawn(l);
+        g.step(Input::default(), FIXED_DT);
+        let bolt = g.shots.iter().find(|s| s.is_enemy()).expect("the Lander did not fire");
+        let speed = (bolt.vx * bolt.vx + bolt.vy * bolt.vy).sqrt();
+        assert!((speed - enemy::LANDER_SHOT_SPEED).abs() < 1.0, "speed {speed}");
+        assert!(bolt.vx < 0.0, "it should fire toward the ship");
+    }
+
+    /// ★ GAME OVER BANKS THE SCORE ONCE, AND ENTER STARTS AGAIN. A score
+    /// file that recorded every frame of the game-over card would fill
+    /// the table with one run.
+    #[test]
+    fn game_over_banks_once_and_enter_starts_a_fresh_game() {
+        let mut g = game();
+        g.score = 4_321;
+        g.lives.remaining = 0;
+        g.lives.state = lives::State::GameOver;
+        for _ in 0..30 {
+            g.step(Input::default(), FIXED_DT);
+        }
+        assert_eq!(g.scores.entries.len(), 1, "banked more than once");
+        assert_eq!(g.scores.best(), Some(4_321));
+        assert_eq!(g.best, 4_321);
+        assert_eq!(g.director.reserve(), waves::landers(1), "a finished game still ran waves");
+
+        // Mid-game Enter does nothing; on game over it restarts.
+        g.on_input(InputEvent::KeyDown(Key::Enter));
+        assert_eq!(g.score, 0);
+        assert!(!g.lives.is_game_over());
+        assert_eq!(g.lives.remaining, lives::STARTING_LIVES);
+        assert_eq!(g.director.wave(), 1);
+        assert_eq!(g.smart_bombs, STARTING_SMART_BOMBS);
+        assert_eq!(g.people.alive(), POPULATION);
+        g.score = 77;
+        g.on_input(InputEvent::KeyDown(Key::Enter));
+        assert_eq!(g.score, 77, "Enter mid-game wiped a game in progress");
+        assert_eq!(g.scores.entries.len(), 1, "the restart banked the score again");
+    }
+
+    /// ★ A DIFFERENT GAME EACH TIME. Two seeds, two worlds.
+    #[test]
+    fn different_seeds_give_different_worlds() {
+        let a = game();
+        let mut b = game();
+        b.new_game(mix(0x0DEF_E4DE, 0x9E37_79B9));
+        let xs = |g: &Warden| g.people.iter().map(|h| h.x).collect::<Vec<_>>();
+        assert_ne!(xs(&a), xs(&b), "the people stood in the same places");
+        assert_ne!(a.terrain.height_at(500.0), b.terrain.height_at(500.0));
     }
 
     #[test]
@@ -886,7 +1377,8 @@ mod tests {
             let mut a = audio.handle();
             g.update(0.5, &mut a);
         }
-        assert!(g.shots.len() > 0, "holding Space should have fired");
+        let mine = |g: &Warden| g.shots.iter().filter(|s| !s.is_enemy()).count();
+        assert!(mine(&g) > 0, "holding Space should have fired");
 
         // Focus leaves. No KeyUp comes from the platform.
         for e in held.release_all() {
@@ -901,7 +1393,7 @@ mod tests {
             let mut a = audio.handle();
             g.update(0.2, &mut a);
         }
-        assert_eq!(g.shots.len(), 0, "the laser kept firing after focus was lost");
+        assert_eq!(mine(&g), 0, "the laser kept firing after focus was lost");
     }
 
     /// ⚠️ THE S11 RULE, AS A TEST. Swallowing KeyUp while paused leaves

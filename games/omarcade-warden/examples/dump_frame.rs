@@ -24,6 +24,10 @@ mod enemy;
 mod humanoid;
 #[path = "../src/lives.rs"]
 mod lives;
+#[path = "../src/popup.rs"]
+mod popup;
+#[path = "../src/waves.rs"]
+mod waves;
 #[path = "../src/shot.rs"]
 mod shot;
 #[path = "../src/flight.rs"]
@@ -63,7 +67,17 @@ fn main() {
     // set it; everything else stays cold.
     let mut exhaust = 0.0f32;
     let mut people = Humanoids::new();
-    let lives = Lives::new();
+    let mut lives = Lives::new();
+    // ★ W1's HUD and pop-ups. Most scenes leave them at a mid-wave
+    // default; `tally`, `gameover` and `popups` set them.
+    let mut popups = popup::Popups::new();
+    let mut hud = render::Hud {
+        wave: 1,
+        phase: waves::Phase::Fighting,
+        smart_bombs: 3,
+        best: 0,
+    };
+    let mut score = 0u32;
 
     // Fly the ship into the state the scene names, using the real
     // physics rather than posing it by hand — a posed frame can show a
@@ -83,6 +97,39 @@ fn main() {
         // Sitting still, facing east. The baseline the others are read
         // against.
         "rest" => camera.snap_to(&ship),
+
+        // ★ W1: a wave held, six survivors counted so far on wave 3.
+        "tally" => {
+            camera.snap_to(&ship);
+            score = 14_250;
+            hud.wave = 3;
+            hud.smart_bombs = 4;
+            hud.phase = waves::Phase::Tally { counted: 6, survivors: 8, timer: 0.1 };
+            people.scatter(8, &terrain, 0x50C1_A15E);
+        }
+
+        // ★ W1: out of lives, with the score and the way back in.
+        "gameover" => {
+            camera.snap_to(&ship);
+            score = 23_400;
+            hud.wave = 4;
+            hud.smart_bombs = 0;
+            hud.best = 31_150;
+            lives.remaining = 0;
+            lives.state = lives::State::GameOver;
+        }
+
+        // ★ W1: rescue scoring where it was earned — a catch, a set-down,
+        // and a Humanoid that survived its own fall.
+        "popups" => {
+            camera.snap_to(&ship);
+            let base = ship.x;
+            score = 1_250;
+            popups.add(base + 220.0, ship.y - 20.0, 500);
+            popups.add(base + 420.0, terrain.height_at(base + 420.0) + 10.0, 500);
+            popups.add(base + 640.0, terrain.height_at(base + 640.0) + 10.0, 250);
+            popups.step(0.3);
+        }
 
         // ★ S7: Mutants hunting, firing at angles, and a life lost.
         "mutants" => {
@@ -340,7 +387,8 @@ fn main() {
             eprintln!("unknown scene: {other}");
             eprintln!(
                 "scenes: rest | cruise | west | turn | low | seam | \
-                 thrust | thrust-west | mutants | apocalypse | rescue | combat"
+                 thrust | thrust-west | mutants | apocalypse | rescue | combat | \
+                 tally | gameover | popups"
             );
             std::process::exit(2);
         }
@@ -358,7 +406,7 @@ fn main() {
             people: &people,
             effects: &effects,
             lives: &lives,
-            score: 0,
+            score,
             // ★ A FIXED, NON-ZERO CLOCK. The scanner pulses its Mutants
             // on this; at 0.0 every dump would freeze the pulse at one
             // arbitrary phase. This value puts it near its peak, so a
@@ -366,6 +414,8 @@ fn main() {
             // which is the state worth checking they are visible in.
             time: 0.37,
             exhaust,
+            popups: &popups,
+            hud,
         };
         render::draw(&mut canvas, &scene, &Theme::load());
     }

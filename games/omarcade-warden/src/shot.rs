@@ -176,6 +176,7 @@ impl Shot {
     /// moving at 2400 units/second is, at 60 frames, forty units further
     /// along each frame — it reads as a blinking speck rather than as
     /// something travelling.
+    #[cfg(test)]
     pub fn tail(&self) -> f32 {
         world::wrap(self.x - self.vx.signum() * self.beam_len())
     }
@@ -213,6 +214,7 @@ impl Shots {
         self.live.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.live.is_empty()
     }
@@ -261,7 +263,17 @@ impl Shots {
     /// running enemy fire through the PLAYER's gun timer would mean one
     /// Mutant shooting stopped the others — a bug that would look like
     /// the enemies politely taking turns.
+    /// An enemy bolt at the Mutant's speed. The game fires through
+    /// [`fire_enemy_at`](Self::fire_enemy_at); this stages one for the
+    /// tests and dump_frame.
+    #[allow(dead_code)]
     pub fn fire_enemy(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+        self.fire_enemy_at(x, y, dx, dy, ENEMY_SHOT_SPEED);
+    }
+
+    /// An enemy bolt at a speed of the shooter's choosing — a Lander's
+    /// is slow enough to step out of, a Mutant's is not.
+    pub fn fire_enemy_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, speed: f32) {
         if self.live.len() >= MAX_SHOTS + MAX_ENEMY_SHOTS {
             return;
         }
@@ -269,8 +281,8 @@ impl Shots {
         self.live.push(Shot {
             x: world::wrap(x),
             y,
-            vx: ENEMY_SHOT_SPEED * dx / len,
-            vy: ENEMY_SHOT_SPEED * dy / len,
+            vx: speed * dx / len,
+            vy: speed * dy / len,
             remaining: SHOT_RANGE,
             travelled: 0.0,
             // ⚠️ ENEMY BOLTS DO NOT CYCLE. Threat colour is game
@@ -308,6 +320,7 @@ impl Shots {
     /// is rate-limited and `step` ages the cooldown and the shots
     /// together. Nothing in the game calls this; the gun is the only way
     /// a shot enters play.
+    #[allow(dead_code)] // dump_frame's `laser` scene stages beams with it
     pub fn adopt(&mut self, shot: Shot) {
         self.live.push(shot);
     }

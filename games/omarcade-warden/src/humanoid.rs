@@ -150,19 +150,23 @@ impl Humanoid {
         }
     }
 
-    /// Put back down on the surface after a rescue.
-    pub fn released_to_ground(&mut self, terrain: &Terrain) {
+    /// Put back down on the surface after a rescue. Returns whether this
+    /// one was set down — the 500 the rescue is finished by.
+    pub fn released_to_ground(&mut self, terrain: &Terrain) -> bool {
         if self.state == State::Rescued {
             self.state = State::Walking;
             self.y = terrain.height_at(self.x);
+            return true;
         }
+        false
     }
 
     pub fn kill(&mut self) {
         self.state = State::Dead;
     }
 
-    fn step(&mut self, terrain: &Terrain, dt: f32, seed: &mut u32) {
+    /// Returns true on the step a fall ends safely on the ground.
+    fn step(&mut self, terrain: &Terrain, dt: f32, seed: &mut u32) -> bool {
         match self.state {
             State::Walking => {
                 self.x = world::wrap(self.x + self.vx * dt);
@@ -189,12 +193,14 @@ impl Humanoid {
                     } else {
                         self.state = State::Walking;
                         self.fall_speed = 0.0;
+                        return true;
                     }
                 }
             }
             // Carried and Rescued are both driven by whoever holds them.
             State::Carried | State::Rescued | State::Dead => {}
         }
+        false
     }
 }
 
@@ -226,10 +232,6 @@ impl Humanoids {
         self.live.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.live.is_empty()
-    }
-
     /// How many people are left — the number the loss condition watches.
     pub fn alive(&self) -> usize {
         self.live.iter().filter(|h| h.is_alive()).count()
@@ -255,15 +257,21 @@ impl Humanoids {
         }
     }
 
-    pub fn step(&mut self, terrain: &Terrain, dt: f32) {
+    /// Advance everyone. Returns the indices of any who landed safely on
+    /// their own this step — the arcade's 250 for a short fall survived.
+    pub fn step(&mut self, terrain: &Terrain, dt: f32) -> Vec<usize> {
         let mut seed = self.seed;
-        for h in &mut self.live {
-            h.step(terrain, dt, &mut seed);
+        let mut landed = Vec::new();
+        for (i, h) in self.live.iter_mut().enumerate() {
+            if h.step(terrain, dt, &mut seed) {
+                landed.push(i);
+            }
         }
         self.seed = seed;
         // ⚠️ THE DEAD ARE NOT REMOVED HERE. S7's loss condition counts
         // the population, and a Vec that silently shrinks would make
         // "how many did I lose" unanswerable. They are simply skipped.
+        landed
     }
 
     /// The nearest grabbable Humanoid to `x`, with its index.

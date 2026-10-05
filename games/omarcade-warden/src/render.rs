@@ -18,7 +18,9 @@ use crate::enemy::{Kind, Enemies, Phase};
 use crate::flight::{Camera, Ship};
 use crate::humanoid::{self, Humanoids, State};
 use crate::lives::Lives;
+use crate::popup::Popups;
 use crate::shot::Owner;
+use crate::waves::{self, Phase as WavePhase};
 use crate::shot::Shots;
 use crate::world::{self, Terrain};
 
@@ -39,6 +41,18 @@ pub struct Scene<'a> {
     /// ★ How hard the engine is burning, 0.0 at rest. Drives the hull
     /// flare; the trailing cloud is [`Effects`]' business.
     pub exhaust: f32,
+    pub popups: &'a Popups,
+    pub hud: Hud,
+}
+
+/// The game state the HUD shows that the world does not hold.
+#[derive(Debug, Clone, Copy)]
+pub struct Hud {
+    pub wave: u32,
+    pub phase: WavePhase,
+    pub smart_bombs: u32,
+    /// The best score on record, or this game's if it is higher.
+    pub best: u32,
 }
 
 /// Draw a frame.
@@ -55,6 +69,7 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     draw_enemies(canvas, scene.enemies, scene.camera);
     draw_shots(canvas, scene.shots, scene.camera, theme);
     scene.effects.draw(canvas, scene.camera);
+    scene.popups.draw(canvas, scene.camera);
     // ⚠️ A DEAD OR BLINKING SHIP IS NOT ALWAYS DRAWN. `is_visible`
     // answers both questions, so this does not need to know which state
     // the ship is in.
@@ -79,8 +94,64 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
         theme,
     );
     draw_lives(canvas, scene.lives, theme);
+    draw_smart_bombs(canvas, scene.hud.smart_bombs);
+    draw_wave(canvas, scene.hud.wave, theme);
+    if let WavePhase::Tally { counted, .. } | WavePhase::Hold { counted, .. } = scene.hud.phase {
+        draw_tally(canvas, scene.hud.wave, counted, theme);
+    }
     if scene.lives.is_game_over() {
-        draw_game_over(canvas, theme);
+        draw_game_over(canvas, scene.score, scene.hud.best, theme);
+    }
+}
+
+/// Smart bombs held, as a row under the ships.
+///
+/// ⚠️ A PLACEHOLDER MARK, NOT THE ART. The smart-bomb icon is on the
+/// plan's art list for Brian to approve; until then each bomb is a small
+/// fixed-colour lozenge, so the 10,000-point award is visible at all.
+fn draw_smart_bombs(canvas: &mut Canvas<'_>, count: u32) {
+    let colour = Color::rgb(255, 120, 60);
+    for i in 0..count.min(8) {
+        let x = HUD_MARGIN + 4.0 + i as f32 * 22.0;
+        canvas.fill_rect_f(x, 88.0, 14.0, 6.0, colour);
+    }
+}
+
+/// The wave number, top right under the speed bar.
+fn draw_wave(canvas: &mut Canvas<'_>, wave: u32, theme: &Theme) {
+    let text = format!("WAVE {wave}");
+    let w = omarcade_core::text::text_width(&text, 2) as i32;
+    let colour = theme.foreground.lerp(theme.background, 0.35);
+    omarcade_core::text::text(canvas, &text, canvas.width() as i32 - 18 - w, 34, 2, colour);
+}
+
+/// ★ THE WAVE IS HELD: a banner, and the survivors counted one at a time.
+///
+/// ⚠️ OUR OWN WORDS. The original's "ATTACK WAVE n COMPLETED" is its
+/// text, not ours to reuse (docs/warden-plan.md §W1). A Warden holds the
+/// line; the banner says the wave was held.
+///
+/// The people are drawn as the game's own Humanoid art, one per bonus
+/// tick, so the count reads as people saved rather than as a number.
+fn draw_tally(canvas: &mut Canvas<'_>, wave: u32, counted: usize, theme: &Theme) {
+    let cx = canvas.width() as i32 / 2;
+    let top = canvas.height() as i32 / 2 - 90;
+
+    let title = format!("WAVE {wave} HELD");
+    let w = omarcade_core::text::text_width(&title, 4) as i32;
+    omarcade_core::text::text(canvas, &title, cx - w / 2, top, 4, theme.foreground);
+
+    let per = waves::bonus_per_humanoid(wave);
+    let line = format!("BONUS {per} X {counted}");
+    let w = omarcade_core::text::text_width(&line, 2) as i32;
+    let colour = theme.foreground.lerp(theme.background, 0.3);
+    omarcade_core::text::text(canvas, &line, cx - w / 2, top + 48, 2, colour);
+
+    let spacing = 26.0;
+    let row_w = spacing * counted.saturating_sub(1) as f32;
+    for i in 0..counted {
+        let x = cx as f32 - row_w / 2.0 + i as f32 * spacing;
+        art::draw_humanoid(canvas, &Transform::at(x, (top + 110) as f32).scaled(art::SCALE));
     }
 }
 
@@ -393,28 +464,31 @@ fn draw_lives(canvas: &mut Canvas<'_>, lives: &Lives, _theme: &Theme) {
 /// The left margin the whole left-hand HUD column hangs off.
 const HUD_MARGIN: f32 = 18.0;
 
-/// ⚠️ NOT A REAL GAME-OVER SCREEN. S14 owns presentation; this exists so
-/// that running out of lives is unmistakable rather than a ship that
-/// silently stops coming back.
-fn draw_game_over(canvas: &mut Canvas<'_>, theme: &Theme) {
-    let msg = "GAME OVER";
-    let w = omarcade_core::text::text_width(msg, 5) as i32;
-    omarcade_core::text::text(
-        canvas,
-        msg,
-        (canvas.width() as i32 - w) / 2,
-        canvas.height() as i32 / 2 - 20,
-        5,
-        theme.foreground,
-    );
+/// Game over: the score, the best, and how to go again.
+///
+/// W6 owns the full presentation (title, attract, roster); this is the
+/// part that has to exist for a game to END properly — a final score,
+/// and a way back in that is not quitting and relaunching.
+fn draw_game_over(canvas: &mut Canvas<'_>, score: u32, best: u32, theme: &Theme) {
+    let cx = canvas.width() as i32 / 2;
+    let top = canvas.height() as i32 / 2 - 60;
+    let centred = |canvas: &mut Canvas<'_>, s: &str, y: i32, scale: u32, c: Color| {
+        let w = omarcade_core::text::text_width(s, scale) as i32;
+        omarcade_core::text::text(canvas, s, cx - w / 2, y, scale, c);
+    };
+    let muted = theme.foreground.lerp(theme.background, 0.35);
+    centred(canvas, "GAME OVER", top, 5, theme.foreground);
+    centred(canvas, &format!("SCORE {score}"), top + 56, 2, theme.foreground);
+    let best_line = if score > 0 && score >= best {
+        "NEW BEST".to_string()
+    } else {
+        format!("BEST {best}")
+    };
+    centred(canvas, &best_line, top + 80, 2, muted);
+    centred(canvas, "ENTER TO PLAY AGAIN", top + 120, 2, muted);
 }
 
-/// The score.
-///
-/// ⚠️ NOT THE REAL HUD, AND NOT PERSISTED. S9 owns scoring, waves and the
-/// score file. This exists so that shooting something has a visible
-/// consequence while S5 is being judged — a kill that changes nothing on
-/// screen is hard to tell from a miss.
+/// The score. Banked to the score file at game over.
 fn draw_score(canvas: &mut Canvas<'_>, score: u32, theme: &Theme) {
     let text = format!("{score:06}");
     let w = omarcade_core::text::text_width(&text, 3) as i32;
@@ -655,6 +729,8 @@ mod tests {
                 // ★ Lit, so the thrust flare is exercised by the
                 // phase sweep rather than only ever drawn cold.
                 exhaust: 1.0,
+                popups: &NO_POPUPS,
+                hud: quiet_hud(),
             };
             draw(&mut c, &scene, &theme);
         }
@@ -715,7 +791,16 @@ mod tests {
             lives,
             time: 0.0,
             exhaust: 0.0,
+            popups: &NO_POPUPS,
+            hud: quiet_hud(),
         }
+    }
+
+    static NO_POPUPS: Popups = Popups::new();
+
+    /// Wave 1, mid-fight: the HUD as it looks for most of a game.
+    fn quiet_hud() -> Hud {
+        Hud { wave: 1, phase: WavePhase::Fighting, smart_bombs: 3, best: 0 }
     }
 
     /// ⚠️ THE SEAM, IN THE RENDERER. With the camera at x = 0 the left

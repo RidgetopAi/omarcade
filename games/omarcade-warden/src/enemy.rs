@@ -49,6 +49,29 @@ pub const MUTANT_FIRE_INTERVAL: f32 = 1.6;
 /// How far away a Mutant will bother shooting from, in world units.
 pub const MUTANT_FIRE_RANGE: f32 = world::VIEW_W * 0.75;
 
+/// How often a Lander fires, in seconds, at pressure 1.0.
+///
+/// ★ BRIAN'S SPEC: Landers "fire at you but NOT aggressively — easily
+/// avoided". Twice the Mutant's interval, and each shot also flies at
+/// barely half a Mutant shot's speed ([`LANDER_SHOT_SPEED`]). A Lander
+/// shot is a thing to notice and step out of; a Mutant shot is a thing
+/// to fear.
+pub const LANDER_FIRE_INTERVAL: f32 = 3.2;
+
+/// How far away a Lander will bother shooting from — roughly the screen
+/// it is on. The original only fired from objects on or near the screen.
+pub const LANDER_FIRE_RANGE: f32 = world::VIEW_W * 0.6;
+
+/// How fast a Lander's shot flies, world units per second. The Mutant's
+/// is [`crate::shot::ENEMY_SHOT_SPEED`] (900).
+pub const LANDER_SHOT_SPEED: f32 = 480.0;
+
+/// How far off a Lander's aim is, at most, in radians either way.
+///
+/// The original adds ±16 px of error to every shot. Aimed but not
+/// sniping: standing still is punished, moving is enough.
+pub const LANDER_AIM_ERROR: f32 = 0.12;
+
 /// ★ THE MINIMUM ANGLE OF A MUTANT'S SHOT, in radians off horizontal.
 ///
 /// ⚠️ BRIAN'S SPEC: "NEVER SHOOT STRAIGHT — always at an angle." This is
@@ -169,7 +192,7 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy)]
 pub struct Enemy {
     pub kind: Kind,
-    /// Seconds until this one can fire again. Mutants only.
+    /// Seconds until this one can fire again.
     pub fire_cooldown: f32,
     /// World x, always wrapped.
     pub x: f32,
@@ -194,7 +217,7 @@ impl Enemy {
     pub fn lander(x: f32, y: f32, vx: f32) -> Self {
         Self {
             kind: Kind::Lander,
-            fire_cooldown: MUTANT_FIRE_INTERVAL * 0.5,
+            fire_cooldown: LANDER_FIRE_INTERVAL,
             x: world::wrap(x),
             y,
             vx,
@@ -204,8 +227,13 @@ impl Enemy {
         }
     }
 
-    /// A Mutant, already formed — used when the world ends and every
-    /// surviving Lander turns.
+    /// A Mutant, already formed, outside the arrival machinery.
+    ///
+    /// ⚠️ NOT USED BY THE GAME ITSELF — every Mutant in play is a Lander
+    /// that fused, or a squad member that warped in (`Enemies::squad`).
+    /// It exists to stage one directly: the tests and dump_frame's
+    /// `mutants` scene.
+    #[allow(dead_code)]
     pub fn mutant(x: f32, y: f32) -> Self {
         Self {
             kind: Kind::Mutant,
@@ -301,20 +329,38 @@ impl Enemy {
     /// while that list was being mutated, and the borrow checker would
     /// push the whole thing into a shared-mutable shape it does not need.
     /// The owner resolves the target and hands over a position.
+    ///
+    /// `pressure` is the wave's [`crate::waves::pressure`]: speeds are
+    /// multiplied by it and fire intervals divided by it. 1.0 is the
+    /// tuning S5–S7 settled.
+    #[allow(clippy::too_many_arguments)]
     fn step(
         &mut self,
         terrain: &Terrain,
         prey: Option<(f32, f32)>,
         ship: Option<(f32, f32)>,
         noise: &mut u32,
+        pressure: f32,
         dt: f32,
     ) -> Outcome {
         self.elapsed += dt;
 
-        // A dying enemy of any kind only plays out its death, so the
-        // kinds below never have to remember to stand still.
-        if self.phase == Phase::Dying {
-            return Outcome::None;
+        // ★ ARRIVING AND DYING ARE THE SAME FOR EVERY KIND, so they are
+        // handled here once and the kinds below never have to remember
+        // to stand still. Warping lives here rather than in the Lander's
+        // own step because a squad arriving after the world has ended is
+        // MUTANTS, and a Mutant that skipped this would never finish
+        // arriving — untargetable for the rest of the wave.
+        match self.phase {
+            Phase::Dying => return Outcome::None,
+            Phase::Warping => {
+                if self.elapsed >= WARP_SECONDS {
+                    self.phase = Phase::Hovering;
+                    self.elapsed = 0.0;
+                }
+                return Outcome::None;
+            }
+            _ => {}
         }
 
         // ★ WHICH CREATURE, THEN HOW FAR THROUGH ITS BEHAVIOUR. A Mutant
@@ -322,25 +368,27 @@ impl Enemy {
         // Humanoid and its only goal is the ship — so "which kind am I"
         // is answered here, before any kind looks at its phase.
         match self.kind {
-            Kind::Lander => self.step_lander(terrain, prey, dt),
-            Kind::Mutant => self.step_mutant(ship, noise, dt),
+            Kind::Lander => self.step_lander(terrain, prey, ship, noise, pressure, dt),
+            Kind::Mutant => self.step_mutant(ship, noise, pressure, dt),
         }
     }
 
-    /// A Lander's whole behaviour: drift, hunt, grab, carry.
-    fn step_lander(&mut self, terrain: &Terrain, prey: Option<(f32, f32)>, dt: f32) -> Outcome {
+    /// A Lander's whole behaviour: drift, hunt, grab, carry — and take
+    /// the odd unhurried shot at the ship.
+    fn step_lander(
+        &mut self,
+        terrain: &Terrain,
+        prey: Option<(f32, f32)>,
+        ship: Option<(f32, f32)>,
+        noise: &mut u32,
+        pressure: f32,
+        dt: f32,
+    ) -> Outcome {
         let mut outcome = Outcome::None;
 
         match self.phase {
-            Phase::Warping => {
-                if self.elapsed >= WARP_SECONDS {
-                    self.phase = Phase::Hovering;
-                    self.elapsed = 0.0;
-                }
-            }
-
             Phase::Hovering => {
-                self.x = world::wrap(self.x + self.vx * dt);
+                self.x = world::wrap(self.x + self.vx * pressure * dt);
 
                 // Follow the ridge rather than holding an absolute
                 // height: a Lander at a fixed y would sink into a peak
@@ -371,7 +419,7 @@ impl Enemy {
                 // something ten units west of it.
                 let gap = world::delta(self.x, px);
                 if gap.abs() > GRAB_REACH_X {
-                    let step = HUNT_SPEED * dt;
+                    let step = HUNT_SPEED * pressure * dt;
                     self.x = world::wrap(self.x + gap.signum() * step.min(gap.abs()));
                     self.vx = HUNT_SPEED * gap.signum();
                 }
@@ -380,7 +428,7 @@ impl Enemy {
                 // is a swoop rather than a drop straight down.
                 let want_y = py + GRAB_HEIGHT;
                 if self.y > want_y {
-                    self.y = (self.y - DESCEND_SPEED * dt).max(want_y);
+                    self.y = (self.y - DESCEND_SPEED * pressure * dt).max(want_y);
                 }
 
                 if world::delta(self.x, px).abs() <= GRAB_REACH_X
@@ -417,10 +465,10 @@ impl Enemy {
                     self.target = None;
                     return Outcome::None;
                 }
-                self.y += CLIMB_SPEED * dt;
+                self.y += CLIMB_SPEED * pressure * dt;
                 // Drift a little while climbing so the ascent is not a
                 // dead vertical line.
-                self.x = world::wrap(self.x + self.vx.signum() * DRIFT_SPEED * 0.4 * dt);
+                self.x = world::wrap(self.x + self.vx.signum() * DRIFT_SPEED * 0.4 * pressure * dt);
 
                 // ⚠️ S7 TAKES OVER HERE. At the top of the world this
                 // should become a Mutant and, if it was the last person,
@@ -432,7 +480,23 @@ impl Enemy {
             }
 
             // Handled once, for every kind, in `step`.
-            Phase::Dying => {}
+            Phase::Warping | Phase::Dying => {}
+        }
+
+        // ★ A LANDER SHOOTS ONLY WHEN IT HAS NOTHING BETTER TO REPORT,
+        // and only while free-flying. One that is beaming someone up has
+        // its hands full — and a shot fired from the beam would land on
+        // the very player trying to shoot the carrier, punishing the
+        // rescue the whole game is built around.
+        if outcome == Outcome::None && matches!(self.phase, Phase::Hovering | Phase::Hunting) {
+            self.fire_cooldown -= dt;
+            if let Some((sx, _)) = ship {
+                if self.fire_cooldown <= 0.0 && world::delta(self.x, sx).abs() < LANDER_FIRE_RANGE {
+                    self.fire_cooldown =
+                        LANDER_FIRE_INTERVAL * (0.7 + 0.6 * next01(noise)) / pressure;
+                    outcome = Outcome::Fires;
+                }
+            }
         }
 
         outcome
@@ -441,7 +505,13 @@ impl Enemy {
 
 impl Enemy {
     /// A Mutant's whole behaviour: chase the ship, and shoot at it.
-    fn step_mutant(&mut self, ship: Option<(f32, f32)>, noise: &mut u32, dt: f32) -> Outcome {
+    fn step_mutant(
+        &mut self,
+        ship: Option<(f32, f32)>,
+        noise: &mut u32,
+        pressure: f32,
+        dt: f32,
+    ) -> Outcome {
         let Some((sx, sy)) = ship else {
             // No ship to hunt — it is dead or between lives. Drift, so a
             // respawning player is not instantly surrounded by Mutants
@@ -466,9 +536,10 @@ impl Enemy {
         let dir_y = gap_y / len + jy;
         let dl = (dir_x * dir_x + dir_y * dir_y).sqrt().max(0.001);
 
-        self.x = world::wrap(self.x + (dir_x / dl) * MUTANT_SPEED * dt);
-        self.y += (dir_y / dl) * MUTANT_SPEED * dt;
-        self.vx = (dir_x / dl) * MUTANT_SPEED;
+        let speed = MUTANT_SPEED * pressure;
+        self.x = world::wrap(self.x + (dir_x / dl) * speed * dt);
+        self.y += (dir_y / dl) * speed * dt;
+        self.vx = (dir_x / dl) * speed;
 
         // Stay in the world vertically — a Mutant that chased a climbing
         // ship forever would leave the playfield and never come back.
@@ -476,7 +547,7 @@ impl Enemy {
 
         self.fire_cooldown -= dt;
         if self.fire_cooldown <= 0.0 && gap_x.abs() < MUTANT_FIRE_RANGE {
-            self.fire_cooldown = MUTANT_FIRE_INTERVAL * (0.7 + 0.6 * next01(noise));
+            self.fire_cooldown = MUTANT_FIRE_INTERVAL * (0.7 + 0.6 * next01(noise)) / pressure;
             return Outcome::Fires;
         }
 
@@ -512,6 +583,25 @@ impl Enemy {
 
         let dir = if dx < 0.0 { -1.0 } else { 1.0 };
         (angle.cos() * dir, angle.sin())
+    }
+
+    /// Where a Lander's shot should go: at `(sx, sy)`, give or take
+    /// [`LANDER_AIM_ERROR`]. Unlike a Mutant's it may fly level — the
+    /// never-straight rule is Brian's for Mutants, and a slow level shot
+    /// is the easiest thing in the game to step out of.
+    pub fn lander_aim(&self, sx: f32, sy: f32, noise: &mut u32) -> (f32, f32) {
+        let dx = world::delta(self.x, sx);
+        let dy = sy - self.y;
+        let angle = dy.atan2(dx) + (next01(noise) - 0.5) * 2.0 * LANDER_AIM_ERROR;
+        (angle.cos(), angle.sin())
+    }
+
+    /// How fast this one's shots fly.
+    pub fn shot_speed(&self) -> f32 {
+        match self.kind {
+            Kind::Lander => LANDER_SHOT_SPEED,
+            Kind::Mutant => crate::shot::ENEMY_SHOT_SPEED,
+        }
     }
 }
 
@@ -569,21 +659,43 @@ pub struct Enemies {
     /// Noise for Mutant jitter and fire timing. On the collection so a
     /// whole world of Mutants shares one deterministic stream.
     noise: u32,
+    /// The wave's [`crate::waves::pressure`], set by the owner each step.
+    pressure: f32,
 }
 
 impl Enemies {
     pub fn new() -> Self {
-        Self { live: Vec::new(), claimed: Vec::new(), noise: 0x4D07_A17E, spawned: 0, fused: 0 }
+        Self {
+            live: Vec::new(),
+            claimed: Vec::new(),
+            noise: 0x4D07_A17E,
+            spawned: 0,
+            fused: 0,
+            pressure: 1.0,
+        }
+    }
+
+    /// Seed the shared noise, so two games do not fight the same fight.
+    pub fn reseed(&mut self, seed: u32) {
+        // xorshift has one fixed point, and it is zero.
+        self.noise = seed | 1;
+    }
+
+    /// How hard the wave is pushing. See [`crate::waves::pressure`].
+    pub fn set_pressure(&mut self, pressure: f32) {
+        self.pressure = pressure;
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Enemy> {
         self.live.iter()
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.live.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.live.is_empty()
     }
@@ -659,6 +771,35 @@ impl Enemies {
         }
     }
 
+    /// Bring in a squad of `count`, spread round the world away from
+    /// `avoid_x`, announcing itself through `spawn` like every arrival.
+    ///
+    /// ★ AFTER THE WORLD HAS ENDED THEY ARRIVE AS MUTANTS — the
+    /// original's own rule (`LNDST0`). With no one left to abduct, a
+    /// Lander has no job; what comes through the warp is the thing that
+    /// wants the pilot. They still warp in: [`Enemy::step`] finishes the
+    /// arrival for every kind.
+    pub fn squad(&mut self, count: usize, avoid_x: f32, terrain: &Terrain, seed: u32, mutants: bool) {
+        let first = self.live.len();
+        self.scatter(count, avoid_x, terrain, seed);
+        if mutants {
+            for e in &mut self.live[first..] {
+                e.kind = Kind::Mutant;
+                e.fire_cooldown = MUTANT_FIRE_INTERVAL;
+            }
+        }
+    }
+
+    /// The first live enemy whose body overlaps a box at `(x, y)` with
+    /// these half-extents — the ship flying into one.
+    pub fn body_hit(&self, x: f32, y: f32, half_w: f32, half_h: f32) -> Option<usize> {
+        self.live.iter().position(|e| {
+            e.is_target()
+                && world::delta(e.x, x).abs() <= LANDER_HALF_W + half_w
+                && (e.y - y).abs() <= LANDER_HALF_H + half_h
+        })
+    }
+
     /// Advance every Lander, hunting and abducting through `people`.
     ///
     /// ★ THIS IS WHERE THE ABDUCTION ACTUALLY HAPPENS, and it lives here
@@ -674,6 +815,7 @@ impl Enemies {
     ) -> Vec<(usize, f32, f32)> {
         let mut shots_wanted = Vec::new();
         let mut noise = self.noise;
+        let pressure = self.pressure;
         // ⚠️ ACCUMULATED LOCALLY, not written straight to `self.fused`.
         // The loop below holds `&mut` borrows of `self.live`, so the
         // field cannot be touched from inside it.
@@ -698,7 +840,7 @@ impl Enemies {
                 None => None,
             };
 
-            match l.step(terrain, prey, ship, &mut noise, dt) {
+            match l.step(terrain, prey, ship, &mut noise, pressure, dt) {
                 Outcome::None => {}
 
                 Outcome::Fires => {
@@ -851,6 +993,7 @@ impl Enemies {
     }
 
     /// How many Mutants are alive.
+    #[cfg(test)]
     pub fn mutants(&self) -> usize {
         self.live.iter().filter(|l| l.is_mutant() && l.phase != Phase::Dying).count()
     }

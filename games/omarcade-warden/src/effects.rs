@@ -49,6 +49,25 @@ pub const SHIP_PIECES: usize = 40;
 /// How many pieces the world throws up when it ends.
 pub const WORLD_PIECES: usize = 150;
 
+const LANDER_COLORS: [Color; 4] = [
+    Color::rgb(30, 218, 16),
+    Color::rgb(0, 143, 2),
+    Color::rgb(255, 230, 66),
+    Color::rgb(255, 174, 0),
+];
+const BAITER_COLORS: [Color; 4] = [
+    Color::rgb(0, 178, 196),
+    Color::rgb(170, 250, 255),
+    Color::rgb(255, 60, 210),
+    Color::rgb(255, 170, 40),
+];
+const BOMBER_COLORS: [Color; 4] = [
+    Color::rgb(232, 40, 165),
+    Color::rgb(180, 70, 255),
+    Color::rgb(255, 222, 120),
+    Color::rgb(255, 110, 60),
+];
+
 /// Pieces in a smart bomb's burst, how fast its front travels (world
 /// units per second), and how long a piece lives.
 pub const BOMB_PIECES: usize = 180;
@@ -196,12 +215,23 @@ impl Effects {
         // The Lander's own greens, plus the hot core a blast has for the
         // first instant. Pieces are drawn additively, so these read as
         // light rather than as paint.
-        const COLORS: [Color; 4] = [
-            Color::rgb(30, 218, 16),
-            Color::rgb(0, 143, 2),
-            Color::rgb(255, 230, 66),
-            Color::rgb(255, 174, 0),
-        ];
+        self.explode_in(x, y, vx, &LANDER_COLORS);
+    }
+
+    /// ★ W3: a Baiter blowing apart, in its own teal and magenta.
+    pub fn explode_baiter(&mut self, x: f32, y: f32, vx: f32) {
+        self.explode_in(x, y, vx, &BAITER_COLORS);
+    }
+
+    /// ★ W3: a Bomber blowing apart, in its own magentas and gold.
+    pub fn explode_bomber(&mut self, x: f32, y: f32, vx: f32) {
+        self.explode_in(x, y, vx, &BOMBER_COLORS);
+    }
+
+    /// An enemy burst in `COLORS` — the Lander's shape of explosion, worn
+    /// by every enemy so each dies the same way in its own colours.
+    fn explode_in(&mut self, x: f32, y: f32, vx: f32, colors: &[Color; 4]) {
+        const COLORS_LEN: usize = 4;
 
         for i in 0..LANDER_PIECES {
             // Spread evenly around the circle and then jitter, rather
@@ -220,7 +250,7 @@ impl Effects {
             let r = self.rand();
             let speed = BURST_SPEED * (0.12 + 1.15 * r * r);
 
-            let color = COLORS[i % COLORS.len()];
+            let color = colors[i % COLORS_LEN];
             let life = PIECE_LIFE * (0.6 + 0.7 * self.rand());
             let size = 2.0 + 3.0 * self.rand();
 

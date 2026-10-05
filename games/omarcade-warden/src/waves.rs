@@ -17,10 +17,10 @@
 //! testable without a world, and keeps the one place that CAN see the
 //! world — `main` — the one place that changes it.
 //!
-//! ⚠️ BOMBERS AND PODS ARE NOT IN THE TABLE YET. The original's wave 2 is
-//! 20 Landers + 3 Bombers + 1 Pod; those columns arrive with the enemies
-//! themselves in W3/W4, for the same reason `Kind` has no empty variants:
-//! a count for a thing that cannot exist is a number that pretends.
+//! ★ W3 ADDED THE BOMBER COLUMN AND THE BAITER TIMER. Pods arrive with
+//! the Pods themselves in W4, for the same reason `Kind` has no empty
+//! variants: a count for a thing that cannot exist is a number that
+//! pretends.
 
 /// Landers per wave, waves 1–4. Wave 5 on repeats the last column.
 ///
@@ -28,6 +28,33 @@
 /// a wave is; how CROWDED it is at any moment is [`SQUAD_ALIVE_CAP`]'s
 /// job, and that is the number the smaller world changes.
 pub const LANDERS: [usize; 4] = [15, 20, 20, 20];
+
+/// Bombers per wave, waves 1–4 (the original's table: none in wave 1).
+/// Placed when the wave starts, in squads of up to [`BOMBER_SQUAD`].
+pub const BOMBERS: [usize; 4] = [0, 3, 4, 5];
+pub const BOMBER_SQUAD: usize = 3;
+
+/// A Bomber's constant drift, world units per second, waves 1–4: the
+/// original's `TIEXV` $20/$28/$2C/$30 (1–1.5 px a frame) × 60 × 3.16.
+pub const BOMBER_SPEED: [f32; 4] = [190.0, 237.0, 261.0, 284.0];
+
+/// ★ THE BAITER TIMER — seconds until the first one, waves 1–4: the
+/// original's `UFOTIM` with its starting difficulty applied (≈48/44/36/32
+/// s). The Baiter exists to stop a player camping, so the clock is the
+/// whole design: it tightens per wave, tightens again the longer a wave
+/// runs, and panics when only a few enemies are left.
+pub const BAITER_SECONDS: [f32; 4] = [48.0, 44.0, 36.0, 32.0];
+/// Faster per wave after the fourth, and per [`RAMP_SECONDS`] a wave runs
+/// on (the original's −4 and −12 ticks).
+pub const BAITER_FASTER_PER_WAVE: f32 = 1.0;
+pub const BAITER_FASTER_PER_RAMP: f32 = 3.0;
+/// The timer never goes below this.
+pub const BAITER_FLOOR: f32 = 6.0;
+/// With this few enemies left the timer is capped at half, then a quarter.
+pub const BAITER_PANIC_HALF: usize = 8;
+pub const BAITER_PANIC_QUARTER: usize = 3;
+/// Never more Baiters than this at once.
+pub const MAX_BAITERS: usize = 12;
 
 /// Seconds between squads, waves 1–4 (`WAVTIM`: 30/25/20/16 ticks of
 /// 0.25 s).
@@ -100,6 +127,21 @@ pub fn landers(wave: u32) -> usize {
     LANDERS[column(wave)]
 }
 
+/// Bombers in `wave`, and how fast they drift.
+pub fn bombers(wave: u32) -> usize {
+    BOMBERS[column(wave)]
+}
+pub fn bomber_speed(wave: u32) -> f32 {
+    BOMBER_SPEED[column(wave)]
+}
+
+/// The Baiter timer for `wave`, `seconds` into it.
+pub fn baiter_seconds(wave: u32, seconds: f32) -> f32 {
+    let later = wave.saturating_sub(LANDERS.len() as u32) as f32 * BAITER_FASTER_PER_WAVE;
+    let ramps = (seconds.max(0.0) / RAMP_SECONDS).floor() * BAITER_FASTER_PER_RAMP;
+    (BAITER_SECONDS[column(wave)] - later - ramps).max(BAITER_FLOOR)
+}
+
 /// Seconds between squads in `wave`.
 pub fn squad_seconds(wave: u32) -> f32 {
     SQUAD_SECONDS[column(wave)]
@@ -157,11 +199,27 @@ pub enum Phase {
     Hold { counted: usize, timer: f32 },
 }
 
+/// What the director is told about the world each step.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Census {
+    /// Landers alive — what the squad cap counts (the original's LNDCNT).
+    pub landers: usize,
+    /// Every hostile that must die for the wave to end: Landers, Mutants,
+    /// Bombers. Not Baiters — they leave when the wave is won.
+    pub hostiles: usize,
+    /// Baiters alive.
+    pub baiters: usize,
+}
+
 /// What the game should do this step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     /// Bring in this many Landers.
     Squad(usize),
+    /// ★ W3. Place this many Bombers (once, at the start of a wave).
+    Bombers(usize),
+    /// ★ W3. A Baiter arrives: the wave has gone on long enough.
+    Baiter,
     /// Every hostile is dead and none are left to come. The wave is held.
     Cleared,
     /// One more survivor counted: award [`bonus_per_humanoid`].
@@ -180,6 +238,10 @@ pub struct Director {
     squad_timer: f32,
     /// Seconds this wave has been fought, for the pressure ramp.
     elapsed: f32,
+    /// Bombers still to place this wave.
+    bombers_pending: usize,
+    /// Until the next Baiter.
+    baiter_timer: f32,
 }
 
 impl Default for Director {
@@ -195,7 +257,15 @@ impl Director {
     }
 
     fn at_wave(wave: u32) -> Self {
-        Self { wave, phase: Phase::Fighting, reserve: landers(wave), squad_timer: 0.0, elapsed: 0.0 }
+        Self {
+            wave,
+            phase: Phase::Fighting,
+            reserve: landers(wave),
+            squad_timer: 0.0,
+            elapsed: 0.0,
+            bombers_pending: bombers(wave),
+            baiter_timer: baiter_seconds(wave, 0.0),
+        }
     }
 
     pub fn wave(&self) -> u32 {
@@ -217,29 +287,51 @@ impl Director {
         pressure(self.wave, self.elapsed)
     }
 
-    /// Advance. `alive` is every hostile still in the world, `people`
-    /// how many Humanoids are left. At most one event per step.
-    pub fn step(&mut self, dt: f32, alive: usize, people: usize) -> Option<Event> {
+    /// Advance, told what is alive and how many Humanoids are left. At
+    /// most one event per step.
+    pub fn step(&mut self, dt: f32, census: Census, people: usize) -> Option<Event> {
         match self.phase {
             Phase::Fighting => {
                 self.elapsed += dt;
                 self.squad_timer -= dt;
 
                 // ★ THE ORIGINAL'S TWO TRIGGERS: the timer, while the
-                // world is not already crowded — or AT ONCE when nobody is
-                // left, so a quick player is never left flying an empty
-                // world waiting on a clock.
-                let due = self.squad_timer <= 0.0 && alive < SQUAD_ALIVE_CAP;
-                if self.reserve > 0 && (alive == 0 || due) {
+                // world is not already crowded with Landers — or AT ONCE
+                // when none are left, so a quick player is never left
+                // flying an empty world waiting on a clock.
+                let due = self.squad_timer <= 0.0 && census.landers < SQUAD_ALIVE_CAP;
+                if self.reserve > 0 && (census.landers == 0 || due) {
                     let n = SQUAD_SIZE.min(self.reserve);
                     self.reserve -= n;
                     self.squad_timer = squad_seconds(self.wave);
                     return Some(Event::Squad(n));
                 }
 
-                if self.reserve == 0 && alive == 0 {
+                if self.bombers_pending > 0 {
+                    let n = std::mem::take(&mut self.bombers_pending);
+                    return Some(Event::Bombers(n));
+                }
+
+                let left = census.hostiles + self.reserve;
+                if left == 0 {
                     self.phase = Phase::Tally { counted: 0, survivors: people, timer: TALLY_LEAD };
                     return Some(Event::Cleared);
+                }
+
+                // ★ THE BAITER CLOCK: shortened by the wave and by how long
+                // it has run, and capped harder as the last few enemies
+                // are hunted down — the original's panic, which is exactly
+                // when a player is tempted to slow down.
+                let base = baiter_seconds(self.wave, self.elapsed);
+                self.baiter_timer -= dt;
+                if left <= BAITER_PANIC_QUARTER {
+                    self.baiter_timer = self.baiter_timer.min(base / 4.0);
+                } else if left <= BAITER_PANIC_HALF {
+                    self.baiter_timer = self.baiter_timer.min(base / 2.0);
+                }
+                if self.baiter_timer <= 0.0 && census.baiters < MAX_BAITERS {
+                    self.baiter_timer = if left < 4 { base / 4.0 } else { base };
+                    return Some(Event::Baiter);
                 }
                 None
             }
@@ -277,11 +369,16 @@ mod tests {
 
     const DT: f32 = 1.0 / 240.0;
 
+    /// A world with `n` Landers in it and nothing else.
+    fn c(n: usize) -> Census {
+        Census { landers: n, hostiles: n, baiters: 0 }
+    }
+
     /// Run until an event, with `alive` and `people` fixed.
     fn until_event(d: &mut Director, alive: usize, people: usize, max_seconds: f32) -> Option<Event> {
         let mut t = 0.0;
         while t < max_seconds {
-            if let Some(e) = d.step(DT, alive, people) {
+            if let Some(e) = d.step(DT, c(alive), people) {
                 return Some(e);
             }
             t += DT;
@@ -292,7 +389,7 @@ mod tests {
     #[test]
     fn the_first_squad_arrives_on_the_first_step() {
         let mut d = Director::new();
-        assert_eq!(d.step(DT, 0, 10), Some(Event::Squad(SQUAD_SIZE)));
+        assert_eq!(d.step(DT, c(0), 10), Some(Event::Squad(SQUAD_SIZE)));
         assert_eq!(d.reserve(), LANDERS[0] - SQUAD_SIZE);
     }
 
@@ -301,18 +398,18 @@ mod tests {
     #[test]
     fn a_squad_waits_for_its_timer_and_for_room() {
         let mut d = Director::new();
-        d.step(DT, 0, 10);
+        d.step(DT, c(0), 10);
 
         // Crowded: never.
         assert_eq!(until_event(&mut d, SQUAD_ALIVE_CAP, 10, 30.0), None);
 
         // Room, and the timer long since run: at once.
-        assert_eq!(d.step(DT, SQUAD_ALIVE_CAP - 1, 10), Some(Event::Squad(SQUAD_SIZE)));
+        assert_eq!(d.step(DT, c(SQUAD_ALIVE_CAP - 1), 10), Some(Event::Squad(SQUAD_SIZE)));
 
         // Room, but the timer was just reset: not before it runs out.
         let mut t = 0.0;
         loop {
-            if d.step(DT, SQUAD_ALIVE_CAP - 1, 10).is_some() {
+            if d.step(DT, c(SQUAD_ALIVE_CAP - 1), 10).is_some() {
                 break;
             }
             t += DT;
@@ -323,8 +420,8 @@ mod tests {
     #[test]
     fn an_empty_world_brings_the_next_squad_at_once() {
         let mut d = Director::new();
-        d.step(DT, 0, 10);
-        assert_eq!(d.step(DT, 0, 10), Some(Event::Squad(SQUAD_SIZE)));
+        d.step(DT, c(0), 10);
+        assert_eq!(d.step(DT, c(0), 10), Some(Event::Squad(SQUAD_SIZE)));
     }
 
     /// The whole of wave 1, start to finish, counting every Lander.
@@ -336,7 +433,7 @@ mod tests {
         for _ in 0..(240 * 120) {
             // The player kills everything the moment it arrives, so the
             // director always sees an empty world.
-            match d.step(DT, 0, 7) {
+            match d.step(DT, c(0), 7) {
                 Some(Event::Squad(n)) => arrived += n,
                 Some(e) => events.push(e),
                 None => {}
@@ -360,12 +457,12 @@ mod tests {
     fn survivors_are_fixed_when_the_wave_is_cleared() {
         let mut d = Director::new();
         while d.reserve() > 0 {
-            d.step(DT, 0, 4);
+            d.step(DT, c(0), 4);
         }
-        assert_eq!(d.step(DT, 0, 4), Some(Event::Cleared));
+        assert_eq!(d.step(DT, c(0), 4), Some(Event::Cleared));
         let mut ticks = 0;
         for _ in 0..(240 * 10) {
-            if d.step(DT, 0, 0) == Some(Event::BonusTick) {
+            if d.step(DT, c(0), 0) == Some(Event::BonusTick) {
                 ticks += 1;
             }
         }
@@ -414,12 +511,102 @@ mod tests {
     #[test]
     fn the_within_wave_ramp_resets_on_the_next_wave() {
         let mut d = Director::new();
-        d.step(DT, 0, 10);
+        d.step(DT, c(0), 10);
         until_event(&mut d, SQUAD_ALIVE_CAP, 10, 40.0);
         assert!(d.pressure() > 1.0);
         while d.wave() == 1 {
-            d.step(DT, 0, 0);
+            d.step(DT, c(0), 0);
         }
         assert_eq!(d.pressure(), pressure(2, 0.0));
+    }
+
+    // ----- W3: Bombers and the Baiter clock -----
+
+    /// Run until an event that is not a squad, with a fixed census.
+    fn until(d: &mut Director, census: Census, max_seconds: f32, want: Event) -> Option<f32> {
+        let mut t = 0.0;
+        while t < max_seconds {
+            if d.step(DT, census, 10) == Some(want) {
+                return Some(t);
+            }
+            t += DT;
+        }
+        None
+    }
+
+    /// Wave 1 has no Bombers; wave 2 places its three exactly once.
+    #[test]
+    fn bombers_arrive_once_at_the_start_of_their_wave() {
+        let mut d = Director::new();
+        let mut seen = Vec::new();
+        for _ in 0..(240 * 120) {
+            match d.step(DT, c(0), 5) {
+                Some(Event::Bombers(n)) => seen.push((d.wave(), n)),
+                Some(Event::NextWave) if d.wave() == 3 => break,
+                _ => {}
+            }
+        }
+        assert_eq!(seen, vec![(2, BOMBERS[1])]);
+    }
+
+    /// ★ THE SQUAD CAP COUNTS LANDERS ONLY. Five Bombers drifting about
+    /// must not hold back the Landers' reinforcements.
+    #[test]
+    fn bombers_do_not_block_lander_squads() {
+        let mut d = Director::new();
+        d.step(DT, c(0), 10);
+        let busy = Census { landers: 2, hostiles: 7, baiters: 0 };
+        let t = until(&mut d, busy, 20.0, Event::Squad(SQUAD_SIZE));
+        assert!(t.is_some(), "Bombers blocked the next squad");
+    }
+
+    /// ★ THE FIRST BAITER COMES AT ~48 s in wave 1 if the wave drags on.
+    #[test]
+    fn the_first_baiter_comes_when_the_clock_runs_out() {
+        let mut d = Director::new();
+        d.step(DT, c(0), 10);
+        let crowded = Census { landers: 5, hostiles: 15, baiters: 0 };
+        let t = until(&mut d, crowded, 60.0, Event::Baiter).expect("no Baiter in a minute");
+        assert!((t - BAITER_SECONDS[0]).abs() < 0.5, "first Baiter at {t:.1} s");
+    }
+
+    /// ★ PANIC: with three enemies left the clock is a quarter — the
+    /// moment a player is tempted to slow down is the moment it bites.
+    #[test]
+    fn the_baiter_clock_panics_when_few_enemies_remain() {
+        let mut d = Director::new();
+        while d.reserve() > 0 {
+            d.step(DT, c(0), 10);
+        }
+        let nearly = Census { landers: 3, hostiles: 3, baiters: 0 };
+        let t = until(&mut d, nearly, 60.0, Event::Baiter).expect("no Baiter");
+        assert!(t <= BAITER_SECONDS[0] / 4.0 + 0.1, "panic Baiter only after {t:.1} s");
+    }
+
+    #[test]
+    fn never_more_than_twelve_baiters() {
+        let mut d = Director::new();
+        d.step(DT, c(0), 10);
+        let full = Census { landers: 5, hostiles: 15, baiters: MAX_BAITERS };
+        assert_eq!(until(&mut d, full, 120.0, Event::Baiter), None);
+    }
+
+    /// ★ BAITERS NEVER HOLD A WAVE OPEN: with only Baiters left, it is won.
+    #[test]
+    fn a_wave_with_only_baiters_left_is_cleared() {
+        let mut d = Director::new();
+        while d.reserve() > 0 {
+            d.step(DT, c(0), 10);
+        }
+        let only_baiters = Census { landers: 0, hostiles: 0, baiters: 4 };
+        assert_eq!(d.step(DT, only_baiters, 10), Some(Event::Cleared));
+    }
+
+    #[test]
+    fn the_baiter_clock_tightens_by_wave_and_by_time() {
+        assert!(baiter_seconds(2, 0.0) < baiter_seconds(1, 0.0));
+        assert!(baiter_seconds(6, 0.0) < baiter_seconds(4, 0.0));
+        assert!(baiter_seconds(1, 30.0) < baiter_seconds(1, 0.0));
+        assert_eq!(baiter_seconds(40, 1000.0), BAITER_FLOOR);
     }
 }

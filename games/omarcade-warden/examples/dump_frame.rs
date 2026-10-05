@@ -24,6 +24,8 @@ mod enemy;
 mod humanoid;
 #[path = "../src/lives.rs"]
 mod lives;
+#[path = "../src/mine.rs"]
+mod mine;
 #[path = "../src/popup.rs"]
 mod popup;
 #[path = "../src/waves.rs"]
@@ -71,6 +73,7 @@ fn main() {
     // ★ W1's HUD and pop-ups. Most scenes leave them at a mid-wave
     // default; `tally`, `gameover` and `popups` set them.
     let mut popups = popup::Popups::new();
+    let mut mines = mine::Mines::new();
     let mut hud = render::Hud {
         wave: 1,
         phase: waves::Phase::Fighting,
@@ -139,6 +142,23 @@ fn main() {
             effects.update(0.16);
             hud.blast = Some((ship.x, ship.y, 0.16 / 0.55));
             hud.smart_bombs = 2;
+        }
+
+        // ★ W3: a Bomber squad on screen laying a field, a Baiter closing.
+        "w3" => {
+            camera.snap_to(&ship);
+            let base = ship.x;
+            for (i, dx) in [330.0f32, 400.0, 470.0].iter().enumerate() {
+                let mut b = enemy::Enemy::bomber(world::wrap(base + dx), ship.y + 70.0 + i as f32 * 8.0, -237.0, 400.0);
+                b.phase = enemy::Phase::Hovering;
+                enemies.spawn(b);
+            }
+            for (dx, dy) in [(560.0f32, 60.0f32), (620.0, 90.0), (680.0, 75.0), (740.0, 50.0), (500.0, 95.0)] {
+                mines.lay(world::wrap(base + dx), ship.y + dy);
+            }
+            let mut baiter = enemy::Enemy::baiter(world::wrap(base - 170.0), ship.y + 40.0);
+            baiter.phase = enemy::Phase::Hovering;
+            enemies.spawn(baiter);
         }
 
         // ★ W1: out of lives, with the score and the way back in.
@@ -421,7 +441,7 @@ fn main() {
             eprintln!(
                 "scenes: rest | cruise | west | turn | low | seam | \
                  thrust | thrust-west | mutants | apocalypse | rescue | combat | \
-                 tally | gameover | popups | hyperspace | smartbomb | bombburst"
+                 tally | gameover | popups | hyperspace | smartbomb | bombburst | w3"
             );
             std::process::exit(2);
         }
@@ -448,6 +468,7 @@ fn main() {
             time: 0.37,
             exhaust,
             popups: &popups,
+            mines: &mines,
             hud,
         };
         render::draw(&mut canvas, &scene, &Theme::load());

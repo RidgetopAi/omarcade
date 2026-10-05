@@ -668,3 +668,230 @@ pub fn draw_humanoid(canvas: &mut Canvas<'_>, t: &Transform) {
     HUMANOID_RIGHT_ARM.fill(canvas, t, Color::rgb(255, 0, 234));
     HUMANOID_LIGHT.fill(canvas, t, Color::rgb(255, 221, 0));
 }
+
+// =====================================================================
+// W3: THE BAITER, THE BOMBER AND THE MINE
+//
+// ★ CLAUDE'S DRAFTS, APPROVED BY BRIAN ("approved", 2026-10-05) from the
+// art_review render. Shapes pasted verbatim from assets-inbox/*.rs, which
+// still import into tools/vector-playground.html; redraw there and paste
+// the consts back over these.
+//
+// ⚠️ THE DRAW FUNCTIONS ARE NOT THE PLAYGROUND'S. Each takes the one thing
+// that animates in play — the Baiter's shimmering rim lights, the
+// Bomber's palette cycle, the mine's pulse — so the playground's fixed
+// colours are the frame-zero colours, nothing more. Every colour is a
+// fixed threat colour, never the theme's (L065).
+// =====================================================================
+
+/// underglow — authored in tools/vector-playground.html.
+pub const BAITER_UNDERGLOW: Shape = Shape::new(&[
+    (-5.40, 2.16),
+    (5.40, 2.16),
+    (3.51, 4.32),
+    (-3.51, 4.32),
+]);
+
+/// hull — authored in tools/vector-playground.html.
+pub const BAITER_HULL: Shape = Shape::new(&[
+    (-12.15, 0.00),
+    (-9.45, -2.16),
+    (-4.05, -3.10),
+    (4.05, -3.10),
+    (9.45, -2.16),
+    (12.15, 0.00),
+    (9.45, 2.29),
+    (4.05, 3.24),
+    (-4.05, 3.24),
+    (-9.45, 2.29),
+]);
+
+/// canopy — authored in tools/vector-playground.html.
+pub const BAITER_CANOPY: Shape = Shape::new(&[
+    (-4.32, -2.16),
+    (-2.97, -4.59),
+    (0.00, -5.67),
+    (2.97, -4.59),
+    (4.32, -2.16),
+]);
+
+/// rim — authored in tools/vector-playground.html.
+pub const BAITER_RIM: Shape = Shape::new(&[
+    (-11.74, -0.61),
+    (11.74, -0.61),
+    (11.74, 0.74),
+    (-11.74, 0.74),
+]);
+
+/// light-left — authored in tools/vector-playground.html.
+pub const BAITER_LIGHT_LEFT: Shape = Shape::new(&[
+    (-8.03, 0.07),
+    (-6.75, -1.22),
+    (-5.47, 0.07),
+    (-6.75, 1.35),
+]);
+
+/// light-mid — authored in tools/vector-playground.html.
+pub const BAITER_LIGHT_MID: Shape = Shape::new(&[
+    (-1.28, 0.07),
+    (0.00, -1.22),
+    (1.28, 0.07),
+    (0.00, 1.35),
+]);
+
+/// light-right — authored in tools/vector-playground.html.
+pub const BAITER_LIGHT_RIGHT: Shape = Shape::new(&[
+    (5.47, 0.07),
+    (6.75, -1.22),
+    (8.03, 0.07),
+    (6.75, 1.35),
+]);
+
+/// fin-left — authored in tools/vector-playground.html.
+pub const BOMBER_FIN_LEFT: Shape = Shape::new(&[
+    (-4.40, -2.00),
+    (-7.00, -1.00),
+    (-7.00, 1.00),
+    (-4.40, 2.00),
+]);
+
+/// fin-right — authored in tools/vector-playground.html.
+pub const BOMBER_FIN_RIGHT: Shape = Shape::new(&[
+    (4.40, -2.00),
+    (7.00, -1.00),
+    (7.00, 1.00),
+    (4.40, 2.00),
+]);
+
+/// body — authored in tools/vector-playground.html.
+pub const BOMBER_BODY: Shape = Shape::new(&[
+    (-4.00, -5.00),
+    (4.00, -5.00),
+    (5.00, -4.00),
+    (5.00, 4.00),
+    (4.00, 5.00),
+    (-4.00, 5.00),
+    (-5.00, 4.00),
+    (-5.00, -4.00),
+]);
+
+/// panel — authored in tools/vector-playground.html.
+pub const BOMBER_PANEL: Shape = Shape::new(&[
+    (-3.00, -3.00),
+    (3.00, -3.00),
+    (3.00, 3.00),
+    (-3.00, 3.00),
+]);
+
+/// core — authored in tools/vector-playground.html.
+pub const BOMBER_CORE: Shape = Shape::new(&[
+    (-2.00, 0.00),
+    (0.00, -2.00),
+    (2.00, 0.00),
+    (0.00, 2.00),
+]);
+
+/// cross — authored in tools/vector-playground.html.
+pub const MINE_CROSS: Shape = Shape::new(&[
+    (-0.80, -2.60),
+    (0.80, -2.60),
+    (0.80, -0.80),
+    (2.60, -0.80),
+    (2.60, 0.80),
+    (0.80, 0.80),
+    (0.80, 2.60),
+    (-0.80, 2.60),
+    (-0.80, 0.80),
+    (-2.60, 0.80),
+    (-2.60, -0.80),
+    (-0.80, -0.80),
+]);
+
+/// core — authored in tools/vector-playground.html.
+pub const MINE_CORE: Shape = Shape::new(&[
+    (-1.15, 0.00),
+    (0.00, -1.15),
+    (1.15, 0.00),
+    (0.00, 1.15),
+]);
+
+/// The Baiter's rim lights cycle through these, each light a step behind
+/// the last — the original's 3-frame iridescent shimmer.
+const BAITER_SHIMMER: [Color; 3] =
+    [Color::rgb(255, 60, 210), Color::rgb(120, 255, 240), Color::rgb(255, 230, 90)];
+
+/// Draw a Baiter. `shimmer` advances the rim lights one colour per step.
+pub fn draw_baiter(canvas: &mut Canvas<'_>, t: &Transform, shimmer: u32) {
+    BAITER_UNDERGLOW.fill(canvas, t, Color::rgb(255, 170, 40));
+    BAITER_HULL.fill(canvas, t, Color::rgb(0, 178, 196));
+    BAITER_CANOPY.fill(canvas, t, Color::rgb(170, 250, 255));
+    BAITER_RIM.fill(canvas, t, Color::rgb(0, 92, 120));
+    for (i, light) in [BAITER_LIGHT_LEFT, BAITER_LIGHT_MID, BAITER_LIGHT_RIGHT].iter().enumerate() {
+        let c = BAITER_SHIMMER[(shimmer as usize + i) % BAITER_SHIMMER.len()];
+        light.fill(canvas, t, c);
+    }
+}
+
+/// The Bomber's body cycles through these (the original's TIECOL), so a
+/// squad shimmers in and out of step with itself.
+const BOMBER_PALETTE: [Color; 4] = [
+    Color::rgb(232, 40, 165),
+    Color::rgb(255, 110, 60),
+    Color::rgb(180, 70, 255),
+    Color::rgb(255, 60, 100),
+];
+
+/// Draw a Bomber. `cycle` steps the body through its palette.
+pub fn draw_bomber(canvas: &mut Canvas<'_>, t: &Transform, cycle: u32) {
+    BOMBER_FIN_LEFT.fill(canvas, t, Color::rgb(150, 20, 110));
+    BOMBER_FIN_RIGHT.fill(canvas, t, Color::rgb(150, 20, 110));
+    BOMBER_BODY.fill(canvas, t, BOMBER_PALETTE[cycle as usize % BOMBER_PALETTE.len()]);
+    BOMBER_PANEL.fill(canvas, t, Color::rgb(84, 0, 62));
+    BOMBER_CORE.fill(canvas, t, Color::rgb(255, 222, 120));
+}
+
+/// Draw a mine. `pulse` (0..1) brightens the core: a live thing, because
+/// it cannot be shot and must never be mistaken for debris.
+pub fn draw_mine(canvas: &mut Canvas<'_>, t: &Transform, pulse: f32) {
+    MINE_CROSS.fill(canvas, t, Color::rgb(255, 96, 40));
+    let dim = Color::rgb(255, 150, 60);
+    MINE_CORE.fill(canvas, t, dim.lerp(Color::rgb(255, 250, 220), pulse.clamp(0.0, 1.0)));
+}
+
+/// Half-width and half-height of a piece, in art units: the bounds of
+/// every layer together. Hitboxes are derived from this, so the art and
+/// the collision cannot drift apart (docs/warden-plan.md recommendation 2).
+pub const fn half_extents(layers: &[Shape<'_>]) -> (f32, f32) {
+    let (mut w, mut h) = (0.0f32, 0.0f32);
+    let mut i = 0;
+    while i < layers.len() {
+        let pts = layers[i].points;
+        let mut j = 0;
+        while j < pts.len() {
+            let (x, y) = pts[j];
+            let (ax, ay) = (if x < 0.0 { -x } else { x }, if y < 0.0 { -y } else { y });
+            if ax > w {
+                w = ax;
+            }
+            if ay > h {
+                h = ay;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    (w, h)
+}
+
+pub const BAITER_LAYERS: [Shape<'static>; 7] = [
+    BAITER_UNDERGLOW,
+    BAITER_HULL,
+    BAITER_CANOPY,
+    BAITER_RIM,
+    BAITER_LIGHT_LEFT,
+    BAITER_LIGHT_MID,
+    BAITER_LIGHT_RIGHT,
+];
+pub const BOMBER_LAYERS: [Shape<'static>; 5] =
+    [BOMBER_FIN_LEFT, BOMBER_FIN_RIGHT, BOMBER_BODY, BOMBER_PANEL, BOMBER_CORE];
+pub const MINE_LAYERS: [Shape<'static>; 2] = [MINE_CROSS, MINE_CORE];

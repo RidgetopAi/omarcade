@@ -18,6 +18,7 @@ use crate::enemy::{Kind, Enemies, Phase};
 use crate::flight::{Camera, Ship};
 use crate::humanoid::{self, Humanoids, State};
 use crate::lives::Lives;
+use crate::mine::Mines;
 use crate::popup::Popups;
 use crate::shot::Owner;
 use crate::waves::{self, Phase as WavePhase};
@@ -42,6 +43,7 @@ pub struct Scene<'a> {
     /// flare; the trailing cloud is [`Effects`]' business.
     pub exhaust: f32,
     pub popups: &'a Popups,
+    pub mines: &'a Mines,
     pub hud: Hud,
 }
 
@@ -72,7 +74,8 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     draw_terrain(canvas, scene.terrain, scene.camera, theme);
     draw_people(canvas, scene.people, scene.camera);
     draw_beams(canvas, scene.enemies, scene.people, scene.camera);
-    draw_enemies(canvas, scene.enemies, scene.camera);
+    draw_mines(canvas, scene.mines, scene.camera);
+    draw_enemies(canvas, scene.enemies, scene.camera, scene.time);
     draw_shots(canvas, scene.shots, scene.camera, theme);
     scene.effects.draw(canvas, scene.camera);
     scene.popups.draw(canvas, scene.camera);
@@ -240,9 +243,9 @@ fn draw_tally(canvas: &mut Canvas<'_>, wave: u32, counted: usize, theme: &Theme)
 /// ⚠️ EVERY ENEMY IS TESTED FOR VISIBILITY, NOT DRAWN BLIND. The world is
 /// four screens wide, so most of them are somewhere else; `to_screen`
 /// already wraps, so this is only about skipping work.
-fn draw_enemies(canvas: &mut Canvas<'_>, enemies: &Enemies, camera: &Camera) {
+fn draw_enemies(canvas: &mut Canvas<'_>, enemies: &Enemies, camera: &Camera, time: f32) {
     let h = canvas.height() as f32;
-    let margin = crate::enemy::LANDER_HALF_W + 4.0;
+    let margin = crate::enemy::BAITER_HALF.0 + 4.0;
 
     for l in enemies.iter() {
         let sx = camera.to_screen(l.x);
@@ -258,20 +261,20 @@ fn draw_enemies(canvas: &mut Canvas<'_>, enemies: &Enemies, camera: &Camera) {
             // that is merely far away.
             Phase::Warping => {
                 let p = l.progress();
-                draw_enemy(canvas, l.kind, sx, sy, art::SCALE * (0.15 + 0.85 * p));
+                draw_enemy(canvas, l.kind, sx, sy, art::SCALE * (0.15 + 0.85 * p), time);
             }
             // Hunting and carrying look the same as hovering — the
             // TRACTOR BEAM is what tells you which is which, and it is
             // drawn separately so it sits under the Lander.
             Phase::Hovering | Phase::Hunting | Phase::Grabbing | Phase::Carrying => {
-                draw_enemy(canvas, l.kind, sx, sy, art::SCALE);
+                draw_enemy(canvas, l.kind, sx, sy, art::SCALE, time);
             }
             // Dying: one bright frame of the shape blowing outward,
             // under the particles. Short enough that it reads as the
             // instant of destruction rather than as an animation.
             Phase::Dying => {
                 let p = l.progress();
-                draw_enemy(canvas, l.kind, sx, sy, art::SCALE * (1.0 + p * 0.9));
+                draw_enemy(canvas, l.kind, sx, sy, art::SCALE * (1.0 + p * 0.9), time);
             }
         }
     }
@@ -308,11 +311,30 @@ fn draw_people(canvas: &mut Canvas<'_>, people: &Humanoids, camera: &Camera) {
 /// importing the Lander into the playground and drawing a Humanoid into
 /// the pod, so the two occupy exactly the same space on screen — which
 /// is what makes the fusion read as a fusion rather than as a swap.
-fn draw_enemy(canvas: &mut Canvas<'_>, kind: Kind, sx: f32, sy: f32, scale: f32) {
+///
+/// `time` drives what animates: the Baiter's rim lights step at the
+/// original's 3-frame shimmer (20 Hz), the Bomber's body at its 6-frame
+/// palette cycle (10 Hz).
+fn draw_enemy(canvas: &mut Canvas<'_>, kind: Kind, sx: f32, sy: f32, scale: f32, time: f32) {
     let t = Transform::at(sx, sy).scaled(scale);
     match kind {
         Kind::Lander => art::draw_lander(canvas, &t),
         Kind::Mutant => art::draw_mutant(canvas, &t),
+        Kind::Baiter => art::draw_baiter(canvas, &t, (time * 20.0) as u32),
+        Kind::Bomber => art::draw_bomber(canvas, &t, (time * 10.0) as u32),
+    }
+}
+
+/// The mines, pulsing. Under the enemies, like the people: a mine is
+/// terrain you fly around, not a thing that comes for you.
+fn draw_mines(canvas: &mut Canvas<'_>, mines: &Mines, camera: &Camera) {
+    let h = canvas.height() as f32;
+    for m in mines.iter() {
+        let sx = camera.to_screen(m.x);
+        if !(-20.0..=canvas.width() as f32 + 20.0).contains(&sx) {
+            continue;
+        }
+        art::draw_mine(canvas, &Transform::at(sx, h - m.y).scaled(art::SCALE), m.pulse());
     }
 }
 
@@ -829,6 +851,7 @@ mod tests {
                 // phase sweep rather than only ever drawn cold.
                 exhaust: 1.0,
                 popups: &NO_POPUPS,
+                mines: &NO_MINES,
                 hud: quiet_hud(),
             };
             draw(&mut c, &scene, &theme);
@@ -891,11 +914,13 @@ mod tests {
             time: 0.0,
             exhaust: 0.0,
             popups: &NO_POPUPS,
+            mines: &NO_MINES,
             hud: quiet_hud(),
         }
     }
 
     static NO_POPUPS: Popups = Popups::new();
+    static NO_MINES: Mines = Mines::empty();
 
     /// Wave 1, mid-fight: the HUD as it looks for most of a game.
     fn quiet_hud() -> Hud {

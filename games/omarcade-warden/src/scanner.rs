@@ -75,6 +75,12 @@ const GLOW_PAD: f32 = 3.0;
 // fixed orange. Volley uses no fixed colours at all; the racer uses 29.
 const LANDER_COLOUR: Color = Color::rgb(255, 96, 40);
 const MUTANT_COLOUR: Color = Color::rgb(255, 40, 200);
+/// ★ W3. Baiters cyan, Bombers violet — chosen against the four colours
+/// already on this strip: NOT magenta for the Bomber (its art's colour)
+/// because magenta is the Mutant's blip, and a Bomber read as a Mutant
+/// changes what a player flies toward.
+const BAITER_COLOUR: Color = Color::rgb(0, 220, 230);
+const BOMBER_COLOUR: Color = Color::rgb(170, 90, 255);
 const PERSON_COLOUR: Color = Color::rgb(90, 255, 140);
 
 /// The scanner's coordinate frame: the whole world, squashed to fit.
@@ -299,6 +305,10 @@ fn draw_enemies(canvas: &mut Canvas<'_>, s: &Scanner, enemies: &Enemies, time: f
                 let strength = if l.phase == Phase::Warping { 0.45 } else { 0.9 };
                 blip(canvas, x, y, 2.0, scaled(c, strength));
             }
+            // ★ W3: Baiters in their teal, Bombers in their magenta. Steady,
+            // not pulsing — the pulse is reserved for the Mutant.
+            Kind::Baiter => blip(canvas, x, y, 2.4, scaled(BAITER_COLOUR, 0.95)),
+            Kind::Bomber => blip(canvas, x, y, 2.0, scaled(BOMBER_COLOUR, 0.9)),
             Kind::Mutant => {
                 // ★ THE PULSE. Runs on the clock, not the frame, and is
                 // offset by world position so a cluster of Mutants does

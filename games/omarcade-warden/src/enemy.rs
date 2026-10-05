@@ -30,6 +30,73 @@ pub const LANDER_POINTS: u32 = 100;
 /// What a Mutant is worth. Also from the arcade's chart.
 pub const MUTANT_POINTS: u32 = 150;
 
+/// What a Baiter and a Bomber are worth (`a7f355dd`, Brian's chart).
+pub const BAITER_POINTS: u32 = 200;
+pub const BOMBER_POINTS: u32 = 250;
+
+// ---------------------------------------------------------------------
+// W3: the Baiter
+// ---------------------------------------------------------------------
+
+/// How much faster than the SHIP a Baiter closes, world units per second.
+///
+/// ★ THE ORIGINAL'S RULE: X velocity = the player's own X velocity ± 2 px
+/// per frame toward the player (research-gameplay.md §1). At 3.16 units
+/// per original pixel and 60 Hz that is ~380 u/s on top of whatever the
+/// ship is doing — so it cannot be outrun, which is the point of it.
+pub const BAITER_MARGIN: f32 = 380.0;
+
+/// Inside this horizontal distance a Baiter stops closing and matches the
+/// ship's speed (the original's ±20 px).
+pub const BAITER_CLOSE: f32 = 63.0;
+
+/// How fast a Baiter changes altitude: half the ship's climb, as in the
+/// original.
+pub const BAITER_CLIMB: f32 = 240.0;
+
+/// A Baiter sits this far off your altitude, either way, re-chosen each
+/// re-aim — so it hangs near your line rather than on it.
+pub const BAITER_BIAS: f32 = 70.0;
+
+/// Seconds between re-aims, at most: it re-aims on a random roll rather
+/// than every frame (the original's `UFOSK`), which is what keeps it
+/// beatable at all.
+pub const BAITER_RETARGET: f32 = 0.6;
+
+/// How often a Baiter fires, seconds at pressure 1.0 — "fires often".
+/// Brian's spec: "shoot faster THAN YOU". Its shots are faster than a
+/// Lander's and slower than a Mutant's.
+pub const BAITER_FIRE_INTERVAL: f32 = 0.9;
+pub const BAITER_SHOT_SPEED: f32 = 640.0;
+
+// ---------------------------------------------------------------------
+// W3: the Bomber
+// ---------------------------------------------------------------------
+
+/// How far above or below the ship a Bomber holds itself while on screen
+/// (the original's 16–32 lines, at 3 units a line).
+pub const BOMBER_NEAR: f32 = 48.0;
+pub const BOMBER_FAR: f32 = 96.0;
+
+/// A Bomber's vertical push and drag — the original adds ±$10/256 line
+/// per frame and bleeds 1/32 of its speed a frame (TIE, defb6.src):
+/// 675 u/s² against a 1.9/s drag.
+pub const BOMBER_ACCEL: f32 = 675.0;
+pub const BOMBER_DRAG: f32 = 1.9;
+
+/// Mines laid per second by one Bomber while it is on screen.
+///
+/// ⚠️ OURS. The original rolls 1 in 8 each time it visits a squad member
+/// (TIE31) and only in the on-screen branch — that much is certain, and
+/// kept: a Bomber lays only where you can see it. The tick rate behind
+/// "1 in 8" cannot be pinned without tracing the scheduler, so the rate
+/// is set by feel: a few mines a second makes the FIELD Brian's spec
+/// names ("LEAVE MINE FIELDS behind… kill bombers before they lay").
+pub const BOMBER_MINE_RATE: f32 = 1.4;
+
+/// Horizontal distance within which a Bomber counts as on screen.
+pub const BOMBER_ON_SCREEN: f32 = world::VIEW_W * 0.55;
+
 /// How fast a Mutant chases, in world units per second.
 ///
 /// ★ FAST ENOUGH TO BE FRIGHTENING, SLOWER THAN THE SHIP AT FULL
@@ -88,6 +155,15 @@ pub const MUTANT_MIN_ANGLE: f32 = 0.30;
 /// hitbox IS the art rather than a number that drifts away from it.
 pub const LANDER_HALF_W: f32 = 6.0 * crate::art::SCALE;
 pub const LANDER_HALF_H: f32 = 7.5 * crate::art::SCALE;
+
+/// The Baiter's and Bomber's hitboxes, DERIVED from their art's bounds so
+/// the two cannot drift apart (docs/warden-plan.md recommendation 2).
+pub const BAITER_HALF: (f32, f32) = scaled(crate::art::half_extents(&crate::art::BAITER_LAYERS));
+pub const BOMBER_HALF: (f32, f32) = scaled(crate::art::half_extents(&crate::art::BOMBER_LAYERS));
+
+const fn scaled(e: (f32, f32)) -> (f32, f32) {
+    (e.0 * crate::art::SCALE, e.1 * crate::art::SCALE)
+}
 
 /// How high above a Humanoid a Lander sits while grabbing it.
 ///
@@ -187,6 +263,12 @@ pub enum Phase {
 pub enum Kind {
     Lander,
     Mutant,
+    /// ★ W3. The hurry-up: matches your speed so it cannot be outrun,
+    /// arrives on a timer that tightens the longer a wave drags on.
+    Baiter,
+    /// ★ W3. Drifts at a constant speed, holds near your altitude, never
+    /// fires — and lays mines where you can see it.
+    Bomber,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -203,6 +285,14 @@ pub struct Enemy {
     pub phase: Phase,
     /// Seconds spent in the current phase.
     pub elapsed: f32,
+    /// Vertical speed, world units per second. Baiters and Bombers only;
+    /// Landers and Mutants move by phase.
+    pub vy: f32,
+    /// Baiter: seconds to its next re-aim. Bomber: its cruise altitude
+    /// while off screen.
+    pub aux: f32,
+    /// Baiter: the altitude offset it is holding from the ship.
+    pub bias: f32,
     /// Index of the Humanoid being hunted or carried, if any.
     ///
     /// ⚠️ AN INDEX, AND THE HUMANOID LIST MUST THEREFORE NEVER SHRINK.
@@ -221,10 +311,26 @@ impl Enemy {
             x: world::wrap(x),
             y,
             vx,
+            vy: 0.0,
+            aux: 0.0,
+            bias: 0.0,
             phase: Phase::Warping,
             elapsed: 0.0,
             target: None,
         }
+    }
+
+    /// A Baiter, warping in. Announced through `spawn` like every arrival,
+    /// so Brian's Warp plays for it — his call: "the sound I just made we
+    /// will use for spawns of landers and baiters".
+    pub fn baiter(x: f32, y: f32) -> Self {
+        Self { kind: Kind::Baiter, fire_cooldown: BAITER_FIRE_INTERVAL, ..Self::lander(x, y, 0.0) }
+    }
+
+    /// A Bomber, warping in, drifting at `vx` and cruising at `cruise`
+    /// while off screen.
+    pub fn bomber(x: f32, y: f32, vx: f32, cruise: f32) -> Self {
+        Self { kind: Kind::Bomber, aux: cruise, ..Self::lander(x, y, vx) }
     }
 
     /// A Mutant, already formed, outside the arrival machinery.
@@ -241,6 +347,9 @@ impl Enemy {
             x: world::wrap(x),
             y,
             vx: 0.0,
+            vy: 0.0,
+            aux: 0.0,
+            bias: 0.0,
             phase: Phase::Hovering,
             elapsed: 0.0,
             target: None,
@@ -269,6 +378,17 @@ impl Enemy {
         match self.kind {
             Kind::Lander => LANDER_POINTS,
             Kind::Mutant => MUTANT_POINTS,
+            Kind::Baiter => BAITER_POINTS,
+            Kind::Bomber => BOMBER_POINTS,
+        }
+    }
+
+    /// Half-width and half-height of this one's hitbox, world units.
+    pub fn half_extents(&self) -> (f32, f32) {
+        match self.kind {
+            Kind::Lander | Kind::Mutant => (LANDER_HALF_W, LANDER_HALF_H),
+            Kind::Baiter => BAITER_HALF,
+            Kind::Bomber => BOMBER_HALF,
         }
     }
 
@@ -339,6 +459,7 @@ impl Enemy {
         terrain: &Terrain,
         prey: Option<(f32, f32)>,
         ship: Option<(f32, f32)>,
+        ship_vx: f32,
         noise: &mut u32,
         pressure: f32,
         dt: f32,
@@ -370,6 +491,8 @@ impl Enemy {
         match self.kind {
             Kind::Lander => self.step_lander(terrain, prey, ship, noise, pressure, dt),
             Kind::Mutant => self.step_mutant(ship, noise, pressure, dt),
+            Kind::Baiter => self.step_baiter(ship, ship_vx, noise, pressure, dt),
+            Kind::Bomber => self.step_bomber(terrain, ship, noise, dt),
         }
     }
 
@@ -596,12 +719,117 @@ impl Enemy {
         (angle.cos(), angle.sin())
     }
 
-    /// How fast this one's shots fly.
+    /// How fast this one's shots fly. A Bomber never fires; its entry is
+    /// only there so the match stays total.
     pub fn shot_speed(&self) -> f32 {
         match self.kind {
-            Kind::Lander => LANDER_SHOT_SPEED,
+            Kind::Lander | Kind::Bomber => LANDER_SHOT_SPEED,
             Kind::Mutant => crate::shot::ENEMY_SHOT_SPEED,
+            Kind::Baiter => BAITER_SHOT_SPEED,
         }
+    }
+
+    /// ★ THE BAITER: it cannot be outrun.
+    ///
+    /// Its X speed is the SHIP's plus [`BAITER_MARGIN`] toward the ship,
+    /// re-aimed on a random roll; its altitude closes on yours at half
+    /// your climb rate, offset by a re-chosen [`BAITER_BIAS`] so it hangs
+    /// near your line rather than sitting on it. And it fires often.
+    fn step_baiter(
+        &mut self,
+        ship: Option<(f32, f32)>,
+        ship_vx: f32,
+        noise: &mut u32,
+        pressure: f32,
+        dt: f32,
+    ) -> Outcome {
+        let Some((sx, sy)) = ship else {
+            // No ship to bait: keep drifting.
+            self.x = world::wrap(self.x + self.vx * dt);
+            return Outcome::None;
+        };
+        let dx = world::delta(self.x, sx);
+
+        self.aux -= dt;
+        if self.aux <= 0.0 {
+            self.aux = BAITER_RETARGET * (0.25 + 0.75 * next01(noise));
+            self.bias = (next01(noise) - 0.5) * 2.0 * BAITER_BIAS;
+            self.vx = if dx.abs() > BAITER_CLOSE {
+                ship_vx + BAITER_MARGIN * dx.signum()
+            } else {
+                ship_vx
+            };
+        }
+        // ⚠️ AN OVERSHOOT RE-AIMS AT ONCE. Without this a Baiter that
+        // passed the ship at 1000 u/s would carry on for up to a whole
+        // re-aim interval in the wrong direction, which reads as a bug,
+        // not as a feint.
+        if dx.abs() > BAITER_CLOSE && (self.vx - ship_vx) * dx < 0.0 {
+            self.aux = 0.0;
+        }
+        self.x = world::wrap(self.x + self.vx * dt);
+
+        let want = sy + self.bias;
+        let climb = BAITER_CLIMB * dt;
+        self.y += (want - self.y).clamp(-climb, climb);
+        self.y = self.y.clamp(40.0, world::VIEW_H * 0.95);
+
+        self.fire_cooldown -= dt;
+        if self.fire_cooldown <= 0.0 && dx.abs() < world::VIEW_W * 0.6 {
+            self.fire_cooldown = BAITER_FIRE_INTERVAL * (0.6 + 0.8 * next01(noise)) / pressure;
+            return Outcome::Fires;
+        }
+        Outcome::None
+    }
+
+    /// ★ THE BOMBER: constant drift, never fires, and on screen it holds
+    /// [`BOMBER_NEAR`]..[`BOMBER_FAR`] above or below you and lays mines.
+    /// Off screen it wanders a cruise altitude. (TIE, defb6.src.)
+    fn step_bomber(
+        &mut self,
+        terrain: &Terrain,
+        ship: Option<(f32, f32)>,
+        noise: &mut u32,
+        dt: f32,
+    ) -> Outcome {
+        self.x = world::wrap(self.x + self.vx * dt);
+
+        let on_screen = ship.filter(|(sx, _)| world::delta(self.x, *sx).abs() < BOMBER_ON_SCREEN);
+        let push = match on_screen {
+            Some((_, sy)) => {
+                // The original's bands: too far above → come down, too close
+                // above → go up; mirrored below. Inside the band, coast.
+                let rel = self.y - sy;
+                let r = rel.abs();
+                if r > BOMBER_FAR {
+                    -rel.signum()
+                } else if r < BOMBER_NEAR {
+                    if rel == 0.0 { 1.0 } else { rel.signum() }
+                } else {
+                    0.0
+                }
+            }
+            None => {
+                // Wander the cruise altitude a little, now and then.
+                if next01(noise) < 0.5 * dt {
+                    self.aux = (self.aux + (next01(noise) - 0.5) * 60.0)
+                        .clamp(world::VIEW_H * 0.45, world::VIEW_H * 0.8);
+                }
+                let gap = self.aux - self.y;
+                if gap.abs() > 16.0 { gap.signum() } else { 0.0 }
+            }
+        };
+        self.vy += push * BOMBER_ACCEL * dt;
+        self.vy -= self.vy * BOMBER_DRAG * dt;
+        self.y += self.vy * dt;
+        // Never into the mountains, never off the top.
+        let floor = terrain.height_at(self.x) + 40.0;
+        self.y = self.y.clamp(floor.min(world::VIEW_H * 0.9), world::VIEW_H * 0.92);
+
+        if on_screen.is_some() && next01(noise) < BOMBER_MINE_RATE * dt {
+            return Outcome::LaysMine;
+        }
+        Outcome::None
     }
 }
 
@@ -621,6 +849,8 @@ pub enum Outcome {
     ReachedTop,
     /// A Mutant wants to shoot at the ship.
     Fires,
+    /// A Bomber drops a mine where it is.
+    LaysMine,
 }
 
 /// Every enemy in the world, of every kind.
@@ -661,6 +891,11 @@ pub struct Enemies {
     noise: u32,
     /// The wave's [`crate::waves::pressure`], set by the owner each step.
     pressure: f32,
+    /// The ship's horizontal speed, set by the owner each step — the one
+    /// thing a Baiter needs that a position does not carry.
+    ship_vx: f32,
+    /// Mines Bombers have dropped since this was last read.
+    mines: Vec<(f32, f32)>,
 }
 
 impl Enemies {
@@ -672,7 +907,32 @@ impl Enemies {
             spawned: 0,
             fused: 0,
             pressure: 1.0,
+            ship_vx: 0.0,
+            mines: Vec::new(),
         }
+    }
+
+    /// The ship's horizontal speed, for the Baiters.
+    pub fn set_ship_vx(&mut self, vx: f32) {
+        self.ship_vx = vx;
+    }
+
+    /// Mines dropped since this was last asked, and forget them — the
+    /// owner lays them. (The same take-pattern as `take_spawned`.)
+    pub fn take_mines(&mut self) -> Vec<(f32, f32)> {
+        std::mem::take(&mut self.mines)
+    }
+
+    /// Live enemies of `kind`, not yet dying.
+    pub fn count(&self, kind: Kind) -> usize {
+        self.live.iter().filter(|e| e.kind == kind && e.phase != Phase::Dying).count()
+    }
+
+    /// ★ THE BAITERS LEAVE WHEN THE WAVE IS WON. Brian's spec: "Vanish
+    /// when all Landers die." They are the hurry-up, and with nothing left
+    /// to hurry there is no Baiter left to fight — removed, unscored.
+    pub fn dismiss_baiters(&mut self) {
+        self.live.retain(|e| e.kind != Kind::Baiter);
     }
 
     /// Seed the shared noise, so two games do not fight the same fight.
@@ -793,9 +1053,10 @@ impl Enemies {
     /// these half-extents — the ship flying into one.
     pub fn body_hit(&self, x: f32, y: f32, half_w: f32, half_h: f32) -> Option<usize> {
         self.live.iter().position(|e| {
+            let (hw, hh) = e.half_extents();
             e.is_target()
-                && world::delta(e.x, x).abs() <= LANDER_HALF_W + half_w
-                && (e.y - y).abs() <= LANDER_HALF_H + half_h
+                && world::delta(e.x, x).abs() <= hw + half_w
+                && (e.y - y).abs() <= hh + half_h
         })
     }
 
@@ -815,6 +1076,8 @@ impl Enemies {
         let mut shots_wanted = Vec::new();
         let mut noise = self.noise;
         let pressure = self.pressure;
+        let ship_vx = self.ship_vx;
+        let mut mines = Vec::new();
         // ⚠️ ACCUMULATED LOCALLY, not written straight to `self.fused`.
         // The loop below holds `&mut` borrows of `self.live`, so the
         // field cannot be touched from inside it.
@@ -839,8 +1102,10 @@ impl Enemies {
                 None => None,
             };
 
-            match l.step(terrain, prey, ship, &mut noise, pressure, dt) {
+            match l.step(terrain, prey, ship, ship_vx, &mut noise, pressure, dt) {
                 Outcome::None => {}
+
+                Outcome::LaysMine => mines.push((l.x, l.y)),
 
                 Outcome::Fires => {
                     // The owner builds the bolt — this type does not
@@ -916,6 +1181,7 @@ impl Enemies {
 
         self.noise = noise;
         self.fused += fused;
+        self.mines.extend(mines);
         self.live.retain(|l| l.is_alive());
         shots_wanted
     }
@@ -927,7 +1193,9 @@ impl Enemies {
     /// decline with nothing left to protect, it spikes.
     pub fn mutate_all(&mut self) {
         for l in &mut self.live {
-            if l.phase != Phase::Dying && !l.is_mutant() {
+            // ⚠️ LANDERS ONLY. A Baiter or a Bomber has no Humanoid to
+            // fuse with and no Mutant form.
+            if l.phase != Phase::Dying && l.kind == Kind::Lander {
                 l.mutate();
                 l.y = l.y.min(world::VIEW_H * 0.9);
             }
@@ -966,9 +1234,8 @@ impl Enemies {
     /// side — a bug that would survive any test written near the origin.
     pub fn hit_test(&self, x: f32, y: f32) -> Option<usize> {
         self.live.iter().position(|l| {
-            l.is_target()
-                && world::delta(l.x, x).abs() <= LANDER_HALF_W
-                && (l.y - y).abs() <= LANDER_HALF_H
+            let (hw, hh) = l.half_extents();
+            l.is_target() && world::delta(l.x, x).abs() <= hw && (l.y - y).abs() <= hh
         })
     }
 
@@ -1517,5 +1784,98 @@ mod tests {
         let l = ls.iter().next().unwrap();
         assert!(l.x >= 0.0 && l.x < world::WORLD_W, "drifted out of the world: {}", l.x);
         assert!(l.x > world::WORLD_W * 0.5, "should have wrapped west, at {}", l.x);
+    }
+
+    // ----- W3: the Baiter and the Bomber -----
+
+    fn flying(mut e: Enemy) -> Enemy {
+        e.phase = Phase::Hovering;
+        e
+    }
+
+    /// ★ A BAITER CANNOT BE OUTRUN: the ship flat out, the Baiter a screen
+    /// behind — it closes anyway.
+    #[test]
+    fn a_baiter_cannot_be_outrun() {
+        let t = Terrain::generate(256, 0x0DEF_E4DE);
+        let mut people = Humanoids::new();
+        let mut es = Enemies::new();
+        let mut sx = 1000.0f32;
+        es.spawn(flying(Enemy::baiter(sx - world::VIEW_W, 300.0)));
+        let top = 640.0;
+        let dt = 1.0 / 240.0;
+        for _ in 0..(240 * 4) {
+            sx = world::wrap(sx + top * dt);
+            es.set_ship_vx(top);
+            es.step(&t, &mut people, Some((sx, 300.0)), dt);
+        }
+        let gap = world::delta(es.get(0).unwrap().x, sx).abs();
+        assert!(gap < BAITER_CLOSE * 2.0, "the ship outran it: {gap:.0} apart after 4 s");
+    }
+
+    /// ★ A BOMBER HOLDS NEAR YOUR ALTITUDE, NOT ON IT — and never fires.
+    #[test]
+    fn a_bomber_holds_its_band_and_never_fires() {
+        let t = Terrain::generate(256, 0x0DEF_E4DE);
+        let mut people = Humanoids::new();
+        let mut es = Enemies::new();
+        let (sx, sy) = (1000.0, 300.0);
+        es.spawn(flying(Enemy::bomber(sx + 100.0, sy + 220.0, 0.0, 400.0)));
+        let dt = 1.0 / 240.0;
+        for _ in 0..(240 * 6) {
+            let wants = es.step(&t, &mut people, Some((sx, sy)), dt);
+            assert!(wants.is_empty(), "a Bomber fired");
+        }
+        let rel = (es.get(0).unwrap().y - sy).abs();
+        assert!(
+            (BOMBER_NEAR - 12.0..=BOMBER_FAR + 12.0).contains(&rel),
+            "it sat {rel:.0} from the ship's altitude"
+        );
+    }
+
+    /// ★ MINES ONLY WHERE YOU CAN SEE THEM: a Bomber two screens away lays
+    /// nothing; one on screen lays a field.
+    #[test]
+    fn a_bomber_lays_mines_only_on_screen() {
+        let t = Terrain::generate(256, 0x0DEF_E4DE);
+        let mut people = Humanoids::new();
+        let dt = 1.0 / 240.0;
+        let run = |dx: f32| {
+            let mut es = Enemies::new();
+            es.spawn(flying(Enemy::bomber(1000.0 + dx, 400.0, 0.0, 400.0)));
+            let mut people = Humanoids::new();
+            for _ in 0..(240 * 5) {
+                es.step(&t, &mut people, Some((1000.0, 300.0)), dt);
+            }
+            es.take_mines().len()
+        };
+        let _ = &mut people;
+        assert_eq!(run(world::VIEW_W * 2.0), 0, "a Bomber off screen laid mines");
+        assert!(run(100.0) >= 3, "a Bomber on screen laid no field");
+    }
+
+    /// The world ending turns Landers, and only Landers.
+    #[test]
+    fn the_world_ending_does_not_touch_baiters_or_bombers() {
+        let mut es = Enemies::new();
+        es.spawn(flying(Enemy::baiter(500.0, 300.0)));
+        es.spawn(flying(Enemy::bomber(900.0, 300.0, 100.0, 400.0)));
+        es.mutate_all();
+        assert_eq!(es.get(0).unwrap().kind, Kind::Baiter);
+        assert_eq!(es.get(1).unwrap().kind, Kind::Bomber);
+    }
+
+    /// ★ HITBOXES COME FROM THE ART (recommendation 2): a shot just inside
+    /// the Baiter's drawn hull hits, one just outside misses — and the
+    /// half-width is the hull's own 12.15 art units.
+    #[test]
+    fn the_baiter_and_bomber_are_hit_where_they_are_drawn() {
+        let s = crate::art::SCALE;
+        assert!((BAITER_HALF.0 - 12.15 * s).abs() < 1e-3, "Baiter half-width {}", BAITER_HALF.0);
+        assert!((BOMBER_HALF.0 - 7.0 * s).abs() < 1e-3, "Bomber half-width {}", BOMBER_HALF.0);
+        let mut es = Enemies::new();
+        es.spawn(flying(Enemy::baiter(1000.0, 300.0)));
+        assert_eq!(es.hit_test(1000.0 + 11.5 * s, 300.0), Some(0), "missed inside the hull");
+        assert_eq!(es.hit_test(1000.0 + 13.0 * s, 300.0), None, "hit outside the hull");
     }
 }

@@ -36,6 +36,7 @@ mod enemy;
 mod flight;
 mod humanoid;
 mod lives;
+mod mine;
 mod popup;
 mod render;
 mod scanner;
@@ -54,9 +55,10 @@ use enemy::Enemies;
 use flight::{Camera, Facing, Input, Ship};
 use humanoid::Humanoids;
 use lives::Lives;
+use mine::Mines;
 use popup::Popups;
 use shot::Shots;
-use waves::{Director, Event};
+use waves::{Census, Director, Event};
 use world::Terrain;
 
 /// Names the score file, and the cabinet discovers games by it — so it
@@ -188,6 +190,8 @@ struct Warden {
 
     /// ★ W1. Who arrives when, and when a wave is over. See `waves`.
     director: Director,
+    /// ★ W3. What the Bombers leave behind.
+    mines: Mines,
     popups: Popups,
     /// Held but not yet usable — W2 gives them a key. Shown in the HUD
     /// now because the 10,000-point award already grants them.
@@ -338,6 +342,7 @@ impl Warden {
             world_ended: false,
             score: 0,
             director: Director::new(),
+            mines: Mines::new(),
             popups: Popups::new(),
             smart_bombs: STARTING_SMART_BOMBS,
             next_award: AWARD_EVERY,
@@ -412,6 +417,7 @@ impl Warden {
         self.score = 0;
         self.world_ended = false;
         self.director = Director::new();
+        self.mines.clear();
         self.popups.clear();
         self.smart_bombs = STARTING_SMART_BOMBS;
         self.next_award = AWARD_EVERY;
@@ -575,16 +581,54 @@ impl Warden {
         }
     }
 
-    /// Hostiles still to deal with this wave: in the world now, not yet
-    /// dying.
-    fn hostiles(&self) -> usize {
-        self.enemies.remaining()
+    /// What is alive, as the director counts it. Baiters are counted
+    /// apart: they hurry a wave along and leave when it is won, so they
+    /// never hold one open.
+    fn census(&self) -> Census {
+        let baiters = self.enemies.count(enemy::Kind::Baiter);
+        Census {
+            landers: self.enemies.count(enemy::Kind::Lander),
+            hostiles: self.enemies.remaining() - baiters,
+            baiters,
+        }
+    }
+
+    /// ★ W3: this wave's Bombers, placed around the ship in squads of up
+    /// to three. Each squad drifts the opposite way to the last (the
+    /// original's `COM TFLG`), and none starts on screen.
+    fn spawn_bombers(&mut self, count: usize) {
+        let speed = waves::bomber_speed(self.director.wave());
+        let mut placed = 0;
+        let mut squad = 0u32;
+        while placed < count {
+            let n = waves::BOMBER_SQUAD.min(count - placed);
+            let dir = if squad % 2 == 0 { 1.0 } else { -1.0 };
+            let side = if self.roll() < 0.5 { 1.0 } else { -1.0 };
+            let base = self.ship.x + side * world::VIEW_W * (1.1 + 0.5 * squad as f32);
+            let cruise = world::VIEW_H * (0.5 + 0.25 * self.roll());
+            for i in 0..n {
+                let x = base + i as f32 * 70.0;
+                let y = cruise + (i as f32 - 1.0) * 24.0;
+                self.enemies.spawn(enemy::Enemy::bomber(x, y, speed * dir, cruise));
+            }
+            placed += n;
+            squad += 1;
+        }
+    }
+
+    /// ★ W3: a Baiter, warping in just off one edge of the screen — near
+    /// enough to arrive in seconds, never in your lap.
+    fn spawn_baiter(&mut self) {
+        let side = if self.roll() < 0.5 { 1.0 } else { -1.0 };
+        let x = self.ship.x + side * world::VIEW_W * 0.65;
+        let y = (self.ship.y + (self.roll() - 0.5) * 200.0).clamp(80.0, world::VIEW_H * 0.9);
+        self.enemies.spawn(enemy::Enemy::baiter(x, y));
     }
 
     /// Run the wave director for one step and apply what it asks for.
     fn direct(&mut self, dt: f32) {
         self.enemies.set_pressure(self.director.pressure());
-        let event = self.director.step(dt, self.hostiles(), self.people.alive());
+        let event = self.director.step(dt, self.census(), self.people.alive());
         match event {
             None => {}
             Some(Event::Squad(n)) => {
@@ -593,10 +637,16 @@ impl Warden {
                 // ★ After the world has ended they come through as Mutants.
                 self.enemies.squad(n, self.ship.x, &self.terrain, seed, self.world_ended);
             }
+            Some(Event::Bombers(n)) => self.spawn_bombers(n),
+            Some(Event::Baiter) => self.spawn_baiter(),
             Some(Event::Cleared) => {
                 // The wave is held. Nothing in flight may still kill the
-                // player while the survivors are being counted.
+                // player while the survivors are being counted — and the
+                // Baiters, with nothing left to hurry, leave (Brian's
+                // spec: "Vanish when all Landers die").
                 self.shots.clear();
+                self.mines.clear();
+                self.enemies.dismiss_baiters();
             }
             Some(Event::BonusTick) => {
                 let per = waves::bonus_per_humanoid(self.director.wave());
@@ -694,7 +744,13 @@ impl Warden {
 
         // Enemies that want to shoot say so; the bolts are built here,
         // because `Enemies` does not know what a Shot is.
+        self.enemies.set_ship_vx(self.ship.vx);
         let wants = self.enemies.step(&self.terrain, &mut self.people, ship_pos, dt);
+        // ★ W3: and Bombers say where they dropped a mine.
+        for (x, y) in self.enemies.take_mines() {
+            self.mines.lay(x, y);
+        }
+        self.mines.step(dt);
         if let Some((sx, sy)) = ship_pos {
             for (index, mx, my) in wants {
                 let mut noise = self.enemies.next_noise();
@@ -758,12 +814,17 @@ impl Warden {
         } else {
             self.enemies.body_hit(self.ship.x, self.ship.y, SHIP_HALF_W, SHIP_HALF_H)
         };
+        // ★ W3: A MINE CANNOT BE SHOT, ONLY AVOIDED. Flying into one costs
+        // a life, and the mine goes with it.
+        let mine = !shot
+            && body.is_none()
+            && self.mines.hit(self.ship.x, self.ship.y, SHIP_HALF_W, SHIP_HALF_H);
         if let Some(i) = body {
             if self.lives.is_vulnerable() {
                 self.destroy_enemy(i);
             }
         }
-        if (shot || body.is_some()) && self.lives.hit() {
+        if (shot || mine || body.is_some()) && self.lives.hit() {
             self.ship_lost();
         }
     }
@@ -839,11 +900,21 @@ impl Warden {
         // reaching back into a list this line just mutated, and
         // the next person to touch it would have to prove that
         // still works. Read it first; it is one bool.
-        let was_mutant = self.enemies.get(target).map(|l| l.is_mutant()).unwrap_or(false);
+        let kind = match self.enemies.get(target) {
+            Some(l) => l.kind,
+            None => return,
+        };
         let points = self.enemies.kill(target);
         self.add_score(points, None);
-        self.effects.explode_lander(lx, ly, lvx);
-        if was_mutant {
+        // Each dies in its own colours. ⚠️ The Baiter's and Bomber's own
+        // hit voices are W5's (the original gives every type its own);
+        // until then they borrow the Lander's.
+        match kind {
+            enemy::Kind::Lander | enemy::Kind::Mutant => self.effects.explode_lander(lx, ly, lvx),
+            enemy::Kind::Baiter => self.effects.explode_baiter(lx, ly, lvx),
+            enemy::Kind::Bomber => self.effects.explode_bomber(lx, ly, lvx),
+        }
+        if kind == enemy::Kind::Mutant {
             self.mutant_killed_this_frame = true;
         } else {
             self.lander_killed_this_frame = true;
@@ -1152,6 +1223,7 @@ impl Game for Warden {
             time: self.elapsed,
             exhaust: self.exhaust,
             popups: &self.popups,
+            mines: &self.mines,
             hud: render::Hud {
                 wave: self.director.wave(),
                 phase: self.director.phase(),
@@ -1700,6 +1772,102 @@ mod tests {
         }
         let rate = deaths as f32 / trials as f32;
         assert!((rate - HYPERSPACE_DEATH).abs() < 0.03, "died on {rate:.3} of jumps");
+    }
+
+    /// ★ W3 THROUGH THE REAL LOOP: wave 2 opens with its Bombers.
+    #[test]
+    fn wave_two_brings_its_bombers() {
+        let mut g = game();
+        immortal(&mut g);
+        // Wave 1 has none — checked every frame of it, not just at the end.
+        play_until(&mut g, 200.0, |g| {
+            if g.director.wave() == 1 {
+                assert_eq!(g.enemies.count(enemy::Kind::Bomber), 0, "a Bomber in wave 1");
+            }
+            g.director.wave() == 2
+        });
+        let mut audio = AudioSystem::new();
+        for _ in 0..30 {
+            let mut a = audio.handle();
+            g.update(1.0 / 60.0, &mut a);
+        }
+        assert_eq!(g.enemies.count(enemy::Kind::Bomber), waves::BOMBERS[1]);
+    }
+
+    /// ★ A MINE CANNOT BE SHOT, ONLY AVOIDED: flying into one costs a life.
+    #[test]
+    fn flying_into_a_mine_costs_a_life() {
+        let mut g = game();
+        g.enemies.clear();
+        g.lives.state = lives::State::Alive;
+        let lives = g.lives.remaining;
+        g.mines.lay(g.ship.x + 10.0, g.ship.y);
+        g.step(Input::default(), FIXED_DT);
+        assert_eq!(g.lives.remaining, lives - 1, "the mine did nothing");
+        assert_eq!(g.mines.len(), 0, "the mine that went off is still there");
+    }
+
+    /// And your laser passes straight through one.
+    #[test]
+    fn a_mine_cannot_be_shot() {
+        let mut g = game();
+        g.enemies.clear();
+        g.people.clear();
+        g.mines.lay(g.ship.x + 200.0, g.ship.y);
+        g.shots.fire(g.ship.x + 200.0, g.ship.y, 1.0);
+        g.resolve_hits();
+        assert_eq!(g.mines.len(), 1);
+        assert_eq!(g.score, 0);
+    }
+
+    /// ★ THE BAITERS LEAVE WHEN THE WAVE IS WON — Brian's "Vanish when all
+    /// Landers die" — so one left alive cannot hold the wave open.
+    #[test]
+    fn a_won_wave_sends_its_baiters_away() {
+        let mut g = game();
+        immortal(&mut g);
+        let mut b = enemy::Enemy::baiter(g.ship.x + 300.0, g.ship.y);
+        b.phase = enemy::Phase::Hovering;
+        g.enemies.spawn(b);
+        let mut audio = AudioSystem::new();
+        let mut t = 0.0;
+        while g.director.wave() == 1 && t < 200.0 {
+            {
+                let mut a = audio.handle();
+                g.update(1.0 / 60.0, &mut a);
+            }
+            // ⚠️ KEEP THE SHIP OUT OF REACH: a Baiter that rams the ship
+            // dies in the collision, which makes it "gone" for the wrong
+            // reason — it did, and hid a missing dismissal from this
+            // test. Holding the ship mid-hyperspace takes it out of play
+            // entirely (holding the respawn blink did not: the blink
+            // expires partway through a frame).
+            g.hyperspace = Some(0.0);
+            // Kill everything EXCEPT Baiters.
+            for i in 0..g.enemies.len() {
+                if g.enemies.get(i).is_some_and(|e| e.is_target() && e.kind != enemy::Kind::Baiter) {
+                    g.destroy_enemy(i);
+                }
+            }
+            t += 1.0 / 60.0;
+        }
+        assert_eq!(g.director.wave(), 2, "a Baiter held the wave open");
+        assert_eq!(g.enemies.count(enemy::Kind::Baiter), 0, "the Baiter stayed");
+    }
+
+    /// The smart bomb takes Baiters and Bombers too, at their own points.
+    #[test]
+    fn the_smart_bomb_scores_baiters_and_bombers() {
+        let mut g = game();
+        g.lives.state = lives::State::Alive;
+        let mut b = enemy::Enemy::baiter(g.ship.x + 200.0, g.ship.y);
+        b.phase = enemy::Phase::Hovering;
+        let mut m = enemy::Enemy::bomber(g.ship.x + 400.0, g.ship.y, 0.0, 400.0);
+        m.phase = enemy::Phase::Hovering;
+        g.enemies.spawn(b);
+        g.enemies.spawn(m);
+        g.on_input(InputEvent::KeyDown(Key::B));
+        assert_eq!(g.score, enemy::BAITER_POINTS + enemy::BOMBER_POINTS);
     }
 
     #[test]

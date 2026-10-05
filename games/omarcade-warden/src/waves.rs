@@ -332,19 +332,15 @@ mod tests {
     fn a_wave_delivers_exactly_its_landers_then_clears_and_counts() {
         let mut d = Director::new();
         let mut arrived = 0;
-        let mut alive = 0usize;
         let mut events = Vec::new();
         for _ in 0..(240 * 120) {
-            match d.step(DT, alive, 7) {
-                Some(Event::Squad(n)) => {
-                    arrived += n;
-                    alive += n;
-                }
+            // The player kills everything the moment it arrives, so the
+            // director always sees an empty world.
+            match d.step(DT, 0, 7) {
+                Some(Event::Squad(n)) => arrived += n,
                 Some(e) => events.push(e),
                 None => {}
             }
-            // The player kills everything the moment it arrives.
-            alive = 0;
             if events.contains(&Event::NextWave) {
                 break;
             }

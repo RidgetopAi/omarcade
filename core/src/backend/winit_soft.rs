@@ -577,6 +577,8 @@ fn translate_key(code: KeyCode) -> Option<Key> {
         KeyCode::Escape => Key::Escape,
         KeyCode::KeyP => Key::P,
         KeyCode::KeyT => Key::T,
+        KeyCode::KeyB => Key::B,
+        KeyCode::KeyH => Key::H,
         KeyCode::KeyM => Key::M,
         KeyCode::Minus | KeyCode::NumpadSubtract => Key::Minus,
         KeyCode::Equal | KeyCode::NumpadAdd => Key::Equals,
@@ -627,6 +629,22 @@ mod tests {
         ] {
             assert_eq!(translate_key(code), Some(arrow));
             assert_ne!(translate_key(code), Some(Key::T));
+        }
+    }
+
+    /// ★ B AND H ARE THEIR OWN KEYS, like T: each maps to itself and
+    /// nothing else maps to it, so Warden's smart bomb and hyperspace can
+    /// never fire from a steering or system key.
+    #[test]
+    fn b_and_h_are_their_own_keys() {
+        assert_eq!(translate_key(KeyCode::KeyB), Some(Key::B));
+        assert_eq!(translate_key(KeyCode::KeyH), Some(Key::H));
+        for code in [
+            KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD, KeyCode::KeyT,
+            KeyCode::KeyP, KeyCode::KeyM, KeyCode::Space, KeyCode::Enter,
+        ] {
+            assert_ne!(translate_key(code), Some(Key::B), "{code:?}");
+            assert_ne!(translate_key(code), Some(Key::H), "{code:?}");
         }
     }
 

@@ -224,6 +224,11 @@ impl Shots {
         self.cooldown = 0.0;
     }
 
+    /// Remove every enemy bolt, leaving the player's own in flight.
+    pub fn clear_enemy(&mut self) {
+        self.live.retain(|s| !s.is_enemy());
+    }
+
     /// True when the gun is ready to fire again.
     pub fn ready(&self) -> bool {
         self.cooldown <= 0.0 && self.live.len() < MAX_SHOTS

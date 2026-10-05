@@ -481,6 +481,11 @@ pub enum Key {
     /// ⚠️ NOT ALIASED TO ANYTHING. W/A/S/D already alias the arrows, so
     /// a letter added here must not collide with them.
     T,
+    /// ★ WARDEN'S SMART BOMB (W2). Brian chose it: "B and H are fine".
+    /// Delivered like any other key; the backend does nothing with it.
+    B,
+    /// ★ WARDEN'S HYPERSPACE (W2), chosen with [`Key::B`].
+    H,
     /// Mute. Handled by the backend, never delivered to a game — see
     /// [`Game::update`] and the volume note in [`crate::audio`].
     M,

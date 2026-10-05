@@ -138,6 +138,20 @@ impl Lives {
     }
 
     /// Start over.
+    /// Lose the ship whatever state it is in, so long as it is flying —
+    /// even blinking back in after a respawn.
+    ///
+    /// ★ FOR HYPERSPACE. Its death roll is the gamble the player chose,
+    /// and the respawn blink protects against things that hunt you, not
+    /// against the jump you just took.
+    pub fn destroy(&mut self) -> bool {
+        if !self.is_flying() {
+            return false;
+        }
+        self.state = State::Alive;
+        self.hit()
+    }
+
     /// One more ship — the 10,000-point award. Never wakes a game that
     /// is already over: an award landing on the frame of the last death
     /// must not resurrect it.

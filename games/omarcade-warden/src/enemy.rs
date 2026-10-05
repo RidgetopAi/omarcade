@@ -690,7 +690,6 @@ impl Enemies {
         self.live.iter()
     }
 
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.live.len()
     }

@@ -53,6 +53,10 @@ pub struct Hud {
     pub smart_bombs: u32,
     /// The best score on record, or this game's if it is higher.
     pub best: u32,
+    /// ★ W2. How far through a hyperspace jump, 0..1, while jumping.
+    pub hyperspace: Option<f32>,
+    /// Whether this frame is one of the smart bomb's white flashes.
+    pub flash: bool,
 }
 
 /// Draw a frame.
@@ -73,8 +77,21 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     // ⚠️ A DEAD OR BLINKING SHIP IS NOT ALWAYS DRAWN. `is_visible`
     // answers both questions, so this does not need to know which state
     // the ship is in.
-    if scene.lives.is_visible() {
-        draw_ship(canvas, scene.ship, scene.camera, theme, scene.exhaust);
+    // ⚠️ AND A SHIP IN HYPERSPACE IS NOWHERE until it has come back
+    // together: drawing it whole at the far end would make the arrival
+    // look already safe, which the death roll says it is not.
+    match scene.hud.hyperspace {
+        Some(t) => draw_materialise(canvas, scene.ship, scene.camera, t),
+        None if scene.lives.is_visible() => {
+            draw_ship(canvas, scene.ship, scene.camera, theme, scene.exhaust)
+        }
+        None => {}
+    }
+    // ★ THE SMART BOMB'S FLASH, over the world and under the HUD: the
+    // whole sky goes white, the readouts stay legible.
+    if scene.hud.flash {
+        let (w, h) = (canvas.width() as f32, canvas.height() as f32);
+        canvas.fill_rect_add_f(0.0, 0.0, w, h, Color::rgb(200, 200, 200));
     }
     draw_hud(canvas, scene.ship, theme);
     draw_score(canvas, scene.score, theme);
@@ -101,6 +118,32 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     }
     if scene.lives.is_game_over() {
         draw_game_over(canvas, scene.score, scene.hud.best, theme);
+    }
+}
+
+/// ★ A SHIP COMING BACK TOGETHER after hyperspace, `t` 0..1.
+///
+/// Sparks converge on the arrival point from a wide ring, the original's
+/// "appear" in spirit: the pieces arrive before the ship does. The ship
+/// itself shows only in the last fifth, flickering in.
+///
+/// ⚠️ FIXED COLOURS. Where the ship is about to be is game information,
+/// held still under every theme (L065).
+fn draw_materialise(canvas: &mut Canvas<'_>, ship: &Ship, camera: &Camera, t: f32) {
+    let sx = camera.to_screen(ship.x);
+    let sy = canvas.height() as f32 - ship.y;
+    let radius = 150.0 * (1.0 - t);
+    let spin = t * 2.4;
+    let spark = Color::rgb(140, 220, 255).lerp(Color::rgb(0, 0, 0), 0.3 * (1.0 - t));
+    for i in 0..16 {
+        let a = i as f32 / 16.0 * std::f32::consts::TAU + spin;
+        // Elliptical, like the ship: wider than it is tall.
+        let (x, y) = (sx + a.cos() * radius * 1.6, sy + a.sin() * radius * 0.7);
+        canvas.circle_add_f(x, y, 2.5, spark);
+    }
+    if t > 0.8 && (t * 30.0) as u32 % 2 == 0 {
+        let flip = ship.facing.sign() < 0.0;
+        art::draw_ship(canvas, &Transform::at(sx, sy).scaled(art::SCALE).flipped(flip), 0.0);
     }
 }
 
@@ -800,7 +843,7 @@ mod tests {
 
     /// Wave 1, mid-fight: the HUD as it looks for most of a game.
     fn quiet_hud() -> Hud {
-        Hud { wave: 1, phase: WavePhase::Fighting, smart_bombs: 3, best: 0 }
+        Hud { wave: 1, phase: WavePhase::Fighting, smart_bombs: 3, best: 0, hyperspace: None, flash: false }
     }
 
     /// ⚠️ THE SEAM, IN THE RENDERER. With the camera at x = 0 the left

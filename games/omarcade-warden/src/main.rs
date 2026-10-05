@@ -139,6 +139,24 @@ const SET_DOWN_POINTS: u32 = 500;
 /// A Humanoid that survives its own short fall.
 const SAFE_LANDING_POINTS: u32 = 250;
 
+/// How long hyperspace takes to put the ship back together: the
+/// original's 40 frames.
+const HYPERSPACE_SECONDS: f32 = 40.0 / 60.0;
+
+/// The chance of exploding on arrival from hyperspace.
+///
+/// ★ THE ORIGINAL'S OWN ODDS: a random byte over 192 kills you, 64 in
+/// 256. Brian, asked whether to keep it: "keep the hyperspace death
+/// chance". It is what makes hyperspace a gamble rather than a free
+/// escape.
+const HYPERSPACE_DEATH: f32 = 64.0 / 256.0;
+
+/// How long the smart bomb's flashes run: 4 white flashes, each 2 frames
+/// on and 2 off (the original inverts the background 8 times at 2-frame
+/// intervals).
+const BOMB_FLASH_SECONDS: f32 = 16.0 / 60.0;
+const BOMB_FLASH_PERIOD: f32 = 4.0 / 60.0;
+
 struct Warden {
     theme: Theme,
     terrain: Terrain,
@@ -164,6 +182,13 @@ struct Warden {
     smart_bombs: u32,
     /// The score at which the next ship and bomb are awarded.
     next_award: u32,
+    /// ★ W2. Seconds into a hyperspace jump, while the ship is between
+    /// places. `None` when it is not jumping.
+    hyperspace: Option<f32>,
+    /// Seconds since the last smart bomb went off, while it is flashing.
+    bomb_flash: Option<f32>,
+    /// Noise for hyperspace: where it lands and whether it survives.
+    rng: u32,
     /// This game's seed; every random placement in it derives from this.
     seed: u32,
     /// Squads called so far this game, so each lands somewhere new.
@@ -286,6 +311,9 @@ impl Warden {
             popups: Popups::new(),
             smart_bombs: STARTING_SMART_BOMBS,
             next_award: AWARD_EVERY,
+            hyperspace: None,
+            bomb_flash: None,
+            rng: 1,
             seed,
             squads: 0,
             scores,
@@ -353,6 +381,9 @@ impl Warden {
         self.popups.clear();
         self.smart_bombs = STARTING_SMART_BOMBS;
         self.next_award = AWARD_EVERY;
+        self.hyperspace = None;
+        self.bomb_flash = None;
+        self.rng = mix(seed, 0x4859_5045);
         self.recorded = false;
         self.accumulator = 0.0;
         self.elapsed = 0.0;
@@ -374,6 +405,99 @@ impl Warden {
             self.next_award += AWARD_EVERY;
             self.lives.award();
             self.smart_bombs += 1;
+        }
+    }
+
+    /// Is the ship in play — flying, and not between places in
+    /// hyperspace? Everything that moves, fires, catches or is hit asks
+    /// this rather than `lives.is_flying()`, so a jump cannot be shot,
+    /// steered or chased.
+    fn flying(&self) -> bool {
+        self.lives.is_flying() && self.hyperspace.is_none()
+    }
+
+    /// A 0..1 from this game's noise.
+    fn roll(&mut self) -> f32 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        (self.rng & 0x00FF_FFFF) as f32 / 0x0100_0000 as f32
+    }
+
+    /// ★ THE SMART BOMB (B). Everything hostile on screen dies, at full
+    /// points. People are untouched — the bomb is for aliens, and a
+    /// carrier that dies drops its passenger exactly as a laser kill does.
+    ///
+    /// ⚠️ ON SCREEN MEANS DRAWN: inside the view horizontally AND
+    /// vertically. A Lander carrying someone off the top is above the
+    /// screen and survives the bomb, as it did in the original.
+    fn smart_bomb(&mut self) {
+        if !self.flying() || self.smart_bombs == 0 {
+            return;
+        }
+        self.smart_bombs -= 1;
+        self.bomb_flash = Some(0.0);
+        for i in 0..self.enemies.len() {
+            let on_screen = self.enemies.get(i).is_some_and(|e| {
+                let sx = self.camera.to_screen(e.x);
+                e.is_target()
+                    && (0.0..=world::VIEW_W).contains(&sx)
+                    && (0.0..=world::VIEW_H).contains(&e.y)
+            });
+            if on_screen {
+                self.destroy_enemy(i);
+            }
+        }
+    }
+
+    /// ★ HYPERSPACE (H). Out of here, to anywhere: a random place in the
+    /// world, stopped dead, with every enemy bolt gone. The ship takes
+    /// [`HYPERSPACE_SECONDS`] to come back together, and may not survive
+    /// it ([`HYPERSPACE_DEATH`]).
+    fn hyperspace(&mut self) {
+        if !self.flying() {
+            return;
+        }
+        let x = self.roll() * world::WORLD_W;
+        let y = world::VIEW_H * (0.25 + 0.55 * self.roll());
+        self.ship.x = world::wrap(x);
+        self.ship.y = y.max(self.terrain.height_at(x) + 60.0);
+        self.ship.vx = 0.0;
+        // The original also lands you facing a random way.
+        self.ship.facing = if self.roll() < 0.5 { Facing::East } else { Facing::West };
+        self.camera.snap_to(&self.ship);
+        self.shots.clear_enemy();
+        self.hyperspace = Some(0.0);
+    }
+
+    /// Advance a jump in progress, and settle the death roll on arrival.
+    fn step_hyperspace(&mut self, dt: f32) {
+        let Some(t) = self.hyperspace else { return };
+        let t = t + dt;
+        if t < HYPERSPACE_SECONDS {
+            self.hyperspace = Some(t);
+            return;
+        }
+        self.hyperspace = None;
+        if self.roll() < HYPERSPACE_DEATH && self.lives.destroy() {
+            self.ship_lost();
+        }
+    }
+
+    /// The ship has just been destroyed: the explosion, the sound, and
+    /// the passenger who goes with it.
+    fn ship_lost(&mut self) {
+        self.effects.explode_ship(self.ship.x, self.ship.y, self.ship.vx);
+        self.died_this_frame = true;
+        // ⚠️ THE PASSENGER GOES WITH YOU. A rescued Humanoid riding
+        // under a ship that explodes cannot simply carry on hovering
+        // in mid-air, and silently deleting it would be worse.
+        for i in 0..self.people.len() {
+            if let Some(h) = self.people.get_mut(i) {
+                if h.state == humanoid::State::Rescued {
+                    h.kill();
+                }
+            }
         }
     }
 
@@ -458,13 +582,17 @@ impl Warden {
     fn step(&mut self, input: Input, dt: f32) {
         self.elapsed += dt;
         self.lives.step(dt);
+        self.step_hyperspace(dt);
+        if let Some(t) = self.bomb_flash {
+            self.bomb_flash = (t + dt < BOMB_FLASH_SECONDS).then_some(t + dt);
+        }
 
         // ⚠️ A DEAD SHIP DOES NOT FLY, AND MUTANTS MUST NOT TRACK IT.
         // Handing them a position while the player cannot move means
         // they converge on the respawn point and kill the next life
         // instantly — the exact death loop the invulnerability exists to
         // prevent, reintroduced by an oversight.
-        let ship_pos = if self.lives.is_flying() {
+        let ship_pos = if self.flying() {
             self.ship.step(input, &self.terrain, dt);
             self.camera.follow(&self.ship, dt);
 
@@ -490,12 +618,12 @@ impl Warden {
         // on the key edge reads as a light switch; the engine should
         // catch and die away. The plume itself is instant — the cloud is
         // made of particles that already outlive the keypress.
-        let want = if input.thrust && self.lives.is_flying() { 1.0 } else { 0.0 };
+        let want = if input.thrust && self.flying() { 1.0 } else { 0.0 };
         let rate = if want > self.exhaust { EXHAUST_ATTACK } else { EXHAUST_RELEASE };
         self.exhaust += (want - self.exhaust).clamp(-rate * dt, rate * dt);
         self.exhaust = self.exhaust.clamp(0.0, 1.0);
 
-        if self.fire_held && self.lives.is_flying() && self.shots.ready() {
+        if self.fire_held && self.flying() && self.shots.ready() {
             let (mx, my) = self.muzzle();
             if self.shots.fire(mx, my, self.ship.facing.sign()) {
                 self.fired_this_frame = true;
@@ -556,7 +684,8 @@ impl Warden {
 
     /// An enemy bolt finding the ship.
     fn resolve_ship_hit(&mut self) {
-        if !self.lives.is_vulnerable() {
+        // ⚠️ NOT WHILE JUMPING. A ship between places is nowhere.
+        if !self.lives.is_vulnerable() || self.hyperspace.is_some() {
             return;
         }
         let shot = self.shots.enemy_hit(self.ship.x, self.ship.y, SHIP_HALF_W, SHIP_HALF_H).is_some();
@@ -575,18 +704,7 @@ impl Warden {
             }
         }
         if (shot || body.is_some()) && self.lives.hit() {
-            self.effects.explode_ship(self.ship.x, self.ship.y, self.ship.vx);
-            self.died_this_frame = true;
-            // ⚠️ THE PASSENGER GOES WITH YOU. A rescued Humanoid riding
-            // under a ship that explodes cannot simply carry on hovering
-            // in mid-air, and silently deleting it would be worse.
-            for i in 0..self.people.len() {
-                if let Some(h) = self.people.get_mut(i) {
-                    if h.state == humanoid::State::Rescued {
-                        h.kill();
-                    }
-                }
-            }
+            self.ship_lost();
         }
     }
 
@@ -612,7 +730,7 @@ impl Warden {
     /// only return someone by going low.
     fn resolve_catches(&mut self) {
         // ⚠️ A DEAD SHIP CATCHES NO ONE. It is not there to catch with.
-        if !self.lives.is_flying() {
+        if !self.flying() {
             return;
         }
         if let Some(i) = self.people.catch_test(self.ship.x, self.ship.y) {
@@ -756,7 +874,7 @@ impl Warden {
     /// ★ A PAUSED SHIP GOES QUIET like a dead one, reusing this switch
     /// rather than adding a parallel one.
     fn thrust_should_run(&self) -> bool {
-        !self.pause.is_paused() && self.lives.is_flying()
+        !self.pause.is_paused() && self.flying()
     }
 
     /// Feed the engine this frame's `exhaust`.
@@ -824,6 +942,12 @@ impl Game for Warden {
                 let seed = mix(self.seed, 0x9E37_79B9);
                 self.new_game(seed);
             }
+
+            // ★ W2, BRIAN'S KEYS: "B and H are fine". Both are presses,
+            // not holds — one bomb, one jump, per KeyDown. Autorepeat is
+            // dropped by the backend, so holding B cannot empty the stock.
+            InputEvent::KeyDown(Key::B) => self.smart_bomb(),
+            InputEvent::KeyDown(Key::H) => self.hyperspace(),
 
             InputEvent::KeyDown(Key::Up) => self.up_held = true,
             InputEvent::KeyUp(Key::Up) => self.up_held = false,
@@ -958,6 +1082,10 @@ impl Game for Warden {
                 phase: self.director.phase(),
                 smart_bombs: self.smart_bombs,
                 best: self.best.max(self.score),
+                hyperspace: self.hyperspace.map(|t| t / HYPERSPACE_SECONDS),
+                flash: self
+                    .bomb_flash
+                    .is_some_and(|t| (t / (BOMB_FLASH_PERIOD * 0.5)) as u32 % 2 == 0),
             },
         };
         render::draw(canvas, &scene, &self.theme);
@@ -1314,6 +1442,144 @@ mod tests {
         let xs = |g: &Warden| g.people.iter().map(|h| h.x).collect::<Vec<_>>();
         assert_ne!(xs(&a), xs(&b), "the people stood in the same places");
         assert_ne!(a.terrain.height_at(500.0), b.terrain.height_at(500.0));
+    }
+
+    /// A Lander parked, hovering and killable, at an offset from the ship.
+    fn parked(g: &Warden, dx: f32, y: f32) -> enemy::Enemy {
+        let mut l = enemy::Enemy::lander(g.ship.x + dx, y, 0.0);
+        l.phase = enemy::Phase::Hovering;
+        l
+    }
+
+    /// ★ B, THROUGH THE KEY: everything hostile on screen dies at full
+    /// points; off-screen and above-screen enemies and the people do not.
+    #[test]
+    fn the_smart_bomb_clears_the_screen_and_only_the_screen() {
+        let mut g = game();
+        g.people.clear();
+        g.lives.state = lives::State::Alive;
+        let y = g.ship.y;
+        g.enemies.spawn(parked(&g, 200.0, y)); // on screen
+        g.enemies.spawn(parked(&g, 400.0, y + 120.0)); // on screen
+        g.enemies.spawn(parked(&g, world::VIEW_W * 2.0, y)); // far away
+        g.enemies.spawn(parked(&g, 300.0, world::VIEW_H * 1.3)); // above the screen
+        let hx = world::wrap(g.ship.x + 250.0);
+        g.people.spawn(humanoid::Humanoid::new(hx, g.terrain.height_at(hx), 0.0));
+        let bombs = g.smart_bombs;
+
+        g.on_input(InputEvent::KeyDown(Key::B));
+
+        let phase = |g: &Warden, i| g.enemies.get(i).unwrap().phase;
+        assert_eq!(phase(&g, 0), enemy::Phase::Dying);
+        assert_eq!(phase(&g, 1), enemy::Phase::Dying);
+        assert_eq!(phase(&g, 2), enemy::Phase::Hovering, "the bomb reached past the screen");
+        assert_eq!(phase(&g, 3), enemy::Phase::Hovering, "the bomb reached above the screen");
+        assert_eq!(g.people.alive(), 1, "the bomb killed a person");
+        assert_eq!(g.score, 2 * enemy::LANDER_POINTS);
+        assert_eq!(g.smart_bombs, bombs - 1);
+        assert!(g.bomb_flash.is_some(), "no flash");
+    }
+
+    /// No bombs, no bomb — and not while paused or between places.
+    #[test]
+    fn the_smart_bomb_needs_a_bomb_and_a_ship() {
+        let mut g = game();
+        g.lives.state = lives::State::Alive;
+        let y = g.ship.y;
+        g.enemies.spawn(parked(&g, 200.0, y));
+
+        g.smart_bombs = 0;
+        g.on_input(InputEvent::KeyDown(Key::B));
+        assert_eq!(g.enemies.get(0).unwrap().phase, enemy::Phase::Hovering, "fired with none left");
+
+        g.smart_bombs = 2;
+        g.on_input(InputEvent::KeyDown(Key::P));
+        g.on_input(InputEvent::KeyDown(Key::B));
+        assert_eq!(g.smart_bombs, 2, "fired while paused");
+        g.on_input(InputEvent::KeyDown(Key::P));
+
+        g.hyperspace = Some(0.0);
+        g.on_input(InputEvent::KeyDown(Key::B));
+        assert_eq!(g.smart_bombs, 2, "fired from hyperspace");
+    }
+
+    /// The flash is four flashes and then it is over.
+    #[test]
+    fn the_flash_flashes_and_ends() {
+        let mut g = game();
+        g.lives.state = lives::State::Alive;
+        g.on_input(InputEvent::KeyDown(Key::B));
+        let mut lit = Vec::new();
+        let mut t = 0.0;
+        while t < BOMB_FLASH_SECONDS + 0.1 {
+            g.step(Input::default(), FIXED_DT);
+            lit.push(g.bomb_flash.is_some_and(|t| (t / (BOMB_FLASH_PERIOD * 0.5)) as u32 % 2 == 0));
+            t += FIXED_DT;
+        }
+        let rises = lit.windows(2).filter(|w| !w[0] && w[1]).count() + usize::from(lit[0]);
+        assert_eq!(rises, 4, "expected four flashes");
+        assert!(g.bomb_flash.is_none(), "the flash never ended");
+    }
+
+    /// ★ H, THROUGH THE KEY: somewhere else, stopped dead, enemy bolts
+    /// gone, your own still flying — and untouchable until it arrives.
+    #[test]
+    fn hyperspace_jumps_stops_and_clears_enemy_fire() {
+        let mut g = game();
+        g.enemies.clear();
+        g.lives.state = lives::State::Alive;
+        g.ship.vx = 400.0;
+        let from = g.ship.x;
+        g.shots.fire(g.ship.x, g.ship.y, 1.0);
+        g.shots.fire_enemy(g.ship.x + 300.0, g.ship.y, -1.0, 0.3);
+
+        g.on_input(InputEvent::KeyDown(Key::H));
+
+        assert!(g.hyperspace.is_some());
+        assert!(world::delta(from, g.ship.x).abs() > 1.0, "it did not go anywhere");
+        assert_eq!(g.ship.vx, 0.0, "it kept its speed");
+        assert!(g.shots.iter().all(|s| !s.is_enemy()), "enemy bolts survived the jump");
+        assert_eq!(g.shots.iter().count(), 1, "your own bolt was taken too");
+
+        // An enemy bolt right on the ship mid-jump does nothing.
+        let lives = g.lives.remaining;
+        g.shots.fire_enemy(g.ship.x, g.ship.y, 1.0, 0.0);
+        g.step(Input::default(), FIXED_DT);
+        assert_eq!(g.lives.remaining, lives, "shot down while between places");
+        assert!(!g.flying(), "a jumping ship should not fly");
+
+        let mut t = 0.0;
+        while g.hyperspace.is_some() && t < 2.0 {
+            g.step(Input::default(), FIXED_DT);
+            t += FIXED_DT;
+        }
+        assert!((t - HYPERSPACE_SECONDS).abs() < 0.02, "arrived after {t:.3} s");
+    }
+
+    /// ★ THE GAMBLE, MEASURED: about one jump in four ends in an
+    /// explosion — Brian's "keep the hyperspace death chance" — and the
+    /// respawn blink does not protect against it.
+    #[test]
+    fn hyperspace_kills_about_one_jump_in_four_even_while_blinking() {
+        let mut g = game();
+        g.enemies.clear();
+        let trials = 4000;
+        let mut deaths = 0;
+        for _ in 0..trials {
+            g.lives.reset();
+            g.lives.remaining = 1_000;
+            assert!(!g.lives.is_vulnerable(), "should start blinking");
+            let before = g.lives.remaining;
+            g.on_input(InputEvent::KeyDown(Key::H));
+            while g.hyperspace.is_some() {
+                g.step(Input::default(), FIXED_DT);
+            }
+            if g.lives.remaining < before {
+                deaths += 1;
+            }
+        }
+        let rate = deaths as f32 / trials as f32;
+        assert!((rate - HYPERSPACE_DEATH).abs() < 0.03, "died on {rate:.3} of jumps");
     }
 
     #[test]

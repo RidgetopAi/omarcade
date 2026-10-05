@@ -76,6 +76,8 @@ fn main() {
         phase: waves::Phase::Fighting,
         smart_bombs: 3,
         best: 0,
+        hyperspace: None,
+        flash: false,
     };
     let mut score = 0u32;
 
@@ -106,6 +108,23 @@ fn main() {
             hud.smart_bombs = 4;
             hud.phase = waves::Phase::Tally { counted: 6, survivors: 8, timer: 0.1 };
             people.scatter(8, &terrain, 0x50C1_A15E);
+        }
+
+        // ★ W2: a hyperspace jump, two thirds of the way back together.
+        "hyperspace" => {
+            camera.snap_to(&ship);
+            hud.hyperspace = Some(0.66);
+        }
+
+        // ★ W2: a smart bomb's flash, with debris where three were.
+        "smartbomb" => {
+            camera.snap_to(&ship);
+            for dx in [180.0f32, 380.0, 560.0] {
+                effects.explode_lander(world::wrap(ship.x + dx), ship.y + 40.0, 0.0);
+            }
+            effects.update(0.05);
+            hud.flash = true;
+            hud.smart_bombs = 2;
         }
 
         // ★ W1: out of lives, with the score and the way back in.
@@ -388,7 +407,7 @@ fn main() {
             eprintln!(
                 "scenes: rest | cruise | west | turn | low | seam | \
                  thrust | thrust-west | mutants | apocalypse | rescue | combat | \
-                 tally | gameover | popups"
+                 tally | gameover | popups | hyperspace | smartbomb"
             );
             std::process::exit(2);
         }

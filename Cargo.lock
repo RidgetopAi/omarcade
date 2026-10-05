@@ -1135,13 +1135,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "omarcade-defender"
-version = "0.1.0"
-dependencies = [
- "omarcade-core",
-]
-
-[[package]]
 name = "omarcade-pixel-break"
 version = "0.1.0"
 dependencies = [
@@ -1157,6 +1150,13 @@ dependencies = [
 
 [[package]]
 name = "omarcade-volley"
+version = "0.1.0"
+dependencies = [
+ "omarcade-core",
+]
+
+[[package]]
+name = "omarcade-warden"
 version = "0.1.0"
 dependencies = [
  "omarcade-core",

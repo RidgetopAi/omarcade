@@ -68,7 +68,7 @@ pub const COAST_HALF_LIFE: f32 = 1.6;
 /// the first — the ship stops dead at the end of a glide. Decay bleeds
 /// off proportionally, so a fast ship loses a lot and a slow one drifts,
 /// which is what coasting feels like.
-pub const DRAG: f32 = 0.693_147_2 / COAST_HALF_LIFE; // ln 2 / half-life
+pub const DRAG: f32 = std::f32::consts::LN_2 / COAST_HALF_LIFE;
 
 /// Extra acceleration available when thrusting AGAINST your motion.
 ///

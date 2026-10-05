@@ -1,6 +1,6 @@
 //! How big is a Lander next to the ship, really?
 //!
-//!   cargo run -p omarcade-defender --example size_check -- out.png
+//!   cargo run -p omarcade-warden --example size_check -- out.png
 //!
 //! A size decision made from unit counts is a guess. The ship is 35 units
 //! long and draws at SCALE 2.0, which is 70px on a 960px screen — but

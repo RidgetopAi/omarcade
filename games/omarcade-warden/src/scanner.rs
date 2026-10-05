@@ -22,7 +22,7 @@
 
 use omarcade_core::{Canvas, Color, Theme};
 
-use crate::enemy::{Kind, Landers, Phase};
+use crate::enemy::{Kind, Enemies, Phase};
 use crate::humanoid::{Humanoids, State};
 use crate::flight::{Camera, Ship};
 use crate::world::{self, Terrain};
@@ -147,7 +147,7 @@ pub struct View<'a> {
     pub terrain: &'a Terrain,
     pub ship: &'a Ship,
     pub camera: &'a Camera,
-    pub landers: &'a Landers,
+    pub enemies: &'a Enemies,
     pub people: &'a Humanoids,
     /// Seconds since the game began, for the Mutant pulse.
     ///
@@ -170,7 +170,7 @@ pub fn draw(canvas: &mut Canvas<'_>, view: &View<'_>, theme: &Theme) {
     draw_face(canvas, &s, theme);
     draw_terrain(canvas, &s, view.terrain, theme);
     draw_people(canvas, &s, view.people);
-    draw_landers(canvas, &s, view.landers, view.time);
+    draw_enemies(canvas, &s, view.enemies, view.time);
     draw_ship(canvas, &s, view.ship);
     draw_view_box(canvas, &s, view.camera, theme);
 }
@@ -280,8 +280,8 @@ fn draw_people(canvas: &mut Canvas<'_>, s: &Scanner, people: &Humanoids) {
 /// motion is the only channel on a crowded HUD that survives peripheral
 /// vision, and a player mid-dogfight is using nothing but peripheral
 /// vision on this strip.
-fn draw_landers(canvas: &mut Canvas<'_>, s: &Scanner, landers: &Landers, time: f32) {
-    for l in landers.iter() {
+fn draw_enemies(canvas: &mut Canvas<'_>, s: &Scanner, enemies: &Enemies, time: f32) {
+    for l in enemies.iter() {
         // A dying Lander is already gone as far as the player's planning
         // is concerned — leaving it on the scanner for its death frames
         // would say there is still something there to deal with.

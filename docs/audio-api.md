@@ -1,7 +1,8 @@
 # The Omarcade audio seam — specification
 
-Status: **proposed, not built**. Nothing in this document exists in code yet.
-Written to be argued with before any of it is written.
+Status: **built** — `core/src/audio/` implements this seam, and all four games
+play through it. This document was written as a proposal to be argued with
+before any of it existed; the code is now the authority where the two differ.
 
 Decisions already made with Brian (2026-09-07):
 

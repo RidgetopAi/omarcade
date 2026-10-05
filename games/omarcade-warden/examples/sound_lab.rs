@@ -1,6 +1,6 @@
 //! Render candidate laser sounds to .wav files so Brian can HEAR them.
 //!
-//!   cargo run -p omarcade-defender --example sound_lab -- <outdir>
+//!   cargo run -p omarcade-warden --example sound_lab -- <outdir>
 //!
 //! ★ THIS IS THE VECTOR PLAYGROUND MOVE, FOR EARS. Brian built the ship
 //! and the Mutant himself once a tool existed that let him see what he

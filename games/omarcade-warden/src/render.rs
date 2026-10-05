@@ -14,7 +14,7 @@ use omarcade_core::{Canvas, Color, Theme, Transform};
 
 use crate::art;
 use crate::effects::Effects;
-use crate::enemy::{Kind, Landers, Phase};
+use crate::enemy::{Kind, Enemies, Phase};
 use crate::flight::{Camera, Ship};
 use crate::humanoid::{self, Humanoids, State};
 use crate::lives::Lives;
@@ -29,7 +29,7 @@ pub struct Scene<'a> {
     pub ship: &'a Ship,
     pub camera: &'a Camera,
     pub shots: &'a Shots,
-    pub landers: &'a Landers,
+    pub enemies: &'a Enemies,
     pub people: &'a Humanoids,
     pub effects: &'a Effects,
     pub score: u32,
@@ -51,8 +51,8 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     canvas.clear(sky(theme));
     draw_terrain(canvas, scene.terrain, scene.camera, theme);
     draw_people(canvas, scene.people, scene.camera);
-    draw_beams(canvas, scene.landers, scene.people, scene.camera);
-    draw_landers(canvas, scene.landers, scene.camera);
+    draw_beams(canvas, scene.enemies, scene.people, scene.camera);
+    draw_enemies(canvas, scene.enemies, scene.camera);
     draw_shots(canvas, scene.shots, scene.camera, theme);
     scene.effects.draw(canvas, scene.camera);
     // ⚠️ A DEAD OR BLINKING SHIP IS NOT ALWAYS DRAWN. `is_visible`
@@ -61,7 +61,7 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
     if scene.lives.is_visible() {
         draw_ship(canvas, scene.ship, scene.camera, theme, scene.exhaust);
     }
-    draw_hud(canvas, scene.ship, scene.camera, theme);
+    draw_hud(canvas, scene.ship, theme);
     draw_score(canvas, scene.score, theme);
     // ★ S8. The scanner is the last thing drawn before the lives and the
     // game-over card, because nothing in the world may overlap it — a
@@ -72,7 +72,7 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
             terrain: scene.terrain,
             ship: scene.ship,
             camera: scene.camera,
-            landers: scene.landers,
+            enemies: scene.enemies,
             people: scene.people,
             time: scene.time,
         },
@@ -89,11 +89,11 @@ pub fn draw(canvas: &mut Canvas<'_>, scene: &Scene<'_>, theme: &Theme) {
 /// ⚠️ EVERY ENEMY IS TESTED FOR VISIBILITY, NOT DRAWN BLIND. The world is
 /// four screens wide, so most of them are somewhere else; `to_screen`
 /// already wraps, so this is only about skipping work.
-fn draw_landers(canvas: &mut Canvas<'_>, landers: &Landers, camera: &Camera) {
+fn draw_enemies(canvas: &mut Canvas<'_>, enemies: &Enemies, camera: &Camera) {
     let h = canvas.height() as f32;
     let margin = crate::enemy::LANDER_HALF_W + 4.0;
 
-    for l in landers.iter() {
+    for l in enemies.iter() {
         let sx = camera.to_screen(l.x);
         if sx < -margin || sx > canvas.width() as f32 + margin {
             continue;
@@ -171,10 +171,10 @@ fn draw_enemy(canvas: &mut Canvas<'_>, kind: Kind, sx: f32, sy: f32, scale: f32)
 /// player an abduction is under way in time to stop it. A Lander that
 /// simply descended and rose again would give no signal at all, and the
 /// first time you noticed would be when someone was already gone.
-fn draw_beams(canvas: &mut Canvas<'_>, landers: &Landers, people: &Humanoids, camera: &Camera) {
+fn draw_beams(canvas: &mut Canvas<'_>, enemies: &Enemies, people: &Humanoids, camera: &Camera) {
     let h = canvas.height() as f32;
 
-    for l in landers.iter() {
+    for l in enemies.iter() {
         let Some(who) = l.carrying() else { continue };
         let Some(p) = people.get(who) else { continue };
 
@@ -511,18 +511,16 @@ fn draw_ship(canvas: &mut Canvas<'_>, ship: &Ship, camera: &Camera, _theme: &The
     art::draw_ship(canvas, &t, exhaust);
 }
 
-/// The minimum a pilot needs: how fast, and where in the world.
+/// How fast, and which way.
 ///
-/// Not the real HUD — Defender's scanner belongs to a later stage, when
-/// there is something on it worth scanning for. This exists so the
-/// flying can be judged: without a position read-out it is genuinely
-/// hard to tell a wrapping world from a treadmill.
-fn draw_hud(canvas: &mut Canvas<'_>, ship: &Ship, camera: &Camera, theme: &Theme) {
+/// The position read-out that used to sit beside this went when the
+/// scanner arrived: its view box says where in the world you are, and
+/// says it against everything else in the world. A bar stays because a
+/// speed cannot be read off the scanner at a glance while flying.
+fn draw_hud(canvas: &mut Canvas<'_>, ship: &Ship, theme: &Theme) {
     let w = canvas.width() as f32;
     let muted = theme.foreground.lerp(theme.background, 0.6);
 
-    // A speed bar, because a number cannot be read at a glance while
-    // flying and a bar can.
     let bar_w = 160.0;
     let bar_x = w - bar_w - 18.0;
     canvas.fill_rect_f(bar_x, 18.0, bar_w, 6.0, muted);
@@ -534,21 +532,6 @@ fn draw_hud(canvas: &mut Canvas<'_>, ship: &Ship, camera: &Camera, theme: &Theme
         let x = if ship.vx < 0.0 { bar_x + bar_w - filled } else { bar_x };
         canvas.fill_rect_f(x, 18.0, filled, 6.0, colour);
     }
-
-    // A strip showing where in the loop the view is. One screen's worth
-    // of the world, marked on a line representing the whole lap.
-    let strip_w = 160.0;
-    let strip_x = 18.0;
-    canvas.fill_rect_f(strip_x, 18.0, strip_w, 6.0, muted);
-    let here = world::wrap(camera.x) / world::WORLD_W;
-    let window = strip_w / world::WORLD_SCREENS;
-    canvas.fill_rect_f(
-        strip_x + here * strip_w - window * 0.5,
-        18.0,
-        window,
-        6.0,
-        theme.foreground,
-    );
 }
 
 #[cfg(test)]
@@ -574,10 +557,10 @@ mod tests {
         let theme = Theme::fallback();
         {
             let mut c = canvas_of(&mut buf);
-            let (shots, landers, fx) = (Shots::new(), Landers::new(), Effects::new());
+            let (shots, enemies, fx) = (Shots::new(), Enemies::new(), Effects::new());
             let people = Humanoids::new();
             let lives = Lives::new();
-            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx, &lives);
+            let scene = bare_scene(&t, &ship, &cam, &shots, &enemies, &people, &fx, &lives);
             draw(&mut c, &scene, &theme);
         }
 
@@ -603,10 +586,10 @@ mod tests {
         let theme = Theme::fallback();
         {
             let mut c = canvas_of(&mut buf);
-            let (shots, landers, fx) = (Shots::new(), Landers::new(), Effects::new());
+            let (shots, enemies, fx) = (Shots::new(), Enemies::new(), Effects::new());
             let people = Humanoids::new();
             let lives = Lives::new();
-            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx, &lives);
+            let scene = bare_scene(&t, &ship, &cam, &shots, &enemies, &people, &fx, &lives);
             draw(&mut c, &scene, &theme);
         }
 
@@ -647,8 +630,8 @@ mod tests {
         // A Mutant on the far side of the world — the exact thing the
         // scanner was built to reveal, at the exact distance that makes
         // it invisible in the main view.
-        let mut landers = Landers::new();
-        landers.spawn(crate::enemy::Lander::mutant(
+        let mut enemies = Enemies::new();
+        enemies.spawn(crate::enemy::Enemy::mutant(
             world::WORLD_W * 0.5,
             world::VIEW_H * 0.8,
         ));
@@ -663,7 +646,7 @@ mod tests {
                 ship: &ship,
                 camera: &cam,
                 shots: &shots,
-                landers: &landers,
+                enemies: &enemies,
                 people: &people,
                 effects: &fx,
                 score: 0,
@@ -715,7 +698,7 @@ mod tests {
         ship: &'a Ship,
         camera: &'a Camera,
         shots: &'a Shots,
-        landers: &'a Landers,
+        enemies: &'a Enemies,
         people: &'a Humanoids,
         effects: &'a Effects,
         lives: &'a Lives,
@@ -725,7 +708,7 @@ mod tests {
             ship,
             camera,
             shots,
-            landers,
+            enemies,
             people,
             effects,
             score: 0,
@@ -748,10 +731,10 @@ mod tests {
         let theme = Theme::fallback();
         {
             let mut c = canvas_of(&mut buf);
-            let (shots, landers, fx) = (Shots::new(), Landers::new(), Effects::new());
+            let (shots, enemies, fx) = (Shots::new(), Enemies::new(), Effects::new());
             let people = Humanoids::new();
             let lives = Lives::new();
-            let scene = bare_scene(&t, &ship, &cam, &shots, &landers, &people, &fx, &lives);
+            let scene = bare_scene(&t, &ship, &cam, &shots, &enemies, &people, &fx, &lives);
             draw(&mut c, &scene, &theme);
         }
 

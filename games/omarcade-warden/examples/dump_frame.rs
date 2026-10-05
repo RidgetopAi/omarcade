@@ -1,6 +1,6 @@
 //! Render one frame to a PNG, headless.
 //!
-//!   cargo run -p omarcade-defender --example dump_frame -- <scene> out.png
+//!   cargo run -p omarcade-warden --example dump_frame -- <scene> out.png
 //!
 //! ⚠️ SCENE THEN PATH, matching the other three games. `dump_art` in the
 //! racer takes them the other way round and that inconsistency has cost
@@ -36,7 +36,7 @@ mod scanner;
 mod world;
 
 use effects::Effects;
-use enemy::Landers;
+use enemy::Enemies;
 use humanoid::Humanoids;
 use lives::Lives;
 use flight::{Camera, Facing, Input, Ship};
@@ -57,7 +57,7 @@ fn main() {
     // S5's entities. Most scenes are about the flight model and leave
     // these empty; the `combat` scene fills them.
     let mut shots = Shots::new();
-    let mut landers = Landers::new();
+    let mut enemies = Enemies::new();
     let mut effects = Effects::new();
     // ★ Hull-flare intensity for this dump. Scenes that are thrusting
     // set it; everything else stays cold.
@@ -91,18 +91,18 @@ fn main() {
 
             for (dx, dy) in [(240.0f32, 60.0f32), (420.0, -90.0), (600.0, 140.0)] {
                 let x = world::wrap(base + dx);
-                landers.spawn(enemy::Lander::mutant(x, ship.y + dy));
+                enemies.spawn(enemy::Enemy::mutant(x, ship.y + dy));
             }
             // One Lander still doing its job, for contrast.
             let lx = world::wrap(base + 780.0);
-            let mut l = enemy::Lander::new(lx, terrain.height_at(lx) + enemy::HOVER_HEIGHT, 46.0);
+            let mut l = enemy::Enemy::lander(lx, terrain.height_at(lx) + enemy::HOVER_HEIGHT, 46.0);
             l.phase = enemy::Phase::Hovering;
-            landers.spawn(l);
+            enemies.spawn(l);
 
             // Their fire, at angles, on its way in.
             let mut noise = 0xC0FF_EE01u32;
             for i in 0..3 {
-                if let Some(m) = landers.get(i) {
+                if let Some(m) = enemies.get(i) {
                     let (dx, dy) = m.aim_at(ship.x, ship.y, &mut noise);
                     shots.fire_enemy(m.x, m.y, dx, dy);
                 }
@@ -125,11 +125,11 @@ fn main() {
 
             for (dx, dy) in [(180.0f32, 120.0f32), (360.0, -60.0), (560.0, 200.0), (700.0, 20.0)] {
                 let x = world::wrap(base + dx);
-                landers.spawn(enemy::Lander::mutant(x, ship.y + dy));
+                enemies.spawn(enemy::Enemy::mutant(x, ship.y + dy));
             }
             let mut noise = 0xBEEF_0007u32;
             for i in 0..4 {
-                if let Some(m) = landers.get(i) {
+                if let Some(m) = enemies.get(i) {
                     let (dx, dy) = m.aim_at(ship.x, ship.y, &mut noise);
                     shots.fire_enemy(m.x, m.y, dx, dy);
                 }
@@ -158,11 +158,11 @@ fn main() {
             people.spawn(humanoid::Humanoid::new(vx, vground + 46.0, 0.0));
             people.get_mut(2).unwrap().grabbed();
 
-            let mut carrier = enemy::Lander::new(vx, vground + 46.0 + enemy::GRAB_HEIGHT, 0.0);
+            let mut carrier = enemy::Enemy::lander(vx, vground + 46.0 + enemy::GRAB_HEIGHT, 0.0);
             carrier.phase = enemy::Phase::Grabbing;
             carrier.elapsed = enemy::GRAB_SECONDS * 0.6;
             carrier.target = Some(2);
-            landers.spawn(carrier);
+            enemies.spawn(carrier);
 
             // One falling, having been shot free.
             let fx = world::wrap(base + 470.0);
@@ -181,9 +181,9 @@ fn main() {
 
             // A Lander watching from further out.
             let ox = world::wrap(base + 700.0);
-            let mut idle = enemy::Lander::new(ox, terrain.height_at(ox) + enemy::HOVER_HEIGHT, 46.0);
+            let mut idle = enemy::Enemy::lander(ox, terrain.height_at(ox) + enemy::HOVER_HEIGHT, 46.0);
             idle.phase = enemy::Phase::Hovering;
-            landers.spawn(idle);
+            enemies.spawn(idle);
         }
 
         // ★ S5, ALL OF IT AT ONCE: Landers in the air, bolts in flight,
@@ -197,7 +197,7 @@ fn main() {
             for (i, dx) in [180.0f32, 330.0, 470.0].iter().enumerate() {
                 let x = world::wrap(base + dx);
                 let y = terrain.height_at(x) + enemy::HOVER_HEIGHT;
-                let mut l = enemy::Lander::new(x, y, if i == 1 { -46.0 } else { 46.0 });
+                let mut l = enemy::Enemy::lander(x, y, if i == 1 { -46.0 } else { 46.0 });
                 // Push two past the warp so they are drawn at full size.
                 if i != 2 {
                     l.phase = enemy::Phase::Hovering;
@@ -205,7 +205,7 @@ fn main() {
                 } else {
                     l.elapsed = enemy::WARP_SECONDS * 0.45;
                 }
-                landers.spawn(l);
+                enemies.spawn(l);
             }
             // Bolts on their way.
             shots.fire(base + 70.0, ship.y, 1.0);
@@ -354,7 +354,7 @@ fn main() {
             ship: &ship,
             camera: &camera,
             shots: &shots,
-            landers: &landers,
+            enemies: &enemies,
             people: &people,
             effects: &effects,
             lives: &lives,

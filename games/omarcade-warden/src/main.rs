@@ -1,4 +1,5 @@
-//! Omarcade's fourth title: a horizontally scrolling shooter.
+//! Warden, Omarcade's fourth title: a horizontally scrolling shooter in
+//! the line of Williams' Defender (1981).
 //!
 //! ★ STAGE ONE built the world and the flying, and Brian confirmed it:
 //! "wow, you kind of nailed that. I honestly can't find anyhing wrong."
@@ -20,14 +21,14 @@
 //! gone and every surviving Lander mutates. The difficulty does not fall
 //! when there is nothing left to protect; it spikes.
 //!
-//! ⚠️ STILL DELIBERATELY MISSING: waves, a score file, the scanner, and
-//! the other five enemy types. S9 owns scoring and waves; the score on
-//! screen exists only so a kill is visible.
+//! ★ S8 added the scanner: the whole world in a strip, with the view box.
 //!
-//! ⚠️ NOT YET REGISTERED IN packaging/install.sh. A game with no name,
-//! no score file and no title screen has no business in the cabinet, and
-//! adding it there would put an unfinished title in front of anyone who
-//! installed the suite.
+//! ⚠️ STILL MISSING (docs/warden-plan.md): waves, scoring and the score
+//! file (W1); smart bomb and hyperspace (W2); Baiters, Bombers, Pods and
+//! Swarmers (W3, W4); the sound pass (W5); the title screen and the
+//! cabinet registration in packaging/install.sh (W6). Until W6 the game
+//! is deliberately absent from the cabinet — an unfinished title has no
+//! business in front of anyone who installed the suite.
 
 mod art;
 mod effects;
@@ -46,7 +47,7 @@ use omarcade_core::backend::winit_soft::{Idle, WinitBackend};
 use omarcade_core::{Audio, AudioSystem, Backend, Canvas, Game, InputEvent, Key, Pause, Theme};
 
 use effects::Effects;
-use enemy::Landers;
+use enemy::Enemies;
 use flight::{Camera, Facing, Input, Ship};
 use humanoid::Humanoids;
 use lives::Lives;
@@ -121,7 +122,7 @@ const EXHAUST_RELEASE: f32 = 6.0;
 const SHIP_HALF_W: f32 = 22.0;
 const SHIP_HALF_H: f32 = 10.0;
 
-struct Defender {
+struct Warden {
     theme: Theme,
     terrain: Terrain,
     ship: Ship,
@@ -129,7 +130,7 @@ struct Defender {
     pause: Pause,
 
     shots: Shots,
-    landers: Landers,
+    enemies: Enemies,
     people: Humanoids,
     effects: Effects,
     lives: Lives,
@@ -152,7 +153,7 @@ struct Defender {
     warp: SoundId,
     /// True until the first frame's spawns have been consumed.
     ///
-    /// ★ `Defender::new` scatters the opening wave before the game has
+    /// ★ `Warden::new` scatters the opening wave before the game has
     /// drawn anything, so the counter is already at five on frame one.
     /// Without this the game opens with an arrival sound for enemies the
     /// player has not been shown yet.
@@ -207,7 +208,7 @@ struct Defender {
     world_ended_this_frame: bool,
 }
 
-/// The four explosion voices, grouped so `Defender::new` takes one
+/// The four explosion voices, grouped so `Warden::new` takes one
 /// argument rather than five.
 ///
 /// ⚠️ NOT a tuple. Four same-typed `SoundId`s positionally would silently
@@ -221,7 +222,7 @@ struct Booms {
     person: SoundId,
 }
 
-impl Defender {
+impl Warden {
     fn new(theme: Theme, laser: SoundId, thrust: VoiceId, warp: SoundId, booms: Booms) -> Self {
         let terrain = Terrain::generate(RIDGE_SAMPLES, 0x0DEF_E4DE);
         let ship = Ship::new(0.0);
@@ -231,8 +232,8 @@ impl Defender {
         // for.
         camera.snap_to(&ship);
 
-        let mut landers = Landers::new();
-        landers.scatter(OPENING_LANDERS, ship.x, &terrain, 0x5EED_1234);
+        let mut enemies = Enemies::new();
+        enemies.scatter(OPENING_LANDERS, ship.x, &terrain, 0x5EED_1234);
 
         let mut people = Humanoids::new();
         people.scatter(POPULATION, &terrain, 0x50C1_A15E);
@@ -244,7 +245,7 @@ impl Defender {
             camera,
             pause: Pause::new(),
             shots: Shots::new(),
-            landers,
+            enemies,
             people,
             effects: Effects::new(),
             lives: Lives::new(),
@@ -336,11 +337,11 @@ impl Defender {
 
         // Mutants that want to shoot say so; the bolts are built here,
         // because `Landers` does not know what a Shot is.
-        let wants = self.landers.step(&self.terrain, &mut self.people, ship_pos, dt);
+        let wants = self.enemies.step(&self.terrain, &mut self.people, ship_pos, dt);
         if let Some((sx, sy)) = ship_pos {
             for (index, mx, my) in wants {
-                let mut noise = self.landers.next_noise();
-                let (dx, dy) = match self.landers.get(index) {
+                let mut noise = self.enemies.next_noise();
+                let (dx, dy) = match self.enemies.get(index) {
                     Some(m) => m.aim_at(sx, sy, &mut noise),
                     None => continue,
                 };
@@ -393,7 +394,7 @@ impl Defender {
         self.terrain.destroy();
         // Every surviving Lander turns — the arcade's own spike in
         // difficulty at the exact moment there is nothing left to save.
-        self.landers.mutate_all();
+        self.enemies.mutate_all();
         self.effects.explode_world(&self.terrain, self.camera.x);
         self.world_ended_this_frame = true;
     }
@@ -458,16 +459,16 @@ impl Defender {
                 continue;
             }
 
-            if let Some(target) = self.landers.hit_test(sx, sy) {
+            if let Some(target) = self.enemies.hit_test(sx, sy) {
                 let (lx, ly, lvx) = {
-                    let l = self.landers.iter().nth(target).unwrap();
+                    let l = self.enemies.iter().nth(target).unwrap();
                     (l.x, l.y, l.vx)
                 };
                 // ⚠️ DROP THE PASSENGER BEFORE KILLING THE CARRIER.
                 // `kill` clears the target, so doing this after would
                 // take the Humanoid with it silently and the whole
                 // catch-and-rescue loop would never fire.
-                self.landers.release_passenger(target, &mut self.people);
+                self.enemies.release_passenger(target, &mut self.people);
                 // ⚠️ ASK WHAT IT IS *BEFORE* KILLING IT. `kill` sets
                 // Phase::Dying, and a Mutant that has started dying is
                 // still a Mutant — but reading the kind afterwards means
@@ -475,8 +476,8 @@ impl Defender {
                 // the next person to touch it would have to prove that
                 // still works. Read it first; it is one bool.
                 let was_mutant =
-                    self.landers.get(target).map(|l| l.is_mutant()).unwrap_or(false);
-                self.score += self.landers.kill(target);
+                    self.enemies.get(target).map(|l| l.is_mutant()).unwrap_or(false);
+                self.score += self.enemies.kill(target);
                 self.effects.explode_lander(lx, ly, lvx);
                 self.shots.consume(i);
                 if was_mutant {
@@ -553,7 +554,7 @@ impl Defender {
     }
 }
 
-impl Game for Defender {
+impl Game for Warden {
     fn on_input(&mut self, event: InputEvent) -> bool {
         match event {
             // ⚠️ ESC QUITS. Never bound to anything else, in any title.
@@ -691,15 +692,15 @@ impl Game for Defender {
         // sound.rs takes `_pitch` and ignores it, so a "pitched down"
         // placeholder would be the SAME sound while looking like a
         // different one in the source.
-        let _fused = self.landers.take_fused();
+        let _fused = self.enemies.take_fused();
 
-        let arrived = self.landers.take_spawned();
+        let arrived = self.enemies.take_spawned();
         if arrived > 0 && !self.opening_wave {
             let gain = (0.55 + 0.12 * (arrived - 1) as f32).min(1.0);
             audio.play_with(self.warp, gain, 1.0);
         }
         // ⚠️ THE OPENING WAVE IS SILENT, and that is not an oversight.
-        // Those five are placed by `Defender::new` before the player has
+        // Those five are placed by `Warden::new` before the player has
         // seen a frame; announcing them would play an arrival for
         // enemies that were simply always there. Every later spawn —
         // S9's reinforcements, a Mutant fusing — goes through the same
@@ -720,7 +721,7 @@ impl Game for Defender {
             ship: &self.ship,
             camera: &self.camera,
             shots: &self.shots,
-            landers: &self.landers,
+            enemies: &self.enemies,
             people: &self.people,
             effects: &self.effects,
             score: self.score,
@@ -748,7 +749,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
         person: audio.register_sound(Box::new(sound::PersonBoom::new())),
     };
-    let game = Defender::new(theme, laser, thrust, warp, booms);
+    let game = Warden::new(theme, laser, thrust, warp, booms);
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
         .idle(Idle::Animate { fps: 60 })
@@ -761,7 +762,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    fn game() -> Defender {
+    fn game() -> Warden {
         let mut audio = AudioSystem::new();
         let laser = audio.register_sound(Box::new(sound::Laser::new()));
         let thrust = audio.register(Box::new(sound::Thrust::new()));
@@ -772,19 +773,19 @@ mod tests {
             ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
             person: audio.register_sound(Box::new(sound::PersonBoom::new())),
         };
-        Defender::new(Theme::fallback(), laser, thrust, warp, booms)
+        Warden::new(Theme::fallback(), laser, thrust, warp, booms)
     }
 
     /// ⚠️ THE OPENING-WAVE FLAG IS SPENT BY AN ARRIVAL, NOT BY A FRAME.
     ///
-    /// The opening five are placed by `Defender::new` before a frame is
+    /// The opening five are placed by `Warden::new` before a frame is
     /// drawn, so the flag exists to swallow exactly that one read. If it
     /// cleared on the first frame REGARDLESS of whether anything was
     /// read, any frame that consumed nothing would spend it — and the
     /// first arrival the player could actually hear would be the one
     /// treated as the opening wave and silenced.
     ///
-    /// ⚠️ THIS IS A REAL PATH, NOT A HYPOTHETICAL. `Defender::new` seeds
+    /// ⚠️ THIS IS A REAL PATH, NOT A HYPOTHETICAL. `Warden::new` seeds
     /// the counter, but `update` only reaches the dispatch when the game
     /// is not paused — and `Lives` can hold the player out of flight at
     /// the start too. Any of those leaves a frame that clears nothing.
@@ -792,7 +793,7 @@ mod tests {
     fn the_opening_wave_flag_is_spent_by_an_arrival() {
         let mut g = game();
         // Drain the opening wave the way the first live frame does.
-        assert_eq!(g.landers.take_spawned(), OPENING_LANDERS, "expected the opening five");
+        assert_eq!(g.enemies.take_spawned(), OPENING_LANDERS, "expected the opening five");
 
         // ★ A FRAME THAT READ NOTHING MUST LEAVE THE FLAG ALONE. Run
         // several with the counter empty; the flag is only meaningful
@@ -813,7 +814,7 @@ mod tests {
         );
 
         // And the next REAL arrival is the one that spends it.
-        g.landers.spawn(enemy::Lander::new(500.0, 300.0, 0.0));
+        g.enemies.spawn(enemy::Enemy::lander(500.0, 300.0, 0.0));
         {
             let mut a = audio.handle();
             g.update(1.0 / 60.0, &mut a);
@@ -900,19 +901,19 @@ mod tests {
     fn an_enemy_bolt_does_not_kill_the_enemy_that_fired_it() {
         let mut g = game();
         g.people.clear();
-        g.landers.clear();
+        g.enemies.clear();
 
         // A Mutant sitting next to the ship, and its own bolt right on
         // top of it — the exact geometry of the frame after it fires.
         let (mx, my) = (g.ship.x + 200.0, g.ship.y);
-        g.landers.spawn(enemy::Lander::mutant(mx, my));
-        assert_eq!(g.landers.len(), 1);
+        g.enemies.spawn(enemy::Enemy::mutant(mx, my));
+        assert_eq!(g.enemies.len(), 1);
 
         g.shots.fire_enemy(mx, my, 1.0, 0.3);
         g.resolve_hits();
 
         assert_eq!(
-            g.landers.len(),
+            g.enemies.len(),
             1,
             "a Mutant shot itself dead with its own bolt"
         );
@@ -924,10 +925,10 @@ mod tests {
     fn your_own_bolt_still_kills_a_mutant() {
         let mut g = game();
         g.people.clear();
-        g.landers.clear();
+        g.enemies.clear();
 
         let (mx, my) = (g.ship.x + 200.0, g.ship.y);
-        g.landers.spawn(enemy::Lander::mutant(mx, my));
+        g.enemies.spawn(enemy::Enemy::mutant(mx, my));
         g.shots.fire(mx, my, 1.0);
         g.resolve_hits();
 
@@ -938,7 +939,7 @@ mod tests {
     #[test]
     fn an_enemy_bolt_does_not_kill_humanoids() {
         let mut g = game();
-        g.landers.clear();
+        g.enemies.clear();
         g.people.clear();
         let (hx, hy) = (g.ship.x + 300.0, g.terrain.height_at(g.ship.x + 300.0));
         g.people.spawn(humanoid::Humanoid::new(hx, hy, 0.0));

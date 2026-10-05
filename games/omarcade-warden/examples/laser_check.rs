@@ -13,7 +13,7 @@
 //! that trade and chose it deliberately — this example is how that choice
 //! stays audible instead of becoming a surprise later.
 //!
-//! cargo run --release -p omarcade-defender --example laser_check -- <outdir>
+//! cargo run --release -p omarcade-warden --example laser_check -- <outdir>
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -23,9 +23,9 @@ use omarcade_core::audio::{Voice, VoiceParams};
 
 /// ★ THE REAL sound.rs, INCLUDED RATHER THAN COPIED.
 ///
-/// ⚠️ defender is a BINARY crate with no library target (which is also
+/// ⚠️ warden is a BINARY crate with no library target (which is also
 /// why clippy wants `--bins` and not `--lib`), so an example cannot
-/// `use omarcade_defender::sound`. sound_lab works around that by
+/// `use omarcade_warden::sound`. sound_lab works around that by
 /// restating its candidates standalone — fine for throwaway recipes,
 /// WRONG here, because the whole point of this example is to hear the
 /// code that actually ships. A copy would drift silently and then lie.
@@ -89,7 +89,7 @@ fn main() {
 }
 
 /// Render the thrust voice over a timeline of held intervals, easing
-/// `exhaust` exactly the way `Defender::step` does.
+/// `exhaust` exactly the way `Warden::step` does.
 ///
 /// ⚠️ THE EASING CONSTANTS ARE DUPLICATED FROM main.rs AND THAT IS A
 /// KNOWN COST. This example cannot `include!` main.rs the way it does

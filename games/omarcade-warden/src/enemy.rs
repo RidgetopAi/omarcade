@@ -149,11 +149,17 @@ pub enum Phase {
 
 /// What kind of enemy this is.
 ///
-/// ⚠️ ONE TYPE, NOT TWO. A Mutant IS a Lander that has fused with a
-/// person — it keeps the same position, the same death, the same
-/// hitbox, and only its behaviour and its art differ. Splitting them
-/// into separate structs would duplicate all of that to express a
-/// difference that is really one field.
+/// ⚠️ ONE STRUCT, MANY KINDS. Every enemy shares a position, a phase,
+/// a death and a place in the scanner; what differs is how it moves and
+/// what it is worth. A Mutant is the case that settled it: it IS a
+/// Lander that has fused with a person, transformed in place, so the
+/// two could never have been separate structs.
+///
+/// ★ EACH KIND OWNS ONE `step_*`, dispatched in [`Enemy::step`]. A new
+/// enemy (Baiter, Bomber, Pod, Swarmer — docs/warden-plan.md W3, W4) is
+/// a variant here, a `step_*`, a `points` arm and a `draw_*`. The
+/// variants arrive with their behaviour rather than ahead of it: a kind
+/// that exists but cannot move would be a match arm that pretends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Lander,
@@ -161,8 +167,7 @@ pub enum Kind {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Lander {
-    /// Lander or Mutant.
+pub struct Enemy {
     pub kind: Kind,
     /// Seconds until this one can fire again. Mutants only.
     pub fire_cooldown: f32,
@@ -184,8 +189,9 @@ pub struct Lander {
     pub target: Option<usize>,
 }
 
-impl Lander {
-    pub fn new(x: f32, y: f32, vx: f32) -> Self {
+impl Enemy {
+    /// A Lander, materialising.
+    pub fn lander(x: f32, y: f32, vx: f32) -> Self {
         Self {
             kind: Kind::Lander,
             fire_cooldown: MUTANT_FIRE_INTERVAL * 0.5,
@@ -287,7 +293,7 @@ impl Lander {
         worth
     }
 
-    /// Advance this Lander. `prey` is where its target is, if it has one
+    /// Advance this enemy. `prey` is where its target is, if it has one
     /// and that target is still grabbable.
     ///
     /// ⚠️ THE HUMANOID IS PASSED IN RATHER THAN REACHED FOR. A Lander
@@ -304,17 +310,26 @@ impl Lander {
         dt: f32,
     ) -> Outcome {
         self.elapsed += dt;
-        let mut outcome = Outcome::None;
 
-        // ★ A MUTANT IGNORES THE ABDUCTION MACHINE ENTIRELY. It has
-        // nothing left to abduct with — it already ate its Humanoid —
-        // and its only goal is the ship. Handled before the phase match
-        // rather than as another phase, because "which of these two
-        // creatures am I" is a different question from "how far through
-        // an abduction am I".
-        if self.kind == Kind::Mutant && self.phase != Phase::Dying {
-            return self.step_mutant(ship, noise, dt);
+        // A dying enemy of any kind only plays out its death, so the
+        // kinds below never have to remember to stand still.
+        if self.phase == Phase::Dying {
+            return Outcome::None;
         }
+
+        // ★ WHICH CREATURE, THEN HOW FAR THROUGH ITS BEHAVIOUR. A Mutant
+        // ignores the abduction machine entirely — it already ate its
+        // Humanoid and its only goal is the ship — so "which kind am I"
+        // is answered here, before any kind looks at its phase.
+        match self.kind {
+            Kind::Lander => self.step_lander(terrain, prey, dt),
+            Kind::Mutant => self.step_mutant(ship, noise, dt),
+        }
+    }
+
+    /// A Lander's whole behaviour: drift, hunt, grab, carry.
+    fn step_lander(&mut self, terrain: &Terrain, prey: Option<(f32, f32)>, dt: f32) -> Outcome {
+        let mut outcome = Outcome::None;
 
         match self.phase {
             Phase::Warping => {
@@ -416,6 +431,7 @@ impl Lander {
                 }
             }
 
+            // Handled once, for every kind, in `step`.
             Phase::Dying => {}
         }
 
@@ -423,7 +439,7 @@ impl Lander {
     }
 }
 
-impl Lander {
+impl Enemy {
     /// A Mutant's whole behaviour: chase the ship, and shoot at it.
     fn step_mutant(&mut self, ship: Option<(f32, f32)>, noise: &mut u32, dt: f32) -> Outcome {
         let Some((sx, sy)) = ship else {
@@ -517,10 +533,10 @@ pub enum Outcome {
     Fires,
 }
 
-/// Every Lander in the world.
+/// Every enemy in the world, of every kind.
 #[derive(Debug, Default)]
-pub struct Landers {
-    live: Vec<Lander>,
+pub struct Enemies {
+    live: Vec<Enemy>,
     /// How many Landers have been added since this was last read.
     ///
     /// ★ A COUNT, NOT A FLAG, and the difference matters at the opening
@@ -555,12 +571,12 @@ pub struct Landers {
     noise: u32,
 }
 
-impl Landers {
+impl Enemies {
     pub fn new() -> Self {
         Self { live: Vec::new(), claimed: Vec::new(), noise: 0x4D07_A17E, spawned: 0, fused: 0 }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Lander> {
+    pub fn iter(&self) -> impl Iterator<Item = &Enemy> {
         self.live.iter()
     }
 
@@ -578,8 +594,8 @@ impl Landers {
         self.live.iter().filter(|l| l.phase != Phase::Dying).count()
     }
 
-    pub fn spawn(&mut self, lander: Lander) {
-        self.live.push(lander);
+    pub fn spawn(&mut self, enemy: Enemy) {
+        self.live.push(enemy);
         self.spawned += 1;
     }
 
@@ -639,7 +655,7 @@ impl Landers {
                 1.0
             };
             let y = terrain.height_at(x) + HOVER_HEIGHT;
-            self.spawn(Lander::new(x, y, DRIFT_SPEED * dir));
+            self.spawn(Enemy::lander(x, y, DRIFT_SPEED * dir));
         }
     }
 
@@ -821,7 +837,7 @@ impl Landers {
     }
 
     /// The enemy at `index`, for a caller that needs to aim from it.
-    pub fn get(&self, index: usize) -> Option<&Lander> {
+    pub fn get(&self, index: usize) -> Option<&Enemy> {
         self.live.get(index)
     }
 
@@ -877,11 +893,11 @@ mod tests {
     #[test]
     fn spawning_is_counted_and_the_count_clears() {
         let t = terrain();
-        let mut ls = Landers::new();
+        let mut ls = Enemies::new();
         assert_eq!(ls.take_spawned(), 0, "a fresh world has not spawned anything");
 
-        ls.spawn(Lander::new(500.0, 300.0, 0.0));
-        ls.spawn(Lander::new(900.0, 300.0, 0.0));
+        ls.spawn(Enemy::lander(500.0, 300.0, 0.0));
+        ls.spawn(Enemy::lander(900.0, 300.0, 0.0));
         assert_eq!(ls.take_spawned(), 2, "two arrivals should count as two");
         assert_eq!(ls.take_spawned(), 0, "reading the count must clear it");
         // ⚠️ AND AN ARRIVAL IS NOT A FUSION. The two counters feed two
@@ -896,7 +912,7 @@ mod tests {
         // ⚠️ `scatter` goes through `spawn`, so the opening wave counts
         // too — which is why main.rs has to swallow the first read
         // rather than assume nothing has arrived yet.
-        let mut ls = Landers::new();
+        let mut ls = Enemies::new();
         ls.scatter(5, 0.0, &t, 99);
         assert_eq!(ls.take_spawned(), 5, "scatter must report its arrivals");
 
@@ -911,8 +927,8 @@ mod tests {
         // hear it at all". With `scatter` called once at startup and
         // fusion mutating in place, `spawn` is never reached during play
         // and the arrival voice could not sound.
-        let mut ls = Landers::new();
-        ls.spawn(Lander::new(500.0, 300.0, 0.0));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::lander(500.0, 300.0, 0.0));
         ls.take_spawned();
         let before = ls.len();
         if let Some(l) = ls.live.first_mut() {
@@ -930,8 +946,8 @@ mod tests {
     #[test]
     fn a_lander_cannot_be_shot_until_it_has_arrived() {
         let t = terrain();
-        let mut ls = Landers::new();
-        ls.spawn(Lander::new(500.0, 300.0, 0.0));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::lander(500.0, 300.0, 0.0));
 
         assert!(ls.hit_test(500.0, 300.0).is_none(), "warping must not be hittable");
         ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
@@ -944,10 +960,10 @@ mod tests {
     #[test]
     fn a_lander_on_the_seam_can_be_shot_from_both_sides() {
         let t = terrain();
-        let mut ls = Landers::new();
+        let mut ls = Enemies::new();
         // Sitting a few units west of the seam, i.e. at the very top of
         // the coordinate range.
-        ls.spawn(Lander::new(world::WORLD_W - 4.0, 300.0, 0.0));
+        ls.spawn(Enemy::lander(world::WORLD_W - 4.0, 300.0, 0.0));
         ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
         let y = ls.iter().next().unwrap().y;
 
@@ -968,8 +984,8 @@ mod tests {
     #[test]
     fn a_dead_lander_stops_being_a_target_immediately() {
         let t = terrain();
-        let mut ls = Landers::new();
-        ls.spawn(Lander::new(500.0, 300.0, 0.0));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::lander(500.0, 300.0, 0.0));
         ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
 
         let y = ls.iter().next().unwrap().y;
@@ -982,8 +998,8 @@ mod tests {
     #[test]
     fn a_dead_lander_is_removed_once_its_death_has_played() {
         let t = terrain();
-        let mut ls = Landers::new();
-        ls.spawn(Lander::new(500.0, 300.0, 0.0));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::lander(500.0, 300.0, 0.0));
         ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
         let y = ls.iter().next().unwrap().y;
         let hit = ls.hit_test(500.0, y).unwrap();
@@ -998,9 +1014,9 @@ mod tests {
     #[test]
     fn landers_follow_the_ridge_rather_than_a_fixed_height() {
         let t = terrain();
-        let mut ls = Landers::new();
+        let mut ls = Enemies::new();
         // Start at a wrong height and let it settle.
-        ls.spawn(Lander::new(500.0, 10.0, 0.0));
+        ls.spawn(Enemy::lander(500.0, 10.0, 0.0));
         ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
         for _ in 0..240 {
             ls.step(&t, &mut nobody(), None, 1.0 / 60.0);
@@ -1013,7 +1029,7 @@ mod tests {
     #[test]
     fn a_scattered_wave_is_spread_out_and_not_on_the_player() {
         let t = terrain();
-        let mut ls = Landers::new();
+        let mut ls = Enemies::new();
         ls.scatter(5, 0.0, &t, 12345);
         assert_eq!(ls.len(), 5);
         assert_eq!(ls.remaining(), 5);
@@ -1033,8 +1049,8 @@ mod tests {
     #[test]
     fn scattering_is_deterministic() {
         let t = terrain();
-        let mut a = Landers::new();
-        let mut b = Landers::new();
+        let mut a = Enemies::new();
+        let mut b = Enemies::new();
         a.scatter(4, 300.0, &t, 99);
         b.scatter(4, 300.0, &t, 99);
         let xs: Vec<f32> = a.iter().map(|l| l.x).collect();
@@ -1055,8 +1071,8 @@ mod tests {
         let mut people = Humanoids::new();
         people.spawn(crate::humanoid::Humanoid::new(600.0, t.height_at(600.0), 0.0));
 
-        let mut ls = Landers::new();
-        ls.spawn(Lander::new(500.0, t.height_at(500.0) + HOVER_HEIGHT, DRIFT_SPEED));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::lander(500.0, t.height_at(500.0) + HOVER_HEIGHT, DRIFT_SPEED));
 
         // Long enough to warp, drift past HUNT_AFTER, close, and grab.
         let mut saw_hunting = false;
@@ -1104,8 +1120,8 @@ mod tests {
         let mut people = Humanoids::new();
         people.spawn(crate::humanoid::Humanoid::new(600.0, t.height_at(600.0), 0.0));
 
-        let mut ls = Landers::new();
-        ls.spawn(Lander::new(590.0, t.height_at(600.0) + HOVER_HEIGHT, DRIFT_SPEED));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::lander(590.0, t.height_at(600.0) + HOVER_HEIGHT, DRIFT_SPEED));
 
         for _ in 0..2400 {
             ls.step(&t, &mut people, None, 1.0 / 120.0);
@@ -1142,9 +1158,9 @@ mod tests {
         people.spawn(crate::humanoid::Humanoid::new(600.0, t.height_at(600.0), 0.0));
         people.spawn(crate::humanoid::Humanoid::new(1400.0, t.height_at(1400.0), 0.0));
 
-        let mut ls = Landers::new();
-        ls.spawn(Lander::new(560.0, t.height_at(560.0) + HOVER_HEIGHT, DRIFT_SPEED));
-        ls.spawn(Lander::new(640.0, t.height_at(640.0) + HOVER_HEIGHT, -DRIFT_SPEED));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::lander(560.0, t.height_at(560.0) + HOVER_HEIGHT, DRIFT_SPEED));
+        ls.spawn(Enemy::lander(640.0, t.height_at(640.0) + HOVER_HEIGHT, -DRIFT_SPEED));
 
         for _ in 0..900 {
             ls.step(&t, &mut people, None, 1.0 / 120.0);
@@ -1165,8 +1181,8 @@ mod tests {
         let mut people = Humanoids::new();
         people.spawn(crate::humanoid::Humanoid::new(600.0, t.height_at(600.0), 0.0));
 
-        let mut ls = Landers::new();
-        ls.spawn(Lander::new(500.0, t.height_at(500.0) + HOVER_HEIGHT, DRIFT_SPEED));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::lander(500.0, t.height_at(500.0) + HOVER_HEIGHT, DRIFT_SPEED));
 
         for _ in 0..600 {
             ls.step(&t, &mut people, None, 1.0 / 120.0);
@@ -1198,8 +1214,8 @@ mod tests {
         let mut people = Humanoids::new();
         people.spawn(crate::humanoid::Humanoid::new(600.0, t.height_at(600.0), 0.0));
 
-        let mut ls = Landers::new();
-        ls.spawn(Lander::new(590.0, t.height_at(600.0) + HOVER_HEIGHT, DRIFT_SPEED));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::lander(590.0, t.height_at(600.0) + HOVER_HEIGHT, DRIFT_SPEED));
         // Drain the test's own setup arrival, so the counts asserted
         // below are about the FUSION and nothing else.
         assert_eq!(ls.take_spawned(), 1, "the setup spawn should count once");
@@ -1249,7 +1265,7 @@ mod tests {
     /// altitude, where "aim at the player" fires dead level.
     #[test]
     fn a_mutant_never_fires_straight() {
-        let m = Lander::mutant(500.0, 400.0);
+        let m = Enemy::mutant(500.0, 400.0);
         let mut noise = 0x1234_5678u32;
 
         for dy in [-400.0f32, -60.0, -1.0, 0.0, 1.0, 60.0, 400.0] {
@@ -1269,7 +1285,7 @@ mod tests {
     /// become never-accurate.
     #[test]
     fn a_mutant_shoots_toward_the_ship() {
-        let m = Lander::mutant(500.0, 400.0);
+        let m = Enemy::mutant(500.0, 400.0);
         let mut noise = 0x9999u32;
 
         let (vx, _) = m.aim_at(900.0, 400.0, &mut noise);
@@ -1280,7 +1296,7 @@ mod tests {
 
         // ⚠️ AND ACROSS THE SEAM. A ship just east of x=0 is WEST of a
         // Mutant near the end of the world, by the short way round.
-        let m = Lander::mutant(world::WORLD_W - 50.0, 400.0);
+        let m = Enemy::mutant(world::WORLD_W - 50.0, 400.0);
         let (vx, _) = m.aim_at(20.0, 400.0, &mut noise);
         assert!(vx > 0.0, "across the seam it must still fire the short way");
     }
@@ -1289,8 +1305,8 @@ mod tests {
     fn a_mutant_chases_the_ship_and_asks_to_fire() {
         let t = terrain();
         let mut people = Humanoids::new();
-        let mut ls = Landers::new();
-        ls.spawn(Lander::mutant(500.0, 400.0));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::mutant(500.0, 400.0));
 
         let ship = Some((900.0f32, 400.0f32));
         let start = world::delta(500.0, 900.0).abs();
@@ -1316,8 +1332,8 @@ mod tests {
     fn a_mutant_does_not_hunt_a_ship_that_is_not_flying() {
         let t = terrain();
         let mut people = Humanoids::new();
-        let mut ls = Landers::new();
-        ls.spawn(Lander::mutant(500.0, 400.0));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::mutant(500.0, 400.0));
 
         for _ in 0..600 {
             let wants = ls.step(&t, &mut people, None, 1.0 / 120.0);
@@ -1335,7 +1351,7 @@ mod tests {
     #[test]
     fn when_the_world_ends_every_lander_mutates() {
         let t = terrain();
-        let mut ls = Landers::new();
+        let mut ls = Enemies::new();
         ls.scatter(4, 0.0, &t, 99);
         assert_eq!(ls.mutants(), 0);
 
@@ -1350,8 +1366,8 @@ mod tests {
     #[test]
     fn a_drifting_lander_wraps_with_the_world() {
         let t = terrain();
-        let mut ls = Landers::new();
-        ls.spawn(Lander::new(5.0, 300.0, -DRIFT_SPEED));
+        let mut ls = Enemies::new();
+        ls.spawn(Enemy::lander(5.0, 300.0, -DRIFT_SPEED));
         ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
         for _ in 0..600 {
             ls.step(&t, &mut nobody(), None, 1.0 / 60.0);

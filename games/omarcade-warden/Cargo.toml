@@ -1,5 +1,5 @@
 [package]
-name = "omarcade-defender"
+name = "omarcade-warden"
 description = "The fourth Omarcade title: a horizontally scrolling shooter."
 version.workspace = true
 edition.workspace = true

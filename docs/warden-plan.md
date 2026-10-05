@@ -78,7 +78,7 @@ the controls, and anything that reaches `main` or the marketplace listing.
 ```bash
 cargo test --workspace            # 948 at 1edd4a7 — the number only goes up
 cargo clippy --workspace --bins   # nothing new (flight.rs:71 is pre-existing, W0 fixes it)
-cargo run --release -p omarcade-defender --example dump_frame -- <scene> /tmp/x.png   # look at it
+cargo run --release -p omarcade-warden --example dump_frame -- <scene> /tmp/x.png   # look at it
 ```
 
 Commits follow the house style:
@@ -119,7 +119,8 @@ every later commit already uses the final names.
 **Done when:**
 - `cargo test --workspace` passes at ≥948.
 - clippy is clean.
-- `git grep -i omarcade-defender` returns nothing.
+- `git grep -i omarcade-defender` returns nothing outside `docs/warden*`, which record the
+  before-state and the rename itself.
 
 ### W1. Waves and scoring (was S9; Brian's own next step)
 

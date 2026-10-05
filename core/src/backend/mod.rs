@@ -518,6 +518,44 @@ pub enum InputEvent {
     Resized { width: u32, height: u32 },
 }
 
+/// The keys a game has been told are down and not yet told are up.
+///
+/// ★ WHY THIS EXISTS: Brian's first flight of Warden "locked up firing,
+/// continuous firing and couldn't move". When a window loses keyboard
+/// focus on Wayland, winit 0.30 sends `Focused(false)` and NO key
+/// releases (`wayland/seat/keyboard/mod.rs`, the `Leave` arm). A key
+/// held at that moment is held in the game forever, and every press
+/// after it goes to whichever surface took focus. Every game in the
+/// suite tracks held keys, so every game had this bug.
+///
+/// ⇒ The backend records what it delivered, and on focus loss
+/// [`release_all`](Self::release_all) hands back a KeyUp for each. Games
+/// need no change: to them it is the release they never got.
+#[derive(Debug, Default)]
+pub struct HeldKeys {
+    // A Vec, not a bitmask over `Key`: a bitmask needs a list of every
+    // variant to drain, and a list kept beside an enum drifts from it.
+    // A handful of keys, on the game thread, never in the audio callback.
+    down: Vec<Key>,
+}
+
+impl HeldKeys {
+    /// Note an event the backend is about to deliver.
+    pub fn observe(&mut self, event: InputEvent) {
+        match event {
+            InputEvent::KeyDown(k) if !self.down.contains(&k) => self.down.push(k),
+            InputEvent::KeyUp(k) => self.down.retain(|&d| d != k),
+            _ => {}
+        }
+    }
+
+    /// Focus is gone: the KeyUp for every key still down, in the order
+    /// they went down. Afterwards nothing is held.
+    pub fn release_all(&mut self) -> impl Iterator<Item = InputEvent> + use<> {
+        std::mem::take(&mut self.down).into_iter().map(InputEvent::KeyUp)
+    }
+}
+
 /// A game: state that reacts to input and paints frames.
 ///
 /// The backend drives this, not the other way round — games do not own
@@ -1097,5 +1135,49 @@ mod additive_tests {
         let (h, f) = (px(&half, 1, 0, 0).r as i32, px(&full, 1, 0, 0).r as i32);
         assert!(h < f, "half coverage must add less light");
         assert!((h - f / 2).abs() <= 2, "expected about half of {f}, got {h}");
+    }
+}
+
+#[cfg(test)]
+mod held_keys_tests {
+    use super::{HeldKeys, InputEvent, Key};
+
+    fn released(h: &mut HeldKeys) -> Vec<InputEvent> {
+        h.release_all().collect()
+    }
+
+    /// ★ THE LOCK-UP, AS A TEST. Space goes down, focus leaves, and no
+    /// KeyUp ever comes from the platform. Focus loss must supply it.
+    #[test]
+    fn a_key_held_when_focus_leaves_is_released() {
+        let mut h = HeldKeys::default();
+        h.observe(InputEvent::KeyDown(Key::Space));
+        h.observe(InputEvent::KeyDown(Key::Up));
+        assert_eq!(
+            released(&mut h),
+            vec![InputEvent::KeyUp(Key::Space), InputEvent::KeyUp(Key::Up)]
+        );
+    }
+
+    /// A key the player already let go of is not released a second
+    /// time, and a second focus loss releases nothing.
+    #[test]
+    fn only_keys_still_down_are_released_and_only_once() {
+        let mut h = HeldKeys::default();
+        h.observe(InputEvent::KeyDown(Key::Space));
+        h.observe(InputEvent::KeyDown(Key::T));
+        h.observe(InputEvent::KeyUp(Key::Space));
+        assert_eq!(released(&mut h), vec![InputEvent::KeyUp(Key::T)]);
+        assert_eq!(released(&mut h), vec![], "nothing is held after a release_all");
+    }
+
+    /// A doubled KeyDown (an alias pair such as A and Left both pressed)
+    /// is still one held key, so focus loss sends one KeyUp, not two.
+    #[test]
+    fn a_doubled_press_is_released_once() {
+        let mut h = HeldKeys::default();
+        h.observe(InputEvent::KeyDown(Key::Left));
+        h.observe(InputEvent::KeyDown(Key::Left));
+        assert_eq!(released(&mut h), vec![InputEvent::KeyUp(Key::Left)]);
     }
 }

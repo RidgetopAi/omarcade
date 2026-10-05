@@ -269,6 +269,7 @@ impl super::Backend for WinitBackend {
             last_frame: None,
             error: None,
             scaler,
+            held: super::HeldKeys::default(),
         };
 
         event_loop.run_app(&mut app)?;
@@ -301,6 +302,8 @@ struct App<G: Game> {
     /// `None` is the native path, byte-for-byte as it was before this
     /// existed.
     scaler: Option<Scaler>,
+    /// What the game believes is held, so focus loss can release it.
+    held: super::HeldKeys,
 }
 
 impl<G: Game> App<G> {
@@ -377,6 +380,7 @@ impl<G: Game> App<G> {
 
     /// Hand an event to the game, exiting if it says to stop.
     fn deliver(&mut self, event_loop: &ActiveEventLoop, event: InputEvent) {
+        self.held.observe(event);
         if !self.game.on_input(event) {
             event_loop.exit();
         }
@@ -481,6 +485,15 @@ impl<G: Game> ApplicationHandler for App<G> {
                     ElementState::Released => InputEvent::KeyUp(key),
                 };
                 self.deliver(event_loop, event);
+            }
+
+            // ⚠️ NO KEY RELEASES COME WITH THIS on Wayland — see
+            // `HeldKeys`. Without it a key held as focus left stays held
+            // in the game for the rest of the run.
+            WindowEvent::Focused(false) => {
+                for event in self.held.release_all() {
+                    self.deliver(event_loop, event);
+                }
             }
 
             WindowEvent::RedrawRequested => {

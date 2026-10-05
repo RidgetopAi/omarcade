@@ -865,6 +865,45 @@ mod tests {
         assert_ne!(g.ship.vx, at_pause, "resuming must let it fly again");
     }
 
+    /// ★ BRIAN'S FIRST-FLIGHT LOCK-UP: "locked up firing, continuous
+    /// firing and couldn't move". Wayland drops focus without sending a
+    /// release, so this drives the game through `HeldKeys` exactly as
+    /// the backend does — observe each delivered event, then on focus
+    /// loss deliver whatever `release_all` hands back — and checks the
+    /// laser actually stops.
+    #[test]
+    fn losing_focus_while_firing_stops_the_laser() {
+        let mut g = game();
+        let mut held = omarcade_core::backend::HeldKeys::default();
+        let mut deliver = |g: &mut Warden, e: InputEvent| {
+            held.observe(e);
+            g.on_input(e);
+        };
+        deliver(&mut g, InputEvent::KeyDown(Key::Space));
+        deliver(&mut g, InputEvent::KeyDown(Key::T));
+        let mut audio = AudioSystem::new();
+        {
+            let mut a = audio.handle();
+            g.update(0.5, &mut a);
+        }
+        assert!(g.shots.len() > 0, "holding Space should have fired");
+
+        // Focus leaves. No KeyUp comes from the platform.
+        for e in held.release_all() {
+            g.on_input(e);
+        }
+        assert!(!g.fire_held && !g.thrust_held, "focus loss must release held keys");
+
+        // Long enough for every shot in flight to expire, so any shot
+        // left is one fired after focus went. In slices: `update` caps
+        // one call at 0.25 s.
+        for _ in 0..10 {
+            let mut a = audio.handle();
+            g.update(0.2, &mut a);
+        }
+        assert_eq!(g.shots.len(), 0, "the laser kept firing after focus was lost");
+    }
+
     /// ⚠️ THE S11 RULE, AS A TEST. Swallowing KeyUp while paused leaves
     /// the key held across the pause, and the ship flies off on resume
     /// because the release was eaten.

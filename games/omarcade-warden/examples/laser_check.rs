@@ -78,6 +78,10 @@ fn main() {
     let bomb = render(&mut sound::SmartBomb::new(), 3.2, &[0.0]);
     emit(&dir.join("smartbomb.wav"), &bomb, "Williams LITE x6 + CANNON");
 
+    // ★ HYPERSPACE — ours (the original had none): LITE out, APPEAR in.
+    let hyper = render(&mut sound::Hyperspace::new(), 1.0, &[0.0]);
+    emit(&dir.join("hyperspace.wav"), &hyper, "LITE out + APPEAR in, ours");
+
     // ★★ THE ENGINE, DRIVEN THE WAY THE GAME DRIVES IT.
     // ⚠️ NOT at a held constant. `exhaust` is EASED in main.rs — attack
     // 14.0/s against release 6.0/s — and the asymmetry is most of what

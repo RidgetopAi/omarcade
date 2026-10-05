@@ -207,6 +207,9 @@ struct Warden {
     /// anything — which is exactly why the bomb's kills were silent when
     /// Brian flew it. This one is cleared only by being played.
     bomb_pending: bool,
+    /// A hyperspace jump began since the last frame's sounds — between
+    /// frames, like the bomb, and for the same reason not a frame flag.
+    hyper_pending: bool,
     /// Noise for hyperspace: where it lands and whether it survives.
     rng: u32,
     /// This game's seed; every random placement in it derives from this.
@@ -240,6 +243,7 @@ struct Warden {
     ship_boom: SoundId,
     person_boom: SoundId,
     bomb_sound: SoundId,
+    hyper_sound: SoundId,
 
     // Held keys, resolved into an `Input` each step.
     thrust_held: bool,
@@ -286,10 +290,11 @@ struct Warden {
     world_ended_this_frame: bool,
 }
 
-/// The four explosion voices, grouped so `Warden::new` takes one
-/// argument rather than five.
+/// The one-shot event voices — the four deaths, the smart bomb and the
+/// hyperspace jump — grouped so `Warden::new` takes one argument rather
+/// than six.
 ///
-/// ⚠️ NOT a tuple. Four same-typed `SoundId`s positionally would silently
+/// ⚠️ NOT a tuple. Same-typed `SoundId`s positionally would silently
 /// swap if anyone reordered them, and the compiler would never say a
 /// word — you would just hear a Lander die like a ship once and never
 /// work out why.
@@ -300,6 +305,8 @@ struct Booms {
     person: SoundId,
     /// ★ The smart bomb: everything on screen going at once.
     smart_bomb: SoundId,
+    /// ★ The hyperspace jump: out, then back in.
+    hyperspace: SoundId,
 }
 
 impl Warden {
@@ -337,6 +344,7 @@ impl Warden {
             hyperspace: None,
             blast: None,
             bomb_pending: false,
+            hyper_pending: false,
             rng: 1,
             seed,
             squads: 0,
@@ -352,6 +360,7 @@ impl Warden {
             ship_boom: booms.ship,
             person_boom: booms.person,
             bomb_sound: booms.smart_bomb,
+            hyper_sound: booms.hyperspace,
             thrust_held: false,
             exhaust: 0.0,
             up_held: false,
@@ -409,6 +418,7 @@ impl Warden {
         self.hyperspace = None;
         self.blast = None;
         self.bomb_pending = false;
+        self.hyper_pending = false;
         self.rng = mix(seed, 0x4859_5045);
         self.recorded = false;
         self.accumulator = 0.0;
@@ -514,6 +524,7 @@ impl Warden {
         self.camera.snap_to(&self.ship);
         self.shots.clear_enemy();
         self.hyperspace = Some(0.0);
+        self.hyper_pending = true;
     }
 
     /// Advance a jump in progress, and settle the death roll on arrival.
@@ -1108,6 +1119,12 @@ impl Game for Warden {
             self.bomb_pending = false;
             audio.play(self.bomb_sound);
         }
+        // ★ HYPERSPACE HAS A VOICE NOW (the original had none — Brian
+        // asked). Timed to the jump: it ends as the ship comes together.
+        if self.hyper_pending {
+            self.hyper_pending = false;
+            audio.play(self.hyper_sound);
+        }
 
         // ★ W1: SQUADS ARRIVE, AND EVERY ONE IS HEARD — the first
         // included. The opening five used to be placed before frame one
@@ -1190,6 +1207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
         person: audio.register_sound(Box::new(sound::PersonBoom::new())),
         smart_bomb: audio.register_sound(Box::new(sound::SmartBomb::new())),
+        hyperspace: audio.register_sound(Box::new(sound::Hyperspace::new())),
     };
     let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
     let mut game = Warden::new(theme, laser, thrust, warp, booms, scores, clock_seed());
@@ -1217,6 +1235,7 @@ mod tests {
             ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
             person: audio.register_sound(Box::new(sound::PersonBoom::new())),
             smart_bomb: audio.register_sound(Box::new(sound::SmartBomb::new())),
+            hyperspace: audio.register_sound(Box::new(sound::Hyperspace::new())),
         };
         // ⚠️ AN IN-MEMORY SCORE FILE, never loaded or saved: a test that
         // reaches game over must not write a player's real high scores.
@@ -1601,6 +1620,7 @@ mod tests {
         g.on_input(InputEvent::KeyDown(Key::H));
 
         assert!(g.hyperspace.is_some());
+        assert!(g.hyper_pending, "the jump's voice was not queued");
         assert!(world::delta(from, g.ship.x).abs() >= world::VIEW_W, "it stayed on the same screen");
         assert_eq!(g.ship.vx, 0.0, "it kept its speed");
         assert!(g.shots.iter().all(|s| !s.is_enemy()), "enemy bolts survived the jump");
@@ -1636,6 +1656,24 @@ mod tests {
             g.hyperspace = None;
         }
         assert!(nearest >= world::VIEW_W, "one jump landed only {nearest:.0} away");
+    }
+
+    /// ★ THE JUMP SOUNDS AS LONG AS THE JUMP: the voice ends as the ship
+    /// finishes coming back together, measured from a real render.
+    #[test]
+    fn the_hyperspace_voice_lasts_exactly_the_jump() {
+        use omarcade_core::Voice;
+        let mut v = sound::Hyperspace::new();
+        v.retrigger(1.0, 1.0);
+        let sr = 48_000.0;
+        let mut out = Vec::new();
+        let mut block = [0.0f32; 256];
+        while v.alive() && out.len() < 96_000 {
+            v.render(&mut block, VoiceParams::SILENT, sr);
+            out.extend_from_slice(&block);
+        }
+        let end = out.iter().rposition(|x| x.abs() > 1e-4).unwrap() as f32 / sr;
+        assert!((end - HYPERSPACE_SECONDS).abs() < 0.03, "voice {end:.3} s, jump {HYPERSPACE_SECONDS:.3} s");
     }
 
     /// ★ THE GAMBLE, MEASURED: about one jump in four ends in an

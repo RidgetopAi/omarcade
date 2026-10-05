@@ -1148,9 +1148,11 @@ const WILLIAMS_CLOCK: f32 = 894_886.0;
 const BOMB_STUTTERS: u8 = 6;
 const BOMB_STUTTER_CYCLES: f32 = 0.064 * WILLIAMS_CLOCK;
 
-/// LITE: cycles per sample are `LITE_BASE + LITE_PER_STEP × L`, and L
-/// climbs by one every `LITE_SAMPLES_PER_STEP` samples — so the crackle's
-/// clock falls from ~18.6 kHz as it runs. Each restart snaps it back.
+/// LITE and APPEAR share one routine (`LITEN`): cycles per sample are
+/// `LITE_BASE + LITE_PER_STEP × L`, and L moves by a step every few
+/// samples. LITE climbs L from 1 (clock FALLING from ~18.6 kHz: something
+/// breaking up); APPEAR walks it down to 0 (clock RISING: something
+/// arriving).
 const LITE_BASE: f32 = 42.0;
 const LITE_PER_STEP: f32 = 6.0;
 const LITE_SAMPLES_PER_STEP: u8 = 3;
@@ -1170,12 +1172,193 @@ const DC_BLOCK_HZ: f32 = 20.0;
 /// `no_voice_clips_at_full_gain`.
 const BOMB_LEVEL: f32 = 0.42;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+// ---------------------------------------------------------------------
+// The board: the parts every Williams-mechanism voice shares
+// ---------------------------------------------------------------------
+
+/// One Williams sound board's worth of state: the random shift register,
+/// the DAC and how long it holds, and the amplifier's AC coupling.
+///
+/// ★ A VOICE IS A SEQUENCE OF ROUTINES ON THIS. The smart bomb is LITE
+/// then CANNON; hyperspace is LITE then APPEAR. Each routine is a small
+/// generator that writes the DAC; the board turns writes into samples.
+struct Board {
+    hi: u8,
+    lo: u8,
+    dac: u8,
+    /// Cycles the DAC still holds its value.
+    hold: f32,
+    dc_x: f32,
+    dc_y: f32,
+}
+
+impl Board {
+    const fn new() -> Self {
+        // The original's seed: HI = $3C, LO = 0.
+        Self { hi: 0x3C, lo: 0, dac: 0x80, hold: 0.0, dc_x: 0.0, dc_y: 0.0 }
+    }
+
+    /// Restart the output path. The shift register keeps running between
+    /// sounds, as the board's did: no two are the same noise.
+    fn restart(&mut self) {
+        self.hold = 0.0;
+        self.dc_x = 0.0;
+        self.dc_y = 0.0;
+    }
+
+    /// One step of the shift register, with `feed` mixed into the new top
+    /// bit. Returns the bit shifted out.
+    fn shift(&mut self, feed: u8) -> bool {
+        let new_top = ((feed >> 3) ^ self.lo) & 1;
+        let out_hi = self.hi & 1;
+        self.hi = (self.hi >> 1) | (new_top << 7);
+        let out = self.lo & 1 == 1;
+        self.lo = (self.lo >> 1) | (out_hi << 7);
+        out
+    }
+
+    /// One output sample. `write` is called whenever the DAC's hold runs
+    /// out, and must set `dac` and `hold`.
+    ///
+    /// ★ ZERO-ORDER HOLD, INTEGRATED: the DAC is averaged over exactly the
+    /// cycles this output sample spans, so every write lands with its true
+    /// weight and nothing is resampled away. Then the AC coupling.
+    fn sample(&mut self, per_sample: f32, r: f32, mut write: impl FnMut(&mut Board)) -> f32 {
+        let mut need = per_sample;
+        let mut acc = 0.0f32;
+        while need > 0.0 {
+            if self.hold <= 0.0 {
+                write(self);
+            }
+            let take = need.min(self.hold);
+            acc += self.dac as f32 * take;
+            need -= take;
+            self.hold -= take;
+        }
+        let x = (acc / per_sample - 128.0) / 128.0;
+        let y = x - self.dc_x + r * self.dc_y;
+        self.dc_x = x;
+        self.dc_y = y;
+        y
+    }
+}
+
+/// The DC-block coefficient at `sample_rate`.
+fn dc_block(sample_rate: f32) -> f32 {
+    1.0 - (2.0 * PI * DC_BLOCK_HZ / sample_rate)
+}
+
+/// LITE / APPEAR: 1-bit full-scale noise, the DAC inverting on each
+/// random 1, with its clock walked by `step` every `per_step` samples.
+#[derive(Debug, Clone, Copy)]
+struct Liten {
+    l: u8,
+    step: i8,
+    per_step: u8,
+    count: u8,
+    /// Cycles since this one started, for a caller that cuts it short.
+    cycles: f32,
+}
+
+impl Liten {
+    /// The original's LITE: L from 1, +1 every 3 samples — falling.
+    fn lite() -> Self {
+        Self { l: 1, step: 1, per_step: LITE_SAMPLES_PER_STEP, count: LITE_SAMPLES_PER_STEP, cycles: 0.0 }
+    }
+
+    /// APPEAR's shape — L walked DOWN, so the clock rises — from `l` in
+    /// steps of `step`, `per_step` samples each.
+    fn appear(l: u8, step: i8, per_step: u8) -> Self {
+        Self { l, step, per_step, count: per_step, cycles: 0.0 }
+    }
+
+    /// Starting a LITE/APPEAR puts the DAC at full scale (`LITEN`).
+    fn begin(b: &mut Board) {
+        b.dac = 0xFF;
+    }
+
+    /// One DAC write. Returns false once L has run off its end (the
+    /// original's `BNE LITE0` falling through).
+    fn write(&mut self, b: &mut Board) -> bool {
+        let lo = b.lo;
+        if b.shift(lo) {
+            b.dac = !b.dac;
+        }
+        b.hold = LITE_BASE + LITE_PER_STEP * self.l as f32;
+        self.cycles += b.hold;
+        self.count -= 1;
+        if self.count == 0 {
+            self.count = self.per_step;
+            let next = self.l as i16 + self.step as i16;
+            if !(1..=255).contains(&next) {
+                return false;
+            }
+            self.l = next as u8;
+        }
+        true
+    }
+}
+
+/// CANNON (`FNOISE` with distortion): slew toward a random target at a
+/// random slope no steeper than a ceiling that decays ×7/8 every
+/// [`CANNON_DECAY_SAMPLES`].
+#[derive(Debug, Clone, Copy)]
+struct Cannon {
+    fmax: u16,
+    frac: u8,
+    target: u8,
+    decay_in: u16,
+}
+
+impl Cannon {
+    fn new(b: &Board) -> Self {
+        Self { fmax: CANNON_START_SLOPE, frac: 0, target: b.dac, decay_in: CANNON_DECAY_SAMPLES }
+    }
+
+    /// One DAC write. Returns false once the ceiling has settled.
+    fn write(&mut self, b: &mut Board) -> bool {
+        if b.dac == self.target {
+            let dac = b.dac;
+            b.shift(dac);
+            self.target = b.lo;
+        }
+        let slope_hi = ((self.fmax >> 8) as u8) & b.hi;
+        let step = ((slope_hi as u16) << 8) | (self.fmax & 0xFF);
+        let pos = ((b.dac as u16) << 8) | self.frac as u16;
+        let t = (self.target as u16) << 8;
+        let next = if pos < t { pos.saturating_add(step).min(t) } else { pos.saturating_sub(step).max(t) };
+        b.dac = (next >> 8) as u8;
+        self.frac = next as u8;
+        b.hold = CANNON_CYCLES;
+
+        self.decay_in -= 1;
+        if self.decay_in == 0 {
+            self.decay_in = CANNON_DECAY_SAMPLES;
+            // ×7/8, truncating — it settles at 7/256 and stops, exactly
+            // where the original's routine returns.
+            let next = self.fmax - (self.fmax >> 3);
+            let settled = next == self.fmax || self.fmax <= 7;
+            self.fmax = next;
+            if settled {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Park the board silent once a voice has finished.
+fn park(b: &mut Board) {
+    b.dac = 0x80;
+    b.hold = f32::MAX;
+}
+
+#[derive(Debug, Clone, Copy)]
 enum BombStage {
     /// The crackle, on burst `n` of [`BOMB_STUTTERS`].
-    Lite { burst: u8 },
+    Lite { burst: u8, routine: Liten },
     /// The explosion tail.
-    Cannon,
+    Cannon(Cannon),
     Done,
 }
 
@@ -1183,26 +1366,7 @@ enum BombStage {
 pub struct SmartBomb {
     gain: f32,
     stage: BombStage,
-    /// The board's 16-bit random shift register.
-    hi: u8,
-    lo: u8,
-    /// The DAC, and how many cycles it has left to hold its value.
-    dac: u8,
-    hold: f32,
-    /// Cycles spent in the current LITE burst.
-    burst_cycles: f32,
-    /// LITE's period step L, and samples left at this L.
-    lite_l: u8,
-    lite_count: u8,
-    /// CANNON's slope ceiling (8.8 fixed point), fractional position,
-    /// target, and samples to the next decay.
-    fmax: u16,
-    frac: u8,
-    target: u8,
-    decay_in: u16,
-    /// DC blocker state.
-    dc_x: f32,
-    dc_y: f32,
+    board: Board,
 }
 
 impl Default for SmartBomb {
@@ -1213,163 +1377,169 @@ impl Default for SmartBomb {
 
 impl SmartBomb {
     pub fn new() -> Self {
-        Self {
-            gain: 1.0,
-            stage: BombStage::Done,
-            hi: 0x3C,
-            lo: 0,
-            dac: 0x80,
-            hold: 0.0,
-            burst_cycles: 0.0,
-            lite_l: 1,
-            lite_count: LITE_SAMPLES_PER_STEP,
-            fmax: CANNON_START_SLOPE,
-            frac: 0,
-            target: 0x80,
-            decay_in: CANNON_DECAY_SAMPLES,
-            dc_x: 0.0,
-            dc_y: 0.0,
-        }
-    }
-
-    /// One step of the board's shift register, with `feed` mixed into the
-    /// new top bit. Returns the bit shifted out.
-    fn shift(&mut self, feed: u8) -> bool {
-        let new_top = ((feed >> 3) ^ self.lo) & 1;
-        let out_hi = self.hi & 1;
-        self.hi = (self.hi >> 1) | (new_top << 7);
-        let out = self.lo & 1 == 1;
-        self.lo = (self.lo >> 1) | (out_hi << 7);
-        out
-    }
-
-    fn start_lite(&mut self, burst: u8) {
-        self.stage = BombStage::Lite { burst };
-        self.burst_cycles = 0.0;
-        self.lite_l = 1;
-        self.lite_count = LITE_SAMPLES_PER_STEP;
-        self.dac = 0xFF;
-    }
-
-    /// Advance the board by one DAC write; sets `dac` and `hold`.
-    fn next_write(&mut self) {
-        match self.stage {
-            BombStage::Lite { burst } => {
-                // ★ THE STUTTER: every 64 ms the crackle restarts from its
-                // fastest clock, six times, before the explosion takes over.
-                if self.burst_cycles >= BOMB_STUTTER_CYCLES {
-                    if burst + 1 < BOMB_STUTTERS {
-                        self.start_lite(burst + 1);
-                    } else {
-                        self.stage = BombStage::Cannon;
-                        self.fmax = CANNON_START_SLOPE;
-                        self.frac = 0;
-                        self.decay_in = CANNON_DECAY_SAMPLES;
-                        self.target = self.dac;
-                        return self.next_write();
-                    }
-                }
-                // LITE: 1-bit noise — the DAC inverts on every random 1.
-                let lo = self.lo;
-                if self.shift(lo) {
-                    self.dac = !self.dac;
-                }
-                self.hold = LITE_BASE + LITE_PER_STEP * self.lite_l as f32;
-                self.burst_cycles += self.hold;
-                self.lite_count -= 1;
-                if self.lite_count == 0 {
-                    self.lite_count = LITE_SAMPLES_PER_STEP;
-                    self.lite_l = self.lite_l.saturating_add(1);
-                }
-            }
-
-            BombStage::Cannon => {
-                // FNOISE with distortion: slew toward a random target at
-                // a random slope no steeper than the decaying ceiling.
-                let reached = self.dac == self.target;
-                if reached {
-                    let dac = self.dac;
-                    self.shift(dac);
-                    self.target = self.lo;
-                }
-                let slope_hi = ((self.fmax >> 8) as u8) & self.hi;
-                let step = ((slope_hi as u16) << 8) | (self.fmax & 0xFF);
-                let pos = ((self.dac as u16) << 8) | self.frac as u16;
-                let t = (self.target as u16) << 8;
-                let next = if pos < t {
-                    pos.saturating_add(step).min(t)
-                } else {
-                    pos.saturating_sub(step).max(t)
-                };
-                self.dac = (next >> 8) as u8;
-                self.frac = next as u8;
-                self.hold = CANNON_CYCLES;
-
-                self.decay_in -= 1;
-                if self.decay_in == 0 {
-                    self.decay_in = CANNON_DECAY_SAMPLES;
-                    // ×7/8, truncating — it settles at 7/256 and stops,
-                    // exactly where the original's routine returns.
-                    let next = self.fmax - (self.fmax >> 3);
-                    if next == self.fmax || self.fmax <= 7 {
-                        self.stage = BombStage::Done;
-                    }
-                    self.fmax = next;
-                }
-            }
-
-            BombStage::Done => {
-                self.dac = 0x80;
-                self.hold = f32::MAX;
-            }
-        }
+        Self { gain: 1.0, stage: BombStage::Done, board: Board::new() }
     }
 }
 
 impl Voice for SmartBomb {
     fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
         let per_sample = WILLIAMS_CLOCK / sample_rate;
-        let r = 1.0 - (2.0 * PI * DC_BLOCK_HZ / sample_rate);
+        let r = dc_block(sample_rate);
         for sample in out.iter_mut() {
-            if self.stage == BombStage::Done {
+            if matches!(self.stage, BombStage::Done) {
                 *sample = 0.0;
                 continue;
             }
-            // ★ ZERO-ORDER HOLD, INTEGRATED: average the DAC over exactly
-            // the cycles this output sample spans, so every write lands
-            // with its true weight and nothing is resampled away.
-            let mut need = per_sample;
-            let mut acc = 0.0f32;
-            while need > 0.0 {
-                if self.hold <= 0.0 {
-                    self.next_write();
+            let stage = &mut self.stage;
+            let y = self.board.sample(per_sample, r, |b| loop {
+                match stage {
+                    BombStage::Lite { burst, routine } => {
+                        // ★ THE STUTTER: every 64 ms the crackle restarts
+                        // from its fastest clock, six times, before the
+                        // explosion takes over.
+                        if routine.cycles >= BOMB_STUTTER_CYCLES {
+                            if *burst + 1 < BOMB_STUTTERS {
+                                *stage = BombStage::Lite { burst: *burst + 1, routine: Liten::lite() };
+                                Liten::begin(b);
+                            } else {
+                                *stage = BombStage::Cannon(Cannon::new(b));
+                            }
+                            continue;
+                        }
+                        routine.write(b);
+                        return;
+                    }
+                    BombStage::Cannon(c) => {
+                        if !c.write(b) {
+                            *stage = BombStage::Done;
+                        }
+                        return;
+                    }
+                    BombStage::Done => return park(b),
                 }
-                let take = need.min(self.hold);
-                acc += self.dac as f32 * take;
-                need -= take;
-                self.hold -= take;
-            }
-            let x = (acc / per_sample - 128.0) / 128.0;
-            // The amplifier was AC-coupled; so is this.
-            let y = x - self.dc_x + r * self.dc_y;
-            self.dc_x = x;
-            self.dc_y = y;
+            });
             *sample = y * BOMB_LEVEL * self.gain;
         }
     }
 
     fn alive(&self) -> bool {
-        self.stage != BombStage::Done
+        !matches!(self.stage, BombStage::Done)
     }
 
     fn retrigger(&mut self, gain: f32, _pitch: f32) {
         self.gain = gain.clamp(0.0, 1.0);
-        self.hold = 0.0;
-        self.dc_x = 0.0;
-        self.dc_y = 0.0;
-        // The shift register keeps running between bombs, as the board's
-        // did: two bombs are never the same crackle.
-        self.start_lite(0);
+        self.board.restart();
+        self.stage = BombStage::Lite { burst: 0, routine: Liten::lite() };
+        Liten::begin(&mut self.board);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Hyperspace
+// ---------------------------------------------------------------------
+
+// ★ OURS, NOT THE ORIGINAL'S — AND THE ORIGINAL HAD NONE. Defender's
+// HYPER routine (defa7.src) calls no sound at all; you heard whatever was
+// already playing. Brian, having flown the jump: "Hyper Space has no sound
+// FX either. Can we add that". So this is built in the board's own
+// vocabulary rather than recalled: OUT, then IN.
+// · Out: one LITE burst (64 ms, the smart bomb's stutter unit), its
+//   clock falling — the ship coming apart.
+// · In: APPEAR, the board's own "something is materialising" routine,
+//   its clock RISING from ~760 Hz to the top, time-compressed so it
+//   lands as the ship finishes coming back together (main.rs
+//   HYPERSPACE_SECONDS, 40 frames).
+// ⚠️ NOT THE WARP. Brian's Warp also rises, but it is swept filtered
+// noise; this is 1-bit crackle. Same direction, different instrument —
+// a Lander arriving and you arriving must not be the same word.
+
+/// The departure: one LITE burst this long.
+const HYPER_OUT_CYCLES: f32 = 0.064 * WILLIAMS_CLOCK;
+
+/// The arrival: APPEAR's L from 192 down in steps of 2 — the original's
+/// own start and step — with samples per step compressed from its 16 to
+/// fit the materialise (measured: 9 → ~0.6 s, against 1.07 s at 16).
+const HYPER_IN_FROM: u8 = 0xC0;
+const HYPER_IN_STEP: i8 = -2;
+const HYPER_IN_PER_STEP: u8 = 9;
+
+/// ⚠️ NOT THE PEAK; rendered and measured in the clip test. Under the
+/// bomb's: a jump is a manoeuvre, not a detonation.
+const HYPER_LEVEL: f32 = 0.30;
+
+#[derive(Debug, Clone, Copy)]
+enum HyperStage {
+    Out(Liten),
+    In(Liten),
+    Done,
+}
+
+/// Hyperspace: the ship breaking up, then coming back together.
+pub struct Hyperspace {
+    gain: f32,
+    stage: HyperStage,
+    board: Board,
+}
+
+impl Default for Hyperspace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Hyperspace {
+    pub fn new() -> Self {
+        Self { gain: 1.0, stage: HyperStage::Done, board: Board::new() }
+    }
+}
+
+impl Voice for Hyperspace {
+    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
+        let per_sample = WILLIAMS_CLOCK / sample_rate;
+        let r = dc_block(sample_rate);
+        for sample in out.iter_mut() {
+            if matches!(self.stage, HyperStage::Done) {
+                *sample = 0.0;
+                continue;
+            }
+            let stage = &mut self.stage;
+            let y = self.board.sample(per_sample, r, |b| loop {
+                match stage {
+                    HyperStage::Out(routine) => {
+                        if routine.cycles >= HYPER_OUT_CYCLES {
+                            *stage = HyperStage::In(Liten::appear(
+                                HYPER_IN_FROM,
+                                HYPER_IN_STEP,
+                                HYPER_IN_PER_STEP,
+                            ));
+                            Liten::begin(b);
+                            continue;
+                        }
+                        routine.write(b);
+                        return;
+                    }
+                    HyperStage::In(routine) => {
+                        if !routine.write(b) {
+                            *stage = HyperStage::Done;
+                        }
+                        return;
+                    }
+                    HyperStage::Done => return park(b),
+                }
+            });
+            *sample = y * HYPER_LEVEL * self.gain;
+        }
+    }
+
+    fn alive(&self) -> bool {
+        !matches!(self.stage, HyperStage::Done)
+    }
+
+    fn retrigger(&mut self, gain: f32, _pitch: f32) {
+        self.gain = gain.clamp(0.0, 1.0);
+        self.board.restart();
+        self.stage = HyperStage::Out(Liten::lite());
+        Liten::begin(&mut self.board);
     }
 }
 
@@ -1597,9 +1767,10 @@ mod tests {
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 7] = [
+        let cases: [(&str, &mut dyn Voice, f32); 8] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
             ("smart bomb", &mut SmartBomb::new(), 3.0),
+            ("hyperspace", &mut Hyperspace::new(), 0.7),
             ("lander", &mut Boom::new(), BOOM_LEN),
             ("mutant", &mut MutantBoom::new(), MUTANT_BOOM_LEN),
             ("ship", &mut ShipBoom::new(), SHIP_BOOM_LEN),
@@ -1733,6 +1904,24 @@ mod tests {
             let after = brightness(&s[edge + win / 4..edge + win]);
             assert!(after > before * 1.2, "no restart at {} ms: {before:.3} → {after:.3}", k * 64);
         }
+    }
+
+    /// ★ HYPERSPACE GOES OUT AND COMES BACK IN: the departure's crackle
+    /// falls (LITE, clock slowing), the arrival's rises (APPEAR, clock
+    /// quickening) — measured: 0.37 → 0.15, then 0.14 → 0.36. It ends,
+    /// and retires.
+    #[test]
+    fn hyperspace_breaks_up_and_comes_back_together() {
+        let mut h = Hyperspace::new();
+        h.retrigger(1.0, 1.0);
+        let s = render_all(&mut h, 0.9);
+        assert!(!h.alive(), "the jump never retired");
+        assert!(s.iter().all(|x| x.is_finite()));
+        let at = |t: f32| (t * SR) as usize;
+        let leaving = (brightness(&s[at(0.0)..at(0.016)]), brightness(&s[at(0.048)..at(0.064)]));
+        assert!(leaving.1 < leaving.0, "the departure did not fall: {leaving:?}");
+        let arriving = (brightness(&s[at(0.08)..at(0.16)]), brightness(&s[at(0.58)..at(0.65)]));
+        assert!(arriving.1 > arriving.0 * 1.5, "the arrival did not rise: {arriving:?}");
     }
 
     /// ★★ THE WARP-IN SWEEPS UP, where every other filtered voice in

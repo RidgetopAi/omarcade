@@ -635,7 +635,7 @@ impl Warden {
                 self.squads += 1;
                 let seed = mix(self.seed, 0x5EED_0000 ^ self.squads);
                 // ★ After the world has ended they come through as Mutants.
-                self.enemies.squad(n, self.ship.x, &self.terrain, seed, self.world_ended);
+                self.enemies.squad(n, self.ship.x, seed, self.world_ended);
             }
             Some(Event::Bombers(n)) => self.spawn_bombers(n),
             Some(Event::Baiter) => self.spawn_baiter(),

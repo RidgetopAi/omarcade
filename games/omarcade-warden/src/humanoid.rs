@@ -284,25 +284,6 @@ impl Humanoids {
         landed
     }
 
-    /// The nearest grabbable Humanoid to `x`, with its index.
-    ///
-    /// ⚠️ DISTANCE THROUGH [`world::delta`]. A Lander at x = 5 and a
-    /// Humanoid at WORLD_W - 5 are ten units apart; raw subtraction says
-    /// nearly four screens, so every Lander near the seam would ignore
-    /// the person standing next to it and fly the long way round.
-    pub fn nearest_grabbable(&self, x: f32) -> Option<usize> {
-        self.live
-            .iter()
-            .enumerate()
-            .filter(|(_, h)| h.is_grabbable())
-            .min_by(|(_, a), (_, b)| {
-                let da = world::delta(x, a.x).abs();
-                let db = world::delta(x, b.x).abs();
-                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(i, _)| i)
-    }
-
     /// The first shootable Humanoid overlapping `(x, y)`.
     pub fn hit_test(&self, x: f32, y: f32) -> Option<usize> {
         self.live.iter().position(|h| {
@@ -526,21 +507,6 @@ mod tests {
 
         let h = *hs.get(0).unwrap();
         assert!(hs.hit_test(h.x, h.y).is_none(), "shot my own passenger");
-    }
-
-    /// ⚠️ THE SEAM. A Lander at the very start of the world must notice
-    /// the Humanoid a few units west of it, which is at the very end.
-    #[test]
-    fn the_nearest_humanoid_is_found_across_the_seam() {
-        let t = terrain();
-        let mut hs = Humanoids::new();
-        // One very close, across the seam; one far away but with a
-        // smaller raw coordinate difference.
-        hs.spawn(Humanoid::new(world::WORLD_W - 12.0, t.height_at(0.0), 0.0));
-        hs.spawn(Humanoid::new(900.0, t.height_at(900.0), 0.0));
-
-        let near = hs.nearest_grabbable(4.0).expect("something must be nearest");
-        assert_eq!(near, 0, "it picked the far one, so delta was not used");
     }
 
     #[test]

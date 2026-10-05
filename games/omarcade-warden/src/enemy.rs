@@ -183,31 +183,60 @@ pub const GRAB_HEIGHT: f32 = 120.0;
 /// The ridge still governs the height, so they rise and fall with it.
 pub const HOVER_HEIGHT: f32 = 300.0;
 
-/// How fast a Lander drifts along the world, in units per second.
-///
-/// Slow. A Lander in the original is not chasing you in this phase — it
-/// is looking for a Humanoid, and the menace is that it is ignoring you.
-pub const DRIFT_SPEED: f32 = 46.0;
+// ---------------------------------------------------------------------
+// ★★ HOW A LANDER HUNTS — THE ORIGINAL'S WAY (defb6.src LANDST, LANDS0,
+// LANDG, LANDF, GTARG), after Brian flew wave 1: "wave 1 seems really
+// hard… ability to even get to the captured humanoids".
+//
+// MEASURED, before this change: every Lander hunted the NEAREST person
+// and steered to them, so a whole squad grabbed at once, 4 s in, all
+// round the world, and all five were gone by 13–15 s — on every seed.
+// The original, simulated from its source (omarcade-reference/emulator/
+// og_landers.py): first grab 7–24 s in, the rest one at a time, seconds
+// apart. Its Landers:
+//  · arrive at a random place at the TOP and sink to their hunting
+//    height (LANDST: YMIN+2, LNDYV);
+//  · drift at their OWN random speed and direction (RMAX(LNDXV));
+//  · are handed the NEXT person in a list, wherever they are (GTARG);
+//  · and do NOT steer toward them — they drift until they happen to
+//    pass over them, and only then swoop (LANDS0).
+// That last is the whole difference: an abduction is something that
+// builds where you can see it coming, not something that happens
+// everywhere at once.
+// ---------------------------------------------------------------------
 
-/// How long a Lander drifts before it starts hunting, in seconds.
-///
-/// ★ A DELIBERATE GRACE PERIOD. Landers that begin hunting the instant
-/// they arrive reach the surface before the player has crossed the
-/// world once, and the first thing you learn is that you were already
-/// too late. Drifting first is also how the arcade reads: they mill
-/// about, and then they get to work.
-pub const HUNT_AFTER: f32 = 2.4;
+/// One original pixel-per-frame, in world units per second, measured
+/// WORLD-RELATIVELY: the original's world is 2048 px round, ours 3840
+/// units, so a speed that laps theirs in a given time laps ours in the
+/// same time. Lap time is what decides when a drifting Lander reaches its
+/// target, so it is the scale that keeps the original's timing.
+const PX_PER_FRAME: f32 = world::WORLD_W / 2048.0 * 60.0;
 
-/// How fast a hunting Lander moves toward its target, in units/second.
-///
-/// Faster than the drift — this one has decided — but well under the
-/// ship's top speed, so an attentive player always has the option of
-/// getting there first.
-pub const HUNT_SPEED: f32 = 132.0;
+/// A Lander's drift is a random 1..=32 thirty-seconds of a pixel a frame
+/// (RMAX(LNDXV), LNDXV = $20 in wave 1): ~3.5 to 112.5 u/s, either way.
+pub const DRIFT_MAX: f32 = PX_PER_FRAME;
+pub const DRIFT_STEPS: u32 = 32;
 
-/// How fast a Lander descends and climbs, in units per second.
-pub const DESCEND_SPEED: f32 = 150.0;
-pub const CLIMB_SPEED: f32 = 96.0;
+/// The drift used where a single representative speed is wanted (tests,
+/// diagnostic scenes): the middle of the range.
+pub const DRIFT_SPEED: f32 = DRIFT_MAX * 0.5;
+
+/// How fast a Lander sinks to its hunting height, swoops, and climbs
+/// away with its captive: LNDYV, $70/256 of a line a frame in wave 1,
+/// at 3 world units a line — 78.75 u/s. One speed for all three, as in
+/// the original. (Was 150 down and 96 up.)
+pub const LANDER_VSPEED: f32 = 0x70 as f32 / 256.0 * 60.0 * 3.0;
+
+/// The swoop's slide onto its target: 1 px a frame (LANDG).
+pub const GRAB_SLIDE: f32 = PX_PER_FRAME;
+
+/// How close a drifting Lander must pass over its target to swoop: the
+/// original compares 32 px buckets (LANDS0 `ANDA #$FC`).
+pub const ALIGN_X: f32 = 32.0 * world::WORLD_W / 2048.0;
+
+/// Where a Lander appears: near the top of the sky, as the original's
+/// do (YMIN+2), so its arrival and its sink are both in view.
+pub const ARRIVE_HEIGHT: f32 = world::VIEW_H * 0.9;
 
 /// How close, horizontally, a Lander must be to grab.
 pub const GRAB_REACH_X: f32 = 16.0;
@@ -511,18 +540,26 @@ impl Enemy {
 
         match self.phase {
             Phase::Hovering => {
+                // ★ ITS OWN DRIFT, NOT A CHASE. It goes where it was going.
                 self.x = world::wrap(self.x + self.vx * pressure * dt);
 
                 // Follow the ridge rather than holding an absolute
                 // height: a Lander at a fixed y would sink into a peak
                 // and float high over a valley, and the terrain here has
-                // real peaks. Eased rather than snapped, or it jitters
-                // over the ridge's fine detail.
+                // real peaks. ★ At LNDYV, so a new arrival visibly SINKS
+                // from the top to its hunting height.
                 let want = terrain.height_at(self.x) + HOVER_HEIGHT;
-                self.y += (want - self.y) * (1.0 - (-4.0 * dt).exp());
+                let v = LANDER_VSPEED * pressure * dt;
+                self.y += (want - self.y).clamp(-v, v);
 
-                if self.elapsed >= HUNT_AFTER {
-                    outcome = Outcome::WantsTarget;
+                // Its person is handed out by the owner before this step
+                // (`Enemies::step`, GTARG). ★ PASSING OVER THEM is the only
+                // thing that turns a drift into a swoop.
+                if let Some((px, _)) = prey {
+                    if world::delta(self.x, px).abs() <= ALIGN_X {
+                        self.phase = Phase::Hunting;
+                        self.elapsed = 0.0;
+                    }
                 }
             }
 
@@ -540,18 +577,18 @@ impl Enemy {
                 // A Lander at x = 5 hunting someone at WORLD_W - 5 would
                 // otherwise fly the entire world eastward to reach
                 // something ten units west of it.
+                // ★ THE SWOOP (LANDG): slide onto them at a pixel a frame
+                // and come down at LNDYV. Its own drift is remembered for
+                // when it is shot off them and goes back to drifting.
                 let gap = world::delta(self.x, px);
                 if gap.abs() > GRAB_REACH_X {
-                    let step = HUNT_SPEED * pressure * dt;
+                    let step = GRAB_SLIDE * pressure * dt;
                     self.x = world::wrap(self.x + gap.signum() * step.min(gap.abs()));
-                    self.vx = HUNT_SPEED * gap.signum();
                 }
 
-                // Descend toward the target as it closes, so the arrival
-                // is a swoop rather than a drop straight down.
                 let want_y = py + GRAB_HEIGHT;
                 if self.y > want_y {
-                    self.y = (self.y - DESCEND_SPEED * pressure * dt).max(want_y);
+                    self.y = (self.y - LANDER_VSPEED * pressure * dt).max(want_y);
                 }
 
                 if world::delta(self.x, px).abs() <= GRAB_REACH_X
@@ -588,7 +625,7 @@ impl Enemy {
                     self.target = None;
                     return Outcome::None;
                 }
-                self.y += CLIMB_SPEED * pressure * dt;
+                self.y += LANDER_VSPEED * pressure * dt;
                 // Drift a little while climbing so the ascent is not a
                 // dead vertical line.
                 self.x = world::wrap(self.x + self.vx.signum() * DRIFT_SPEED * 0.4 * pressure * dt);
@@ -840,8 +877,6 @@ impl Enemy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     None,
-    /// Drifted long enough; wants a Humanoid to hunt.
-    WantsTarget,
     /// The beam has taken hold of its target.
     Grabbed,
     /// Carried a Humanoid off the top of the world — time to fuse into
@@ -891,6 +926,8 @@ pub struct Enemies {
     noise: u32,
     /// The wave's [`crate::waves::pressure`], set by the owner each step.
     pressure: f32,
+    /// Where the round-robin hand-out of targets got to (GTARG's TPTR).
+    next_target: usize,
     /// The ship's horizontal speed, set by the owner each step — the one
     /// thing a Baiter needs that a position does not carry.
     ship_vx: f32,
@@ -907,6 +944,7 @@ impl Enemies {
             spawned: 0,
             fused: 0,
             pressure: 1.0,
+            next_target: 0,
             ship_vx: 0.0,
             mines: Vec::new(),
         }
@@ -997,36 +1035,30 @@ impl Enemies {
         self.claimed.clear();
     }
 
-    /// Scatter `count` Landers across the world, away from `avoid_x`.
+    /// Bring `count` Landers in at random places near the top of the sky,
+    /// each drifting its own random way at its own random speed.
     ///
-    /// ⚠️ NOT UNIFORMLY RANDOM ACROSS THE WORLD — spread evenly and then
-    /// jittered. Four uniform draws over four screens clump often enough
-    /// that a wave regularly arrives as "three in one place and one on
-    /// the far side", which reads as a bug rather than as variety.
-    pub fn scatter(&mut self, count: usize, avoid_x: f32, terrain: &Terrain, seed: u32) {
-        let spacing = world::WORLD_W / count.max(1) as f32;
+    /// ★ THE ORIGINAL'S ARRIVAL (LANDST): a random world X, the top of the
+    /// playfield, RMAX(LNDXV) for the speed and a coin for the direction.
+    /// Random, not spread evenly — evenly spaced arrivals grabbed in
+    /// unison all round the world, which is half of why wave 1 was too
+    /// hard. ⚠️ Never in the player's lap: an arrival inside the screen's
+    /// middle is moved half a screen on, so nothing appears on top of you.
+    pub fn arrive(&mut self, count: usize, avoid_x: f32, seed: u32) {
         for i in 0..count {
-            // ⚠️ wrapping_mul, NOT `*`. A plain multiply here PANICS in a
-            // debug build from i = 2 onward — an overflow that release
-            // mode would have silently wrapped, so the bug would have
-            // shipped working and crashed only under a debugger.
-            let jitter = hash01(seed.wrapping_add((i as u32).wrapping_mul(2_654_435_761)));
-            let mut x = world::wrap(avoid_x + spacing * (i as f32 + 0.5 + (jitter - 0.5) * 0.6));
-
-            // Never directly on top of the player: arriving in the
-            // player's lap gives them no chance to react to something
-            // they could not have seen coming.
+            // ⚠️ wrapping_mul, NOT `*`: a plain multiply panics in a debug
+            // build from i = 2 onward.
+            let k = seed.wrapping_add((i as u32).wrapping_mul(2_654_435_761));
+            let mut x = world::wrap(hash01(k) * world::WORLD_W);
             if world::delta(avoid_x, x).abs() < world::VIEW_W * 0.35 {
-                x = world::wrap(x + world::VIEW_W * 0.5);
+                // Pushed half a screen further away from the player (an
+                // exact 0.0 has signum 1.0, so it still moves).
+                x = world::wrap(x + world::VIEW_W * 0.5 * world::delta(avoid_x, x).signum());
             }
-
-            let dir = if hash01(seed ^ (i as u32).wrapping_mul(0x9E37_79B9)) < 0.5 {
-                -1.0
-            } else {
-                1.0
-            };
-            let y = terrain.height_at(x) + HOVER_HEIGHT;
-            self.spawn(Enemy::lander(x, y, DRIFT_SPEED * dir));
+            let steps = 1 + (hash01(k ^ 0x5851_F42D) * DRIFT_STEPS as f32) as u32;
+            let speed = DRIFT_MAX * steps.min(DRIFT_STEPS) as f32 / DRIFT_STEPS as f32;
+            let dir = if hash01(k ^ 0x9E37_79B9) < 0.5 { -1.0 } else { 1.0 };
+            self.spawn(Enemy::lander(x, ARRIVE_HEIGHT, speed * dir));
         }
     }
 
@@ -1038,9 +1070,9 @@ impl Enemies {
     /// Lander has no job; what comes through the warp is the thing that
     /// wants the pilot. They still warp in: [`Enemy::step`] finishes the
     /// arrival for every kind.
-    pub fn squad(&mut self, count: usize, avoid_x: f32, terrain: &Terrain, seed: u32, mutants: bool) {
+    pub fn squad(&mut self, count: usize, avoid_x: f32, seed: u32, mutants: bool) {
         let first = self.live.len();
-        self.scatter(count, avoid_x, terrain, seed);
+        self.arrive(count, avoid_x, seed);
         if mutants {
             for e in &mut self.live[first..] {
                 e.kind = Kind::Mutant;
@@ -1083,6 +1115,24 @@ impl Enemies {
         // field cannot be touched from inside it.
         let mut fused = 0usize;
         for (index, l) in self.live.iter_mut().enumerate() {
+            // ★ A DRIFTING LANDER WITHOUT A PERSON IS HANDED THE NEXT ONE ON
+            // THE LIST (GTARG) — wherever they are, not the nearest. Done
+            // here, before its step, rather than as an outcome of it: an
+            // outcome would take the step's one slot, and a Lander asking
+            // for a target every step would never get to fire (a test
+            // caught exactly that).
+            if l.kind == Kind::Lander && l.phase == Phase::Hovering {
+                let lost = l.target.is_some_and(|i| !people.get(i).is_some_and(|h| h.is_grabbable()));
+                if lost {
+                    l.target = None;
+                }
+                if l.target.is_none() {
+                    l.target = hand_out(&mut self.next_target, &self.claimed, people);
+                    if let Some(i) = l.target {
+                        self.claimed.push(i);
+                    }
+                }
+            }
             // Resolve the target's position, and drop a target that has
             // stopped being valid — shot while carried, or already taken.
             let prey = match l.target {
@@ -1111,21 +1161,6 @@ impl Enemies {
                     // The owner builds the bolt — this type does not
                     // know what a Shot is, and should not learn.
                     shots_wanted.push((index, l.x, l.y));
-                }
-
-                Outcome::WantsTarget => {
-                    if let Some(i) = people.nearest_grabbable(l.x) {
-                        // ⚠️ DO NOT LET TWO LANDERS CLAIM THE SAME
-                        // PERSON. Without this they converge on one
-                        // Humanoid and stack in the same place, which
-                        // looks like a rendering bug rather than a race.
-                        if !self.claimed.contains(&i) {
-                            l.target = Some(i);
-                            l.phase = Phase::Hunting;
-                            l.elapsed = 0.0;
-                            self.claimed.push(i);
-                        }
-                    }
                 }
 
                 Outcome::Grabbed => {
@@ -1265,6 +1300,21 @@ impl Enemies {
     }
 }
 
+/// The next free person on the list after `next`, round-robin (GTARG).
+/// ⚠️ Never one already claimed: two Landers on one Humanoid stack in the
+/// same place, which looks like a rendering bug rather than a race.
+fn hand_out(next: &mut usize, claimed: &[usize], people: &Humanoids) -> Option<usize> {
+    let n = people.len();
+    for k in 1..=n {
+        let i = (*next + k) % n;
+        if people.get(i).is_some_and(|h| h.is_grabbable()) && !claimed.contains(&i) {
+            *next = i;
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Advance a noise state and return 0..1.
 fn next01(seed: &mut u32) -> f32 {
     *seed ^= *seed << 13;
@@ -1318,12 +1368,11 @@ mod tests {
             "an arrival leaked into the fusion count — they must stay distinct"
         );
 
-        // ⚠️ `scatter` goes through `spawn`, so the opening wave counts
-        // too — which is why main.rs has to swallow the first read
-        // rather than assume nothing has arrived yet.
+        // ★ A squad's arrival goes through `spawn`, so Warp hears it.
         let mut ls = Enemies::new();
-        ls.scatter(5, 0.0, &t, 99);
-        assert_eq!(ls.take_spawned(), 5, "scatter must report its arrivals");
+        ls.arrive(5, 0.0, 99);
+        assert_eq!(ls.take_spawned(), 5, "an arrival must be reported");
+        let _ = &t;
 
         // ⚠️⚠️ A MUTANT FUSING IS *NOT* COUNTED, AND THIS TEST USED TO
         // CLAIM IT WAS. The old version called `spawn(Lander::mutant(…))`
@@ -1427,7 +1476,8 @@ mod tests {
         // Start at a wrong height and let it settle.
         ls.spawn(Enemy::lander(500.0, 10.0, 0.0));
         ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
-        for _ in 0..240 {
+        // Eight seconds: it moves at LNDYV now, not by easing.
+        for _ in 0..480 {
             ls.step(&t, &mut nobody(), None, 1.0 / 60.0);
         }
         let l = ls.iter().next().unwrap();
@@ -1435,40 +1485,122 @@ mod tests {
         assert!((l.y - want).abs() < 4.0, "settled at {} not {want}", l.y);
     }
 
+    /// ★ THE ORIGINAL'S ARRIVAL: at the top, never on the player, each
+    /// at its own speed within RMAX(LNDXV), both ways.
     #[test]
-    fn a_scattered_wave_is_spread_out_and_not_on_the_player() {
-        let t = terrain();
+    fn landers_arrive_at_the_top_each_their_own_way() {
         let mut ls = Enemies::new();
-        ls.scatter(5, 0.0, &t, 12345);
-        assert_eq!(ls.len(), 5);
-        assert_eq!(ls.remaining(), 5);
-
+        ls.arrive(40, 0.0, 12345);
+        assert_eq!(ls.len(), 40);
+        let mut speeds = Vec::new();
+        let (mut east, mut west) = (0, 0);
         for l in ls.iter() {
-            assert!(
-                world::delta(0.0, l.x).abs() > world::VIEW_W * 0.3,
-                "spawned too close to the player at {}",
-                l.x
-            );
+            assert_eq!(l.y, ARRIVE_HEIGHT, "not at the top");
+            assert!(world::delta(0.0, l.x).abs() > world::VIEW_W * 0.3, "in the player's lap at {}", l.x);
             assert!(l.x >= 0.0 && l.x < world::WORLD_W, "outside the world: {}", l.x);
+            let v = l.vx.abs();
+            assert!(v > 0.0 && v <= DRIFT_MAX + 1e-3, "drift {v} out of range");
+            speeds.push(v);
+            if l.vx > 0.0 { east += 1 } else { west += 1 }
         }
+        speeds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(speeds[speeds.len() - 1] - speeds[0] > DRIFT_MAX * 0.5, "speeds barely vary");
+
+        // ★ RANDOM PLACES, NOT EVENLY SPACED. Even spacing was half of why
+        // a whole squad grabbed at once; the gaps between arrivals must
+        // differ, as the original's random X makes them.
+        let mut xs: Vec<f32> = ls.iter().map(|l| l.x).collect();
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let gaps: Vec<f32> = xs.windows(2).map(|w| w[1] - w[0]).collect();
+        let (lo, hi) = gaps.iter().fold((f32::MAX, 0.0f32), |(l, h), g| (l.min(*g), h.max(*g)));
+        assert!(hi - lo > world::VIEW_W * 0.25, "arrivals are evenly spaced: gaps {lo:.0}..{hi:.0}");
+        assert!(east > 5 && west > 5, "all one way: {east} east, {west} west");
     }
 
     /// The same seed must give the same wave, or a screenshot cannot be
     /// reproduced and a bug cannot be chased.
     #[test]
-    fn scattering_is_deterministic() {
-        let t = terrain();
+    fn arrivals_are_deterministic() {
         let mut a = Enemies::new();
         let mut b = Enemies::new();
-        a.scatter(4, 300.0, &t, 99);
-        b.scatter(4, 300.0, &t, 99);
-        let xs: Vec<f32> = a.iter().map(|l| l.x).collect();
-        let ys: Vec<f32> = b.iter().map(|l| l.x).collect();
+        a.arrive(4, 300.0, 99);
+        b.arrive(4, 300.0, 99);
+        let xs: Vec<(f32, f32)> = a.iter().map(|l| (l.x, l.vx)).collect();
+        let ys: Vec<(f32, f32)> = b.iter().map(|l| (l.x, l.vx)).collect();
         assert_eq!(xs, ys);
     }
 
-    /// ★★ THE WHOLE STAGE, END TO END. A Lander drifts, finds the person
-    /// nearest to it, closes, lowers a beam, and carries them up.
+    /// ★★ IT DOES NOT STEER. A Lander drifting away from its person keeps
+    /// going — the abduction comes only when its drift carries it over
+    /// them. This is the rule that spreads wave 1's abductions out.
+    #[test]
+    fn a_lander_drifts_until_it_passes_over_its_target() {
+        let t = terrain();
+        let mut people = Humanoids::new();
+        people.spawn(crate::humanoid::Humanoid::new(1000.0, t.height_at(1000.0), 0.0));
+        let mut ls = Enemies::new();
+        let mut l = Enemy::lander(900.0, t.height_at(900.0) + HOVER_HEIGHT, -DRIFT_SPEED);
+        l.phase = Phase::Hovering;
+        ls.spawn(l);
+        for _ in 0..(120 * 3) {
+            ls.step(&t, &mut people, None, 1.0 / 120.0);
+        }
+        let l = ls.get(0).unwrap();
+        assert_eq!(l.target, Some(0), "it was never given its person");
+        assert_eq!(l.phase, Phase::Hovering, "it went for them instead of drifting");
+        assert!(world::delta(900.0, l.x) < -100.0, "it turned toward them: at {}", l.x);
+    }
+
+    /// ⚠️ THE SEAM. A Lander drifting west from x = 30 must swoop on the
+    /// person at WORLD_W - 20, fifty units away across the seam — through
+    /// `delta`, not a subtraction that calls them a world apart.
+    #[test]
+    fn a_lander_swoops_across_the_seam() {
+        let t = terrain();
+        let mut people = Humanoids::new();
+        let px = world::WORLD_W - 20.0;
+        people.spawn(crate::humanoid::Humanoid::new(px, t.height_at(px), 0.0));
+        let mut ls = Enemies::new();
+        // 65 units east of them across the seam — just outside ALIGN_X.
+        let mut l = Enemy::lander(45.0, t.height_at(45.0) + HOVER_HEIGHT, -DRIFT_SPEED);
+        l.phase = Phase::Hovering;
+        ls.spawn(l);
+        for _ in 0..(120 * 2) {
+            ls.step(&t, &mut people, None, 1.0 / 120.0);
+            if ls.get(0).unwrap().phase != Phase::Hovering {
+                break;
+            }
+        }
+        let l = ls.get(0).unwrap();
+        assert_eq!(l.phase, Phase::Hunting, "it drifted past them at the seam");
+        // ⚠️ AND IT SAW THEM BEFORE IT CROSSED: once it has wrapped to the
+        // far end a plain subtraction would also say "close", so only a
+        // swoop that starts on THIS side proves `delta` is doing the work.
+        assert!(l.x < world::VIEW_W, "it only saw them after wrapping, at {}", l.x);
+    }
+
+    /// ★ TARGETS ARE HANDED OUT IN TURN (GTARG), NOT BY DISTANCE: a Lander
+    /// right above one person is given the next on the list.
+    #[test]
+    fn targets_are_handed_out_in_turn_not_by_distance() {
+        let t = terrain();
+        let mut people = Humanoids::new();
+        for x in [500.0, 2000.0, 3000.0] {
+            people.spawn(crate::humanoid::Humanoid::new(x, t.height_at(x), 0.0));
+        }
+        let mut ls = Enemies::new();
+        for _ in 0..2 {
+            let mut l = Enemy::lander(500.0, t.height_at(500.0) + HOVER_HEIGHT, DRIFT_SPEED);
+            l.phase = Phase::Hovering;
+            ls.spawn(l);
+        }
+        ls.step(&t, &mut people, None, 1.0 / 120.0);
+        let targets: Vec<Option<usize>> = ls.iter().map(|l| l.target).collect();
+        assert_eq!(targets, vec![Some(1), Some(2)], "handed out by distance, not in turn");
+    }
+
+    /// ★★ THE WHOLE STAGE, END TO END. A Lander drifts over its person,
+    /// swoops, lowers a beam, and carries them up.
     ///
     /// ⚠️ THIS IS THE TEST THAT MATTERS. Every other test here checks one
     /// joint; this one checks that the joints connect, which is exactly
@@ -1483,7 +1615,7 @@ mod tests {
         let mut ls = Enemies::new();
         ls.spawn(Enemy::lander(500.0, t.height_at(500.0) + HOVER_HEIGHT, DRIFT_SPEED));
 
-        // Long enough to warp, drift past HUNT_AFTER, close, and grab.
+        // Long enough to warp, drift over them, swoop, and grab.
         let mut saw_hunting = false;
         let mut saw_grabbing = false;
         let mut saw_carrying = false;
@@ -1761,7 +1893,8 @@ mod tests {
     fn when_the_world_ends_every_lander_mutates() {
         let t = terrain();
         let mut ls = Enemies::new();
-        ls.scatter(4, 0.0, &t, 99);
+        ls.arrive(4, 0.0, 99);
+        let _ = &t;
         assert_eq!(ls.mutants(), 0);
 
         ls.mutate_all();

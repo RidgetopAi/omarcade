@@ -82,6 +82,30 @@ fn main() {
     let hyper = render(&mut sound::Hyperspace::new(), 1.0, &[0.0]);
     emit(&dir.join("hyperspace.wav"), &hyper, "LITE out + APPEAR in, ours");
 
+    // ★ THE PEOPLE'S SOUNDS AND THE ENEMY'S GUNS — each A/B'd against
+    // the emulated ROM render named in sound.rs.
+    let events: [(&str, &mut dyn Voice, f32); 6] = [
+        ("grab", &mut sound::grab(), 1.2),
+        ("catch", &mut sound::catch(), 0.8),
+        ("setdown", &mut sound::set_down(), 3.0),
+        ("fusion", &mut sound::fusion(), 1.4),
+        ("lander-shot", &mut sound::lander_shot(), 0.4),
+        ("mutant-shot", &mut sound::mutant_shot(), 1.0),
+    ];
+    for (name, v, secs) in events {
+        let s = render(v, secs, &[0.0]);
+        emit(&dir.join(format!("{name}.wav")), &s, "Williams mechanism");
+    }
+    // The scream is continuous: driven with one fall, held 6 s.
+    let mut scream = sound::Scream::new();
+    let mut out = Vec::new();
+    let mut block = [0.0f32; 256];
+    while out.len() < (6.0 * SR) as usize {
+        scream.render(&mut block, sound::Scream::params(1), SR);
+        out.extend_from_slice(&block);
+    }
+    emit(&dir.join("scream.wav"), &out, "Williams SCREAM, one fall");
+
     // ★★ THE ENGINE, DRIVEN THE WAY THE GAME DRIVES IT.
     // ⚠️ NOT at a held constant. `exhaust` is EASED in main.rs — attack
     // 14.0/s against release 6.0/s — and the asymmetry is most of what

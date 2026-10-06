@@ -933,6 +933,9 @@ pub struct Enemies {
     ship_vx: f32,
     /// Mines Bombers have dropped since this was last read.
     mines: Vec<(f32, f32)>,
+    /// People a Lander has taken hold of since this was last read — the
+    /// grab's voice (ED10) plays on it.
+    grabbed: usize,
 }
 
 impl Enemies {
@@ -947,7 +950,14 @@ impl Enemies {
             next_target: 0,
             ship_vx: 0.0,
             mines: Vec::new(),
+            grabbed: 0,
         }
+    }
+
+    /// How many people Landers have taken hold of since this was last
+    /// asked, and reset the count (the take-pattern of `take_spawned`).
+    pub fn take_grabbed(&mut self) -> usize {
+        std::mem::replace(&mut self.grabbed, 0)
     }
 
     /// The ship's horizontal speed, for the Baiters.
@@ -1114,6 +1124,7 @@ impl Enemies {
         // The loop below holds `&mut` borrows of `self.live`, so the
         // field cannot be touched from inside it.
         let mut fused = 0usize;
+        let mut grabbed = 0usize;
         for (index, l) in self.live.iter_mut().enumerate() {
             // ★ A DRIFTING LANDER WITHOUT A PERSON IS HANDED THE NEXT ONE ON
             // THE LIST (GTARG) — wherever they are, not the nearest. Done
@@ -1167,6 +1178,7 @@ impl Enemies {
                     if let Some(i) = l.target {
                         if let Some(h) = people.get_mut(i) {
                             h.grabbed();
+                            grabbed += 1;
                         }
                     }
                 }
@@ -1216,6 +1228,7 @@ impl Enemies {
 
         self.noise = noise;
         self.fused += fused;
+        self.grabbed += grabbed;
         self.mines.extend(mines);
         self.live.retain(|l| l.is_alive());
         shots_wanted
@@ -1634,6 +1647,10 @@ mod tests {
         }
 
         assert!(saw_hunting, "the Lander never went hunting");
+        // ★ AND THE GRAB IS COUNTED, through the real step — its voice
+        // (ED10) plays on this.
+        assert_eq!(ls.take_grabbed(), 1, "the grab was not counted");
+        assert_eq!(ls.take_grabbed(), 0, "reading the count must clear it");
         assert!(saw_grabbing, "the Lander never got a grip");
         assert!(saw_carrying, "the Lander never carried anyone off");
 

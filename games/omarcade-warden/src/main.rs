@@ -248,6 +248,17 @@ struct Warden {
     person_boom: SoundId,
     bomb_sound: SoundId,
     hyper_sound: SoundId,
+    grab_sound: SoundId,
+    catch_sound: SoundId,
+    set_down_sound: SoundId,
+    fusion_sound: SoundId,
+    lander_shot_sound: SoundId,
+    mutant_shot_sound: SoundId,
+    scream: VoiceId,
+    /// Falls begun so far — the scream restarts when this moves.
+    falls: u32,
+    /// How many were falling last frame, to notice a new fall.
+    falling: usize,
 
     // Held keys, resolved into an `Input` each step.
     thrust_held: bool,
@@ -289,20 +300,22 @@ struct Warden {
     mutant_killed_this_frame: bool,
     person_killed_this_frame: bool,
     rescued_this_frame: bool,
-    enemy_fired_this_frame: bool,
+    set_down_this_frame: bool,
+    lander_fired_this_frame: bool,
+    mutant_fired_this_frame: bool,
     died_this_frame: bool,
     world_ended_this_frame: bool,
 }
 
-/// The one-shot event voices — the four deaths, the smart bomb and the
-/// hyperspace jump — grouped so `Warden::new` takes one argument rather
-/// than six.
+/// The event voices — the four deaths, the smart bomb, the hyperspace
+/// jump, the people's sounds and the enemy's guns — grouped so
+/// `Warden::new` takes one argument rather than fourteen.
 ///
 /// ⚠️ NOT a tuple. Same-typed `SoundId`s positionally would silently
 /// swap if anyone reordered them, and the compiler would never say a
 /// word — you would just hear a Lander die like a ship once and never
 /// work out why.
-struct Booms {
+struct Voices {
     lander: SoundId,
     mutant: SoundId,
     ship: SoundId,
@@ -311,6 +324,19 @@ struct Booms {
     smart_bomb: SoundId,
     /// ★ The hyperspace jump: out, then back in.
     hyperspace: SoundId,
+    /// ★ The people's sounds (Williams GWAVE / VARI / SCREAM): a Lander
+    /// taking someone, catching them, setting them down, and a Mutant
+    /// forming.
+    grab: SoundId,
+    catch: SoundId,
+    set_down: SoundId,
+    fusion: SoundId,
+    /// ★ The enemy's guns: a Lander's or Baiter's, and a Mutant's.
+    lander_shot: SoundId,
+    mutant_shot: SoundId,
+    /// ★ The scream of someone falling — CONTINUOUS, so it can stop the
+    /// moment they are caught or land (see `sound::Scream`).
+    scream: VoiceId,
 }
 
 impl Warden {
@@ -319,7 +345,7 @@ impl Warden {
         laser: SoundId,
         thrust: VoiceId,
         warp: SoundId,
-        booms: Booms,
+        voices: Voices,
         scores: ScoreFile,
         seed: u32,
     ) -> Self {
@@ -360,12 +386,21 @@ impl Warden {
             laser,
             thrust,
             warp,
-            boom: booms.lander,
-            mutant_boom: booms.mutant,
-            ship_boom: booms.ship,
-            person_boom: booms.person,
-            bomb_sound: booms.smart_bomb,
-            hyper_sound: booms.hyperspace,
+            boom: voices.lander,
+            mutant_boom: voices.mutant,
+            ship_boom: voices.ship,
+            person_boom: voices.person,
+            bomb_sound: voices.smart_bomb,
+            hyper_sound: voices.hyperspace,
+            grab_sound: voices.grab,
+            catch_sound: voices.catch,
+            set_down_sound: voices.set_down,
+            fusion_sound: voices.fusion,
+            lander_shot_sound: voices.lander_shot,
+            mutant_shot_sound: voices.mutant_shot,
+            scream: voices.scream,
+            falls: 0,
+            falling: 0,
             thrust_held: false,
             exhaust: 0.0,
             up_held: false,
@@ -378,7 +413,9 @@ impl Warden {
             mutant_killed_this_frame: false,
             person_killed_this_frame: false,
             rescued_this_frame: false,
-            enemy_fired_this_frame: false,
+            set_down_this_frame: false,
+            lander_fired_this_frame: false,
+            mutant_fired_this_frame: false,
             died_this_frame: false,
             world_ended_this_frame: false,
         };
@@ -754,21 +791,26 @@ impl Warden {
         if let Some((sx, sy)) = ship_pos {
             for (index, mx, my) in wants {
                 let mut noise = self.enemies.next_noise();
-                let (dx, dy, speed) = match self.enemies.get(index) {
+                let (dx, dy, speed, mutant) = match self.enemies.get(index) {
                     // ⚠️ A MUTANT NEVER SHOOTS STRAIGHT (Brian's rule,
                     // enforced in `aim_at`); a Lander's slow shot may.
                     Some(m) if m.is_mutant() => {
                         let (dx, dy) = m.aim_at(sx, sy, &mut noise);
-                        (dx, dy, m.shot_speed())
+                        (dx, dy, m.shot_speed(), true)
                     }
                     Some(l) => {
                         let (dx, dy) = l.lander_aim(sx, sy, &mut noise);
-                        (dx, dy, l.shot_speed())
+                        (dx, dy, l.shot_speed(), false)
                     }
                     None => continue,
                 };
                 self.shots.fire_enemy_at(mx, my, dx, dy, speed);
-                self.enemy_fired_this_frame = true;
+                // ★ Brian: "there is a different sound when they shoot".
+                if mutant {
+                    self.mutant_fired_this_frame = true;
+                } else {
+                    self.lander_fired_this_frame = true;
+                }
             }
         }
 
@@ -877,6 +919,7 @@ impl Warden {
             }
             for at in set_down {
                 self.add_score(SET_DOWN_POINTS, Some(at));
+                self.set_down_this_frame = true;
             }
         }
     }
@@ -1008,6 +1051,32 @@ impl Warden {
         !self.pause.is_paused() && self.flying()
     }
 
+    /// ★ THE SCREAM runs while anyone is falling, and only then.
+    ///
+    /// Fed before the pause guard like the engine, for the same reason: a
+    /// paused game must go quiet, not hold the last state. A new fall —
+    /// more people falling than last frame — bumps `falls`, which restarts
+    /// the voice from the top (`sound::Scream`).
+    fn scream_sound(&mut self, audio: &mut Audio<'_>) {
+        let falling = self.people.iter().filter(|h| h.state == humanoid::State::Falling).count();
+        if falling > self.falling {
+            self.falls += 1;
+        }
+        self.falling = falling;
+        if self.scream_should_run() {
+            audio.start(self.scream);
+        } else {
+            audio.stop(self.scream);
+        }
+        audio.set(self.scream, sound::Scream::params(self.falls));
+    }
+
+    /// Whether the scream should sound: someone is falling and the game
+    /// is not paused. Derived, never cached (the engine's rule).
+    fn scream_should_run(&self) -> bool {
+        !self.pause.is_paused() && self.falling > 0
+    }
+
     /// Feed the engine this frame's `exhaust`.
     ///
     /// ★★ THE SAME NUMBER THE PLUME USES. `exhaust` is eased once, in
@@ -1104,6 +1173,7 @@ impl Game for Warden {
         // whole run. The racer learned this the expensive way; see the
         // note above its own start/stop block.
         self.thrust_sound(audio);
+        self.scream_sound(audio);
 
         if self.pause.is_paused() {
             return;
@@ -1114,7 +1184,9 @@ impl Game for Warden {
         self.mutant_killed_this_frame = false;
         self.person_killed_this_frame = false;
         self.rescued_this_frame = false;
-        self.enemy_fired_this_frame = false;
+        self.set_down_this_frame = false;
+        self.lander_fired_this_frame = false;
+        self.mutant_fired_this_frame = false;
         self.died_this_frame = false;
         self.world_ended_this_frame = false;
 
@@ -1148,10 +1220,26 @@ impl Game for Warden {
         if self.died_this_frame {
             audio.play(self.ship_boom);
         }
-        if self.enemy_fired_this_frame {
-            // Quieter than your own gun, so a busy screen does not drown
-            // out the shot you actually fired.
-            audio.play_with(self.laser, 0.55, 1.0);
+        // ★ THE ENEMY'S GUNS HAVE THEIR OWN VOICES now, not the laser at
+        // half gain: a Lander's (and a Baiter's) spitty "bzew", and a
+        // Mutant's buzzy descending trill (Brian: "a different sound when
+        // they shoot").
+        if self.lander_fired_this_frame {
+            audio.play(self.lander_shot_sound);
+        }
+        if self.mutant_fired_this_frame {
+            audio.play(self.mutant_shot_sound);
+        }
+        // ★ THE PEOPLE'S SOUNDS. A Lander takes someone; the ship catches
+        // them; it sets them down.
+        if self.enemies.take_grabbed() > 0 {
+            audio.play(self.grab_sound);
+        }
+        if self.rescued_this_frame {
+            audio.play(self.catch_sound);
+        }
+        if self.set_down_this_frame {
+            audio.play(self.set_down_sound);
         }
         if self.world_ended_this_frame {
             audio.play_with(self.boom, 1.0, 1.0);
@@ -1162,25 +1250,17 @@ impl Game for Warden {
         // sample zero and only the last one heard.
         // ⚠️ SCALED BY HOW MANY, so a group reads as bigger than one
         // straggler without ever reaching the laser's level.
-        // ★★ A LANDER BECAME A MUTANT — counted, and DELIBERATELY NOT
-        // PLAYED YET.
+        // ★★ A LANDER BECAME A MUTANT — and now it has its own voice.
         //
         // Brian hears this as a different event from an arrival, and he
         // is right that it is one: an arrival is something appearing out
         // of nothing, a fusion is something you failed to stop becoming
-        // worse. He has said he wants a separate sound for it and has
-        // not built it.
-        //
-        // ⚠️ SO IT STAYS SILENT RATHER THAN BORROWING THE ARRIVAL'S.
-        // Reusing `warp` here would say the wrong word for the event,
-        // and the near-miss is worse than the silence: it sounds
-        // finished, so nobody revisits it. The count is live and the
-        // wiring is one line away the moment the voice exists.
-        // ⚠️ AND PITCH IS NOT A SHORTCUT EITHER — every voice in
-        // sound.rs takes `_pitch` and ignores it, so a "pitched down"
-        // placeholder would be the SAME sound while looking like a
-        // different one in the source.
-        let _fused = self.enemies.take_fused();
+        // worse. It stayed silent rather than borrow Warp's voice until
+        // its own existed: the original's SP1, the stepped rising buzz
+        // ("When mutant spawns in they get sound").
+        if self.enemies.take_fused() > 0 {
+            audio.play(self.fusion_sound);
+        }
 
         // ★ THE SMART BOMB SPEAKS FOR EVERYTHING IT KILLED. Its kills set
         // no per-death flags (they happen between frames, see
@@ -1273,16 +1353,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // would hand it to `play`, which retriggers rather than sustains.
     let thrust = audio.register(Box::new(sound::Thrust::new()));
     let warp = audio.register_sound(Box::new(sound::Warp::new()));
-    let booms = Booms {
+    let voices = Voices {
         lander: audio.register_sound(Box::new(sound::Boom::new())),
         mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
         ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
         person: audio.register_sound(Box::new(sound::PersonBoom::new())),
         smart_bomb: audio.register_sound(Box::new(sound::SmartBomb::new())),
         hyperspace: audio.register_sound(Box::new(sound::Hyperspace::new())),
+        grab: audio.register_sound(Box::new(sound::grab())),
+        catch: audio.register_sound(Box::new(sound::catch())),
+        set_down: audio.register_sound(Box::new(sound::set_down())),
+        fusion: audio.register_sound(Box::new(sound::fusion())),
+        lander_shot: audio.register_sound(Box::new(sound::lander_shot())),
+        mutant_shot: audio.register_sound(Box::new(sound::mutant_shot())),
+        scream: audio.register(Box::new(sound::Scream::new())),
     };
     let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
-    let mut game = Warden::new(theme, laser, thrust, warp, booms, scores, clock_seed());
+    let mut game = Warden::new(theme, laser, thrust, warp, voices, scores, clock_seed());
     game.persist = true;
 
     WinitBackend::new(TITLE, WIDTH, HEIGHT)
@@ -1301,18 +1388,25 @@ mod tests {
         let laser = audio.register_sound(Box::new(sound::Laser::new()));
         let thrust = audio.register(Box::new(sound::Thrust::new()));
         let warp = audio.register_sound(Box::new(sound::Warp::new()));
-        let booms = Booms {
+        let voices = Voices {
             lander: audio.register_sound(Box::new(sound::Boom::new())),
             mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
             ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
             person: audio.register_sound(Box::new(sound::PersonBoom::new())),
             smart_bomb: audio.register_sound(Box::new(sound::SmartBomb::new())),
             hyperspace: audio.register_sound(Box::new(sound::Hyperspace::new())),
+            grab: audio.register_sound(Box::new(sound::grab())),
+            catch: audio.register_sound(Box::new(sound::catch())),
+            set_down: audio.register_sound(Box::new(sound::set_down())),
+            fusion: audio.register_sound(Box::new(sound::fusion())),
+            lander_shot: audio.register_sound(Box::new(sound::lander_shot())),
+            mutant_shot: audio.register_sound(Box::new(sound::mutant_shot())),
+            scream: audio.register(Box::new(sound::Scream::new())),
         };
         // ⚠️ AN IN-MEMORY SCORE FILE, never loaded or saved: a test that
         // reaches game over must not write a player's real high scores.
         let scores = ScoreFile::new(GAME_ID, GAME_NAME);
-        Warden::new(Theme::fallback(), laser, thrust, warp, booms, scores, 0x0DEF_E4DE)
+        Warden::new(Theme::fallback(), laser, thrust, warp, voices, scores, 0x0DEF_E4DE)
     }
 
     /// Kill every enemy that can be killed right now, through the same
@@ -1868,6 +1962,70 @@ mod tests {
         g.enemies.spawn(m);
         g.on_input(InputEvent::KeyDown(Key::B));
         assert_eq!(g.score, enemy::BAITER_POINTS + enemy::BOMBER_POINTS);
+    }
+
+    /// ★ THE SCREAM RUNS WHILE SOMEONE FALLS, AND STOPS WHEN THEY ARE
+    /// CAUGHT — through the real update, and each new fall is a new one.
+    #[test]
+    fn the_scream_runs_only_while_someone_is_falling() {
+        let mut g = game();
+        g.enemies.clear();
+        g.people.clear();
+        g.lives.state = lives::State::Alive;
+        g.ship.y = 400.0;
+        let mut audio = AudioSystem::new();
+        let mut frame = |g: &mut Warden| {
+            let mut a = audio.handle();
+            g.update(1.0 / 60.0, &mut a);
+        };
+        frame(&mut g);
+        assert!(!g.scream_should_run(), "screaming with nobody falling");
+
+        // Someone dropped well away from the ship.
+        let x = world::wrap(g.ship.x + 900.0);
+        let mut h = humanoid::Humanoid::new(x, g.terrain.height_at(x) + 400.0, 0.0);
+        h.state = humanoid::State::Falling;
+        h.fell_from = h.y;
+        g.people.spawn(h);
+        frame(&mut g);
+        assert!(g.scream_should_run(), "no scream for a fall");
+        let first = g.falls;
+
+        // Caught: the scream stops.
+        g.people.get_mut(0).unwrap().rescued();
+        frame(&mut g);
+        assert!(!g.scream_should_run(), "still screaming after the catch");
+
+        // A second drop is a new fall.
+        let mut h2 = humanoid::Humanoid::new(x, g.terrain.height_at(x) + 400.0, 0.0);
+        h2.state = humanoid::State::Falling;
+        h2.fell_from = h2.y;
+        g.people.spawn(h2);
+        frame(&mut g);
+        assert!(g.falls > first, "a second fall did not restart the scream");
+    }
+
+    /// ★ A MUTANT'S SHOT AND A LANDER'S ARE DIFFERENT SOUNDS — "a
+    /// different sound when they shoot" — through `step`.
+    #[test]
+    fn a_mutant_and_a_lander_fire_with_different_voices() {
+        let mut g = game();
+        g.enemies.clear();
+        g.people.clear();
+        let mut l = enemy::Enemy::lander(g.ship.x + 300.0, g.ship.y + 100.0, 0.0);
+        l.phase = enemy::Phase::Hovering;
+        l.fire_cooldown = 0.0;
+        g.enemies.spawn(l);
+        g.step(Input::default(), FIXED_DT);
+        assert!(g.lander_fired_this_frame && !g.mutant_fired_this_frame);
+
+        g.lander_fired_this_frame = false;
+        g.enemies.clear();
+        let mut m = enemy::Enemy::mutant(g.ship.x + 300.0, g.ship.y + 100.0);
+        m.fire_cooldown = 0.0;
+        g.enemies.spawn(m);
+        g.step(Input::default(), FIXED_DT);
+        assert!(g.mutant_fired_this_frame && !g.lander_fired_this_frame);
     }
 
     #[test]

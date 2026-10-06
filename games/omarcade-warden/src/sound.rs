@@ -1182,7 +1182,7 @@ const BOMB_LEVEL: f32 = 0.42;
 /// ★ A VOICE IS A SEQUENCE OF ROUTINES ON THIS. The smart bomb is LITE
 /// then CANNON; hyperspace is LITE then APPEAR. Each routine is a small
 /// generator that writes the DAC; the board turns writes into samples.
-struct Board {
+pub(crate) struct Board {
     hi: u8,
     lo: u8,
     dac: u8,
@@ -1543,6 +1543,740 @@ impl Voice for Hyperspace {
     }
 }
 
+// ---------------------------------------------------------------------
+// THE PEOPLE'S SOUNDS, AND THE ENEMY'S GUNS — GWAVE, VARI AND SCREAM
+// ---------------------------------------------------------------------
+
+// ★ BRIAN, having flown it with these silent: "when a humanoid is picked
+// up we get a higher pitched [sound] … shoots lander with humanoid,
+// sound fx like sliding down, and picks them up sound fx woo woo woop and
+// lands them we get that classic phaser sound when dropped to ground.
+// When mutant spawns in they get sound and there is a different sound
+// when they shoot."
+//
+// Each is the original's own routine (vsndrm1.src), mapped through the
+// game's sound table (research-sound.md §2) and checked against the
+// emulated ROM render named beside it:
+//
+// | Event                      | Routine (preset)   | ROM render                      |
+// |----------------------------|--------------------|---------------------------------|
+// | Lander grabs a person      | GWAVE (ED10)       | 0b_G11_ED10_start2_pickup.wav   |
+// | A dropped person falls     | SCREAM             | 1a_SCREAM.wav                   |
+// | The ship catches them      | GWAVE (SPNRV) ×3   | 08_G8_SPNRV_catch.wav           |
+// | Set down on the ground     | VARI (QUASAR)      | 1f_QUASAR_astroland.wav         |
+// | A Lander becomes a Mutant  | VARI (SP1)         | 0e_SP1_landersuck.wav           |
+// | A Lander or Baiter fires   | GWAVE (DP1V)       | 03_G3_DP1V_shoot.wav            |
+// | A Mutant fires             | GWAVE (CLDWN)      | 09_G9_CLDWN_mutantshoot.wav     |
+//
+// ⚠️ OUR TABLES, THE ORIGINAL'S MECHANISM. Wave shapes are generated from
+// formulas, not copied from the ROM; each period pattern is the one the
+// MEASURED pitches imply through the board's own timing (a GWAVE sample
+// costs 26 + 6P cycles, plus 49 at the end of each pass of the wave —
+// research-sound.md §1).
+
+/// A GWAVE sample costs this many cycles plus 6 per period count…
+const GWAVE_SAMPLE_BASE: f32 = 26.0;
+const GWAVE_PER_COUNT: f32 = 6.0;
+/// …and each completed pass of the wave costs this much more.
+const GWAVE_WAVE_END: f32 = 49.0;
+
+/// One count of a VARI half-cycle (DEX / BEQ / DECA / BNE).
+const VARI_COUNT_CYCLES: f32 = 14.0;
+/// The sweep's own bookkeeping between half-cycles.
+const VARI_SWEEP_CYCLES: f32 = 40.0;
+
+/// SCREAM's sample period: 218 µs (measured), 195 board cycles.
+const SCREAM_CYCLES: f32 = 195.0;
+
+/// A wavetable, at most 72 samples (the longest GWAVE uses).
+#[derive(Clone, Copy)]
+struct WaveTable {
+    data: [u8; 72],
+    len: usize,
+}
+
+impl WaveTable {
+    fn from_fn(len: usize, f: impl Fn(f32) -> f32) -> Self {
+        let mut data = [0u8; 72];
+        for (i, d) in data.iter_mut().enumerate().take(len) {
+            let theta = std::f32::consts::TAU * i as f32 / len as f32;
+            *d = f(theta).round().clamp(0.0, 255.0) as u8;
+        }
+        Self { data, len }
+    }
+
+    /// A plain sine, full scale.
+    fn sine(len: usize) -> Self {
+        Self::from_fn(len, |t| 127.5 + 127.5 * t.sin())
+    }
+
+    /// A sine with its second harmonic — the bright, reedy one.
+    fn two_harmonic(len: usize) -> Self {
+        Self::from_fn(len, |t| 127.5 + 82.0 * t.sin() + 46.0 * (2.0 * t).sin())
+    }
+
+    /// The odd eight-step wave the Mutant's gun is built on: a lopsided
+    /// near-square, harsh by design (research-sound.md §3, recipe 11).
+    fn odd8() -> Self {
+        let mut data = [0u8; 72];
+        data[..8].copy_from_slice(&[0, 64, 128, 0, 255, 0, 128, 64]);
+        Self { data, len: 8 }
+    }
+}
+
+/// A GWAVE preset: the wave, and how the board walks it.
+#[derive(Clone, Copy)]
+struct GwaveSpec {
+    wave: WaveTable,
+    /// Passes of the wave per pattern entry (GCCNT).
+    cycles: u8,
+    /// Times the whole pattern is played (GECHO)…
+    echoes: u8,
+    /// …and how much the wave decays after each (GECDEC, sixteenths).
+    echo_decay: u8,
+    /// Decay applied once, before anything plays.
+    predecay: u8,
+    /// Added to every period after the echoes (GDFINC), and how many
+    /// times (GDCNT; 0 means 255, as on the board).
+    freq_inc: i8,
+    freq_count: u8,
+    /// The period pattern (P in 26 + 6P).
+    pattern: &'static [u8],
+}
+
+/// GWAVE, running.
+#[derive(Clone, Copy)]
+struct Gwave {
+    spec: GwaveSpec,
+    ram: [u8; 72],
+    start: usize,
+    end: usize,
+    entry: usize,
+    period: u8,
+    passes_left: u8,
+    sample: usize,
+    echoes_left: u8,
+    offset: u8,
+    count_left: u8,
+}
+
+impl Gwave {
+    fn new(spec: GwaveSpec) -> Self {
+        let mut g = Self {
+            spec,
+            ram: spec.wave.data,
+            start: 0,
+            end: spec.pattern.len(),
+            entry: 0,
+            period: spec.pattern[0],
+            passes_left: spec.cycles,
+            sample: 0,
+            echoes_left: spec.echoes,
+            offset: 0,
+            count_left: spec.freq_count,
+        };
+        g.decay(spec.predecay);
+        g
+    }
+
+    /// ★ THE ORIGINAL'S DECAY WRAPS, IT DOES NOT CLAMP: each sample loses
+    /// a sixteenth of its ROM value `factor` times, modulo 256. Heavy
+    /// decay turns a sine into spikes — that is the character.
+    fn decay(&mut self, factor: u8) {
+        for i in 0..self.spec.wave.len {
+            let step = (self.spec.wave.data[i] >> 4).wrapping_mul(factor);
+            self.ram[i] = self.ram[i].wrapping_sub(step);
+        }
+    }
+
+    fn load_entry(&mut self) {
+        self.period = self.spec.pattern[self.entry].wrapping_add(self.offset);
+        self.passes_left = self.spec.cycles;
+    }
+
+    /// The pattern is done: echo, then frequency-shift (GEND), or finish.
+    fn end_of_pattern(&mut self) -> bool {
+        self.decay(self.spec.echo_decay);
+        self.echoes_left -= 1;
+        if self.echoes_left > 0 {
+            self.entry = self.start;
+            self.load_entry();
+            return true;
+        }
+        if self.spec.freq_inc == 0 {
+            return false;
+        }
+        self.count_left = self.count_left.wrapping_sub(1);
+        if self.count_left == 0 {
+            return false;
+        }
+        self.offset = self.offset.wrapping_add(self.spec.freq_inc as u8);
+        // Keep only the entries the shift has not pushed past the end of
+        // the counter (GW0): a rising pattern loses its top, a falling
+        // one its bottom, until nothing is left.
+        let (mut found, mut new_start, mut new_end) = (false, self.start, self.end);
+        for i in self.start..self.end {
+            let (sum, carry) = self.offset.overflowing_add(self.spec.pattern[i]);
+            let valid = if self.spec.freq_inc > 0 { !carry } else { carry && sum != 0 };
+            if valid && !found {
+                found = true;
+                new_start = i;
+            } else if !valid && found {
+                new_end = i;
+                break;
+            }
+        }
+        if !found {
+            return false;
+        }
+        self.start = new_start;
+        self.end = new_end;
+        if self.spec.echo_decay != 0 {
+            self.ram = self.spec.wave.data;
+            self.decay(self.spec.predecay);
+        }
+        self.echoes_left = self.spec.echoes;
+        self.entry = self.start;
+        self.load_entry();
+        true
+    }
+
+    /// One DAC write. False once the routine has run out.
+    fn write(&mut self, b: &mut Board) -> bool {
+        b.dac = self.ram[self.sample];
+        let p = if self.period == 0 { 256.0 } else { self.period as f32 };
+        b.hold = GWAVE_SAMPLE_BASE + GWAVE_PER_COUNT * p;
+        self.sample += 1;
+        if self.sample < self.spec.wave.len {
+            return true;
+        }
+        self.sample = 0;
+        b.hold += GWAVE_WAVE_END;
+        self.passes_left -= 1;
+        if self.passes_left > 0 {
+            return true;
+        }
+        self.entry += 1;
+        if self.entry < self.end {
+            self.load_entry();
+            true
+        } else {
+            self.end_of_pattern()
+        }
+    }
+}
+
+/// A VARI preset: a square whose two halves are counted separately.
+#[derive(Clone, Copy)]
+struct VariSpec {
+    lo: u8,
+    hi: u8,
+    lo_step: u8,
+    hi_step: u8,
+    hi_end: u8,
+    /// Counts between sweeps (SWPDT).
+    sweep: u16,
+    /// Added to the low half after each full sweep (LOMOD); 0 ends it.
+    lo_mod: u8,
+    amp: u8,
+}
+
+/// VARI, running.
+#[derive(Clone, Copy)]
+struct Vari {
+    spec: VariSpec,
+    lo_base: u8,
+    lo: u8,
+    hi: u8,
+    in_hi: bool,
+    remaining: u32,
+    to_sweep: u32,
+    at_edge: bool,
+    sweep_due: bool,
+}
+
+impl Vari {
+    fn new(spec: VariSpec, b: &mut Board) -> Self {
+        b.dac = spec.amp;
+        Self {
+            spec,
+            lo_base: spec.lo,
+            lo: spec.lo,
+            hi: spec.hi,
+            in_hi: false,
+            remaining: 0,
+            to_sweep: spec.sweep as u32,
+            at_edge: true,
+            sweep_due: false,
+        }
+    }
+
+    fn counts(c: u8) -> u32 {
+        if c == 0 { 256 } else { c as u32 }
+    }
+
+    fn write(&mut self, b: &mut Board) -> bool {
+        if self.sweep_due {
+            self.sweep_due = false;
+            // VSWEEP: settle the DAC on its high half, then step both
+            // halves; a finished sweep steps the low half's base (LOMOD).
+            if b.dac < 0x80 {
+                b.dac = !b.dac;
+            }
+            self.lo = self.lo.wrapping_add(self.spec.lo_step);
+            self.hi = self.hi.wrapping_add(self.spec.hi_step);
+            if self.hi == self.spec.hi_end {
+                if self.spec.lo_mod == 0 {
+                    return false;
+                }
+                self.lo_base = self.lo_base.wrapping_add(self.spec.lo_mod);
+                if self.lo_base == 0 {
+                    return false;
+                }
+                self.lo = self.lo_base;
+                self.hi = self.spec.hi;
+            }
+            self.to_sweep = self.spec.sweep as u32;
+            self.in_hi = false;
+            self.at_edge = true;
+            b.hold = VARI_SWEEP_CYCLES;
+            return true;
+        }
+        if self.at_edge {
+            b.dac = !b.dac;
+            self.remaining = Self::counts(if self.in_hi { self.hi } else { self.lo });
+            self.at_edge = false;
+        }
+        let n = self.remaining.min(self.to_sweep);
+        b.hold = n as f32 * VARI_COUNT_CYCLES;
+        self.remaining -= n;
+        self.to_sweep -= n;
+        if self.to_sweep == 0 {
+            self.sweep_due = true;
+        } else if self.remaining == 0 {
+            self.in_hi = !self.in_hi;
+            self.at_edge = true;
+        }
+        true
+    }
+}
+
+/// SCREAM: four square voices from 8-bit phase accumulators, each half
+/// the level of the last, their pitches falling together; as one passes
+/// step $37 the next starts at $41, so the fall is staggered echoes.
+#[derive(Clone, Copy)]
+struct ScreamRoutine {
+    timer: [u8; 4],
+    freq: [u8; 4],
+    tick: u8,
+}
+
+impl ScreamRoutine {
+    fn new() -> Self {
+        Self { timer: [0; 4], freq: [0x40, 0, 0, 0], tick: 0 }
+    }
+
+    fn write(&mut self, b: &mut Board) -> bool {
+        let mut amp = 128u8;
+        let mut out = 0u8;
+        for i in 0..4 {
+            self.timer[i] = self.timer[i].wrapping_add(self.freq[i]);
+            if self.timer[i] & 0x80 != 0 {
+                out = out.wrapping_add(amp);
+            }
+            amp >>= 1;
+        }
+        b.dac = out;
+        b.hold = SCREAM_CYCLES;
+        self.tick = self.tick.wrapping_add(1);
+        if self.tick == 0 {
+            let mut any = false;
+            for i in 0..4 {
+                if self.freq[i] != 0 {
+                    if self.freq[i] == 0x37 && i + 1 < 4 {
+                        self.freq[i + 1] = 0x41;
+                    }
+                    self.freq[i] -= 1;
+                    any = true;
+                }
+            }
+            if !any {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// What a one-shot board voice does: begin, then write until done.
+/// `t` is seconds since the trigger, for scripts that restart or cut.
+pub(crate) trait Script: Send {
+    fn begin(&mut self, b: &mut Board);
+    fn write(&mut self, b: &mut Board, t: f32) -> bool;
+    /// A gain over time, for the one voice that fades (the fusion drone).
+    fn envelope(&self, _t: f32) -> f32 {
+        1.0
+    }
+}
+
+/// A one-shot voice that runs a [`Script`] on a [`Board`].
+pub struct BoardVoice<S: Script> {
+    board: Board,
+    script: S,
+    level: f32,
+    gain: f32,
+    alive: bool,
+    t: f32,
+}
+
+impl<S: Script> BoardVoice<S> {
+    fn with(script: S, level: f32) -> Self {
+        Self { board: Board::new(), script, level, gain: 1.0, alive: false, t: 0.0 }
+    }
+}
+
+impl<S: Script> Voice for BoardVoice<S> {
+    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
+        let per_sample = WILLIAMS_CLOCK / sample_rate;
+        let r = dc_block(sample_rate);
+        let dt = 1.0 / sample_rate;
+        for sample in out.iter_mut() {
+            if !self.alive {
+                *sample = 0.0;
+                continue;
+            }
+            let (script, t, alive) = (&mut self.script, self.t, &mut self.alive);
+            let y = self.board.sample(per_sample, r, |b| {
+                if !*alive || !script.write(b, t) {
+                    *alive = false;
+                    park(b);
+                }
+            });
+            *sample = y * self.level * self.gain * self.script.envelope(self.t);
+            self.t += dt;
+        }
+    }
+
+    fn alive(&self) -> bool {
+        self.alive
+    }
+
+    fn retrigger(&mut self, gain: f32, _pitch: f32) {
+        self.gain = gain.clamp(0.0, 1.0);
+        self.board.restart();
+        self.t = 0.0;
+        self.alive = true;
+        self.script.begin(&mut self.board);
+    }
+}
+
+// ----- the presets: ours, from the measured behaviour -----
+
+/// ★ A LANDER TAKES SOMEONE (ED10): a six-note falling-then-back figure,
+/// 787 / 726 / 673 / 628 / 553 / 726 Hz on a bright 16-step wave, six
+/// passes a note, fifteen echoes decaying 5/16 with wrap — so it starts
+/// sweet and goes ragged. ~0.83 s. Brian: "higher pitched".
+fn grab_spec() -> GwaveSpec {
+    GwaveSpec {
+        wave: WaveTable::two_harmonic(16),
+        cycles: 6,
+        echoes: 15,
+        echo_decay: 5,
+        predecay: 3,
+        freq_inc: 0,
+        freq_count: 2,
+        pattern: &[7, 8, 9, 10, 12, 8],
+    }
+}
+
+/// ★ THE SHIP CATCHES THEM (SPNRV): an 8-step sine from 269 Hz whose
+/// period shortens by 3 a pass — a rising bloop. Brian: "woo woo woop".
+fn catch_spec() -> GwaveSpec {
+    GwaveSpec {
+        wave: WaveTable::sine(8),
+        cycles: 5,
+        echoes: 1,
+        echo_decay: 0,
+        predecay: 0,
+        freq_inc: -3,
+        freq_count: 0,
+        pattern: &[64],
+    }
+}
+
+/// ★ A LANDER OR BAITER FIRES (DP1V): a 72-step sine pre-decayed into
+/// spikes, one pass at a time, each a period longer — 166 → 79 Hz in
+/// 168 ms. A spitty "bzew".
+fn lander_shot_spec() -> GwaveSpec {
+    GwaveSpec {
+        wave: WaveTable::sine(72),
+        cycles: 1,
+        echoes: 1,
+        echo_decay: 0,
+        predecay: 17,
+        freq_inc: 1,
+        freq_count: 15,
+        pattern: &[8],
+    }
+}
+
+/// ★ A MUTANT FIRES (CLDWN): a three-note trill (873 / 1396 / 2934 Hz) on
+/// the odd 8-step wave, three quick echoes, then every period one longer:
+/// a buzzy descending trill. Cut at 768 ms, the game's hold for it.
+fn mutant_shot_spec() -> GwaveSpec {
+    GwaveSpec {
+        wave: WaveTable::odd8(),
+        cycles: 1,
+        echoes: 3,
+        echo_decay: 1,
+        predecay: 0,
+        freq_inc: 1,
+        freq_count: 0,
+        pattern: &[16, 8, 1],
+    }
+}
+const MUTANT_SHOT_CUT: f32 = 0.768;
+
+/// ★ SET DOWN SAFE (QUASAR): rising sweeps, 378 → 1530 Hz, each ~0.26 s,
+/// ten of them, each a little higher. Brian: "that classic phaser sound
+/// when dropped to ground".
+const SET_DOWN: VariSpec = VariSpec {
+    lo: 40,
+    hi: 129,
+    lo_step: 0,
+    hi_step: 0xFC,
+    hi_end: 1,
+    sweep: 512,
+    lo_mod: 0xFC,
+    amp: 0xFF,
+};
+
+/// ★ A LANDER BECOMES A MUTANT (SP1): a buzz whose low half shortens by
+/// 14 counts every 16 ms for ten steps (254 → 128), so it rises in steps
+/// from ~250 Hz, over a high half sawing up 24 counts every 18 ms. The
+/// original drones until another sound replaces it; ours drones for
+/// [`FUSION_SECONDS`] and fades.
+const FUSION: VariSpec = VariSpec {
+    lo: 254,
+    hi: 1,
+    lo_step: 0,
+    hi_step: 24,
+    hi_end: 65,
+    sweep: 1152,
+    lo_mod: 0,
+    amp: 0xFF,
+};
+const FUSION_STEPS: u8 = 10;
+const FUSION_STEP_SECONDS: f32 = 0.016;
+const FUSION_SECONDS: f32 = 1.1;
+const FUSION_FADE: f32 = 0.3;
+
+/// The SP1 low half for step `n` (1-based): the original's own
+/// arithmetic — 254, 240, 226 … down by 14.
+fn fusion_lo(n: u8) -> u8 {
+    let mut a = 32 - n as i32;
+    let mut lo = 0i32;
+    while a > 20 {
+        lo += 14;
+        a -= 1;
+    }
+    lo += 5 * a;
+    lo.clamp(1, 255) as u8
+}
+
+/// Levels. ⚠️ NOT PEAKS — each is rendered and measured in
+/// `no_voice_clips_at_full_gain`.
+const GRAB_LEVEL: f32 = 0.34;
+const CATCH_LEVEL: f32 = 0.40;
+const LANDER_SHOT_LEVEL: f32 = 0.26;
+const MUTANT_SHOT_LEVEL: f32 = 0.24;
+const SET_DOWN_LEVEL: f32 = 0.30;
+const FUSION_LEVEL: f32 = 0.26;
+const SCREAM_LEVEL: f32 = 0.30;
+
+/// A single GWAVE preset, played once.
+pub struct GwaveOnce {
+    spec: GwaveSpec,
+    run: Gwave,
+    cut: f32,
+}
+
+impl Script for GwaveOnce {
+    fn begin(&mut self, _b: &mut Board) {
+        self.run = Gwave::new(self.spec);
+    }
+    fn write(&mut self, b: &mut Board, t: f32) -> bool {
+        t < self.cut && self.run.write(b)
+    }
+}
+
+fn gwave_once(spec: GwaveSpec, cut: f32, level: f32) -> BoardVoice<GwaveOnce> {
+    BoardVoice::with(GwaveOnce { spec, run: Gwave::new(spec), cut }, level)
+}
+
+/// The grab (ED10).
+pub fn grab() -> BoardVoice<GwaveOnce> {
+    gwave_once(grab_spec(), f32::MAX, GRAB_LEVEL)
+}
+
+/// A Lander's or Baiter's shot (DP1V).
+pub fn lander_shot() -> BoardVoice<GwaveOnce> {
+    gwave_once(lander_shot_spec(), f32::MAX, LANDER_SHOT_LEVEL)
+}
+
+/// A Mutant's shot (CLDWN), cut where the game cuts it.
+pub fn mutant_shot() -> BoardVoice<GwaveOnce> {
+    gwave_once(mutant_shot_spec(), MUTANT_SHOT_CUT, MUTANT_SHOT_LEVEL)
+}
+
+/// The catch: SPNRV three times, each restart 160 ms after the last —
+/// the game re-sends it, and each send cuts the previous bloop off.
+pub struct CatchScript {
+    run: Gwave,
+    sends: u8,
+}
+const CATCH_SENDS: u8 = 3;
+const CATCH_INTERVAL: f32 = 0.160;
+
+impl Script for CatchScript {
+    fn begin(&mut self, _b: &mut Board) {
+        self.run = Gwave::new(catch_spec());
+        self.sends = 1;
+    }
+    fn write(&mut self, b: &mut Board, t: f32) -> bool {
+        if self.sends < CATCH_SENDS && t >= self.sends as f32 * CATCH_INTERVAL {
+            self.sends += 1;
+            self.run = Gwave::new(catch_spec());
+        }
+        self.run.write(b)
+    }
+}
+
+pub fn catch() -> BoardVoice<CatchScript> {
+    BoardVoice::with(CatchScript { run: Gwave::new(catch_spec()), sends: 1 }, CATCH_LEVEL)
+}
+
+/// One VARI preset, played once.
+pub struct VariOnce {
+    spec: VariSpec,
+    run: Option<Vari>,
+}
+
+impl Script for VariOnce {
+    fn begin(&mut self, b: &mut Board) {
+        self.run = Some(Vari::new(self.spec, b));
+    }
+    fn write(&mut self, b: &mut Board, _t: f32) -> bool {
+        self.run.as_mut().is_some_and(|v| v.write(b))
+    }
+}
+
+/// The set-down (QUASAR).
+pub fn set_down() -> BoardVoice<VariOnce> {
+    BoardVoice::with(VariOnce { spec: SET_DOWN, run: None }, SET_DOWN_LEVEL)
+}
+
+/// The fusion (SP1): ten stepped restarts, then the drone, then a fade.
+pub struct FusionScript {
+    run: Option<Vari>,
+    step: u8,
+}
+
+impl FusionScript {
+    fn restart(&mut self, b: &mut Board) {
+        self.step += 1;
+        let spec = VariSpec { lo: fusion_lo(self.step), ..FUSION };
+        self.run = Some(Vari::new(spec, b));
+    }
+}
+
+impl Script for FusionScript {
+    fn begin(&mut self, b: &mut Board) {
+        self.step = 0;
+        self.restart(b);
+    }
+    fn write(&mut self, b: &mut Board, t: f32) -> bool {
+        if t >= FUSION_SECONDS {
+            return false;
+        }
+        if self.step < FUSION_STEPS && t >= self.step as f32 * FUSION_STEP_SECONDS {
+            self.restart(b);
+        }
+        // SP1 loops VARI forever: when one run ends, start it again.
+        if !self.run.as_mut().is_some_and(|v| v.write(b)) {
+            let spec = VariSpec { lo: fusion_lo(self.step), ..FUSION };
+            self.run = Some(Vari::new(spec, b));
+        }
+        true
+    }
+    fn envelope(&self, t: f32) -> f32 {
+        ((FUSION_SECONDS - t) / FUSION_FADE).clamp(0.0, 1.0)
+    }
+}
+
+pub fn fusion() -> BoardVoice<FusionScript> {
+    BoardVoice::with(FusionScript { run: None, step: 0 }, FUSION_LEVEL)
+}
+
+/// ★ THE SCREAM — a CONTINUOUS voice, not a one-shot.
+///
+/// It runs while someone is falling and stops the moment they are caught
+/// or land: the original's board was monophonic and the next sound cut
+/// it; a one-shot here could not be cut and would scream on over the
+/// catch. Slot 0 of its params is the count of falls begun — when that
+/// changes, a new fall has started and the scream starts over.
+pub struct Scream {
+    board: Board,
+    run: ScreamRoutine,
+    fall: f32,
+    alive: bool,
+}
+
+impl Default for Scream {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Scream {
+    pub fn new() -> Self {
+        Self { board: Board::new(), run: ScreamRoutine::new(), fall: -1.0, alive: false }
+    }
+
+    /// The params that drive it: which fall this is.
+    pub fn params(falls: u32) -> VoiceParams {
+        VoiceParams::new([falls as f32, 0.0, 0.0, 0.0])
+    }
+}
+
+impl Voice for Scream {
+    fn render(&mut self, out: &mut [f32], params: VoiceParams, sample_rate: f32) {
+        let fall = params.get(0);
+        if fall != self.fall {
+            self.fall = fall;
+            self.board.restart();
+            self.run = ScreamRoutine::new();
+            self.alive = true;
+        }
+        let per_sample = WILLIAMS_CLOCK / sample_rate;
+        let r = dc_block(sample_rate);
+        for sample in out.iter_mut() {
+            if !self.alive {
+                *sample = 0.0;
+                continue;
+            }
+            let (run, alive) = (&mut self.run, &mut self.alive);
+            let y = self.board.sample(per_sample, r, |b| {
+                if !*alive || !run.write(b) {
+                    *alive = false;
+                    park(b);
+                }
+            });
+            *sample = y * SCREAM_LEVEL;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1767,10 +2501,16 @@ mod tests {
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 8] = [
+        let cases: [(&str, &mut dyn Voice, f32); 14] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
             ("smart bomb", &mut SmartBomb::new(), 3.0),
             ("hyperspace", &mut Hyperspace::new(), 0.7),
+            ("grab", &mut grab(), 1.0),
+            ("catch", &mut catch(), 0.7),
+            ("set-down", &mut set_down(), 2.8),
+            ("fusion", &mut fusion(), 1.2),
+            ("lander shot", &mut lander_shot(), 0.3),
+            ("mutant shot", &mut mutant_shot(), 0.9),
             ("lander", &mut Boom::new(), BOOM_LEN),
             ("mutant", &mut MutantBoom::new(), MUTANT_BOOM_LEN),
             ("ship", &mut ShipBoom::new(), SHIP_BOOM_LEN),
@@ -1904,6 +2644,118 @@ mod tests {
             let after = brightness(&s[edge + win / 4..edge + win]);
             assert!(after > before * 1.2, "no restart at {} ms: {before:.3} → {after:.3}", k * 64);
         }
+    }
+
+    // ----- the people's sounds and the enemy's guns -----
+
+    /// Zero crossings per second of a slice: a pitch proxy that needs no
+    /// FFT and does not care about level.
+    fn crossings(s: &[f32]) -> f32 {
+        let n = s.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
+        n as f32 / (s.len() as f32 / SR)
+    }
+
+    fn end_of(v: &mut dyn Voice, seconds: f32) -> (Vec<f32>, f32) {
+        v.retrigger(1.0, 1.0);
+        let s = render_all(v, seconds);
+        let end = s.iter().rposition(|x| x.abs() > 1e-4).unwrap_or(0) as f32 / SR;
+        (s, end)
+    }
+
+    /// ★ EACH LASTS AS LONG AS THE ORIGINAL'S (measured from the ROM
+    /// renders: grab 0.83 s, set-down 2.64 s, Lander shot 0.17 s; the
+    /// catch is three bloops 160 ms apart; the Mutant's shot is cut at the
+    /// game's 768 ms; the fusion is ours at 1.1 s) — and each retires.
+    #[test]
+    fn the_new_voices_last_as_long_as_the_originals() {
+        let cases: [(&str, &mut dyn Voice, f32, f32, f32); 6] = [
+            ("grab", &mut grab(), 1.5, 0.72, 0.92),
+            ("catch", &mut catch(), 1.0, 0.45, 0.65),
+            ("set-down", &mut set_down(), 3.5, 2.45, 2.75),
+            ("lander shot", &mut lander_shot(), 0.6, 0.11, 0.21),
+            ("mutant shot", &mut mutant_shot(), 1.2, 0.70, 0.78),
+            ("fusion", &mut fusion(), 1.6, 0.9, FUSION_SECONDS + 0.02),
+        ];
+        for (name, v, secs, lo, hi) in cases {
+            let (s, end) = end_of(v, secs);
+            assert!((lo..=hi).contains(&end), "{name} ended at {end:.2} s");
+            assert!(!v.alive(), "{name} never retired");
+            assert!(s.iter().all(|x| x.is_finite()), "{name} emitted a non-finite sample");
+        }
+    }
+
+    /// ★ THE SET-DOWN RISES: each sweep climbs 378 → 1530 Hz — "that
+    /// classic phaser sound".
+    #[test]
+    fn the_set_down_sweeps_upward() {
+        let (s, _) = end_of(&mut set_down(), 0.3);
+        let at = |t: f32| (t * SR) as usize;
+        let low = crossings(&s[at(0.01)..at(0.07)]);
+        let high = crossings(&s[at(0.18)..at(0.24)]);
+        assert!(high > low * 1.5, "the sweep did not rise: {low:.0} → {high:.0} crossings/s");
+    }
+
+    /// ★ AND THE SCREAM, AND BOTH GUNS, FALL.
+    #[test]
+    fn the_scream_and_the_shots_fall() {
+        let at = |t: f32| (t * SR) as usize;
+
+        let mut scream = Scream::new();
+        let mut s = Vec::new();
+        let mut block = [0.0f32; 256];
+        while s.len() < at(2.2) {
+            scream.render(&mut block, Scream::params(1), SR);
+            s.extend_from_slice(&block);
+        }
+        let (early, late) = (crossings(&s[at(0.1)..at(0.5)]), crossings(&s[at(1.6)..at(2.0)]));
+        assert!(early > late * 1.3, "the scream did not fall: {early:.0} → {late:.0}");
+
+        let (s, _) = end_of(&mut lander_shot(), 0.3);
+        let (early, late) = (crossings(&s[at(0.0)..at(0.04)]), crossings(&s[at(0.10)..at(0.14)]));
+        assert!(early > late, "the Lander's shot did not fall: {early:.0} → {late:.0}");
+
+        let (s, _) = end_of(&mut mutant_shot(), 0.9);
+        let (early, late) = (crossings(&s[at(0.02)..at(0.15)]), crossings(&s[at(0.55)..at(0.74)]));
+        assert!(early > late * 1.5, "the Mutant's shot did not fall: {early:.0} → {late:.0}");
+    }
+
+    /// The scream starts over when a new fall begins, and is silent once
+    /// its own course has run.
+    #[test]
+    fn the_scream_restarts_for_each_fall() {
+        let mut scream = Scream::new();
+        let mut block = [0.0f32; 256];
+        for _ in 0..(6.0 * SR / 256.0) as usize {
+            scream.render(&mut block, Scream::params(1), SR);
+        }
+        assert!(peak(&block) < 1e-3, "the scream outlived its own course");
+        let mut fresh = Vec::new();
+        for _ in 0..40 {
+            scream.render(&mut block, Scream::params(2), SR);
+            fresh.extend_from_slice(&block);
+        }
+        assert!(peak(&fresh) > 0.05, "a new fall did not restart the scream");
+    }
+
+    /// ★ THE ORIGINAL'S DECAY WRAPS, IT DOES NOT CLAMP — a sample of 10
+    /// losing 15 goes to 251, not 0. The wrap IS the GWAVE's grit.
+    #[test]
+    fn gwave_decay_wraps_rather_than_clamping() {
+        let mut wave = WaveTable::sine(8);
+        wave.data[0] = 255; // rom >> 4 = 15
+        let spec = GwaveSpec { wave, ..catch_spec() };
+        let mut g = Gwave::new(spec);
+        g.ram[0] = 10;
+        g.decay(1);
+        assert_eq!(g.ram[0], 251);
+    }
+
+    /// The fusion's steps are the original's own arithmetic: 254, 240,
+    /// 226 … down by 14 to 128 over ten sends.
+    #[test]
+    fn the_fusion_buzz_steps_up_by_fourteen() {
+        let steps: Vec<u8> = (1..=10).map(fusion_lo).collect();
+        assert_eq!(steps, vec![254, 240, 226, 212, 198, 184, 170, 156, 142, 128]);
     }
 
     /// ★ HYPERSPACE GOES OUT AND COMES BACK IN: the departure's crackle

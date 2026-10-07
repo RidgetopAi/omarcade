@@ -1,5 +1,5 @@
-//! W3 art review: the Baiter, Bomber and Mine drafts beside the ship,
-//! the Lander and the Mutant, at the size the game draws them.
+//! W4 art review: the Pod and Swarmer drafts beside the ship and the
+//! enemies already in the game, at the size the game draws them.
 //!
 //!   cargo run -p omarcade-warden --example art_review -- out.png
 //!
@@ -14,12 +14,10 @@ use omarcade_core::{text::text, Canvas, Color, Theme, Transform};
 #[allow(dead_code)]
 #[path = "../src/art.rs"]
 mod art;
-#[path = "../assets-inbox/baiter.rs"]
-mod baiter;
-#[path = "../assets-inbox/bomber.rs"]
-mod bomber;
-#[path = "../assets-inbox/mine.rs"]
-mod mine;
+#[path = "../assets-inbox/pod.rs"]
+mod pod;
+#[path = "../assets-inbox/swarmer.rs"]
+mod swarmer;
 
 const W: u32 = 960;
 const H: u32 = 720;
@@ -41,17 +39,19 @@ fn main() {
     let muted = fg.lerp(theme.background, 0.45);
 
     let ship = |c: &mut Canvas<'_>, t: &Transform| art::draw_ship(c, t, 0.0);
+    let baiter = |c: &mut Canvas<'_>, t: &Transform| art::draw_baiter(c, t, 0);
+    let bomber = |c: &mut Canvas<'_>, t: &Transform| art::draw_bomber(c, t, 0);
     let pieces: [(&str, &str, Draw); 6] = [
         ("SHIP", "35x11", ship),
         ("LANDER", "12x15", art::draw_lander),
-        ("MUTANT", "12x15", art::draw_mutant),
-        ("BAITER", "24x10 NEW", baiter::draw_baiter),
-        ("BOMBER", "14x10 NEW", bomber::draw_bomber),
-        ("MINE", "5x5 NEW", mine::draw_mine),
+        ("BAITER", "24x10", baiter),
+        ("BOMBER", "14x10", bomber),
+        ("POD", "13x13 NEW", pod::draw_pod),
+        ("SWARMER", "7x5 NEW", swarmer::draw_swarmer),
     ];
 
-    text(&mut canvas, "W3 ART DRAFTS - GAME SIZE", 24, 24, 2, fg);
-    let xs = [90.0, 240.0, 360.0, 500.0, 650.0, 800.0];
+    text(&mut canvas, "W4 ART DRAFTS - GAME SIZE", 24, 24, 2, fg);
+    let xs = [90.0, 240.0, 380.0, 520.0, 660.0, 820.0];
     for (i, (name, size, draw)) in pieces.iter().enumerate() {
         draw(&mut canvas, &Transform::at(xs[i], 130.0).scaled(art::SCALE));
         let w = omarcade_core::text::text_width(name, 2) as i32;
@@ -61,27 +61,28 @@ fn main() {
     }
 
     text(&mut canvas, "4X CLOSE-UP", 24, 250, 2, fg);
-    let close: [(f32, Draw); 4] = [
-        (150.0, art::draw_lander),
-        (380.0, baiter::draw_baiter),
-        (620.0, bomber::draw_bomber),
-        (820.0, mine::draw_mine),
-    ];
-    for (x, draw) in close {
-        draw(&mut canvas, &Transform::at(x, 400.0).scaled(art::SCALE * 4.0));
-    }
+    art::draw_lander(&mut canvas, &Transform::at(170.0, 400.0).scaled(art::SCALE * 4.0));
+    pod::draw_pod(&mut canvas, &Transform::at(450.0, 400.0).scaled(art::SCALE * 4.0));
+    swarmer::draw_swarmer(&mut canvas, &Transform::at(720.0, 400.0).scaled(art::SCALE * 4.0));
 
-    // In context: a scene the way play will look.
+    // In context: a Pod drifting, and a pack it has just let out, some
+    // facing each way.
     text(&mut canvas, "IN PLAY", 24, 520, 2, fg);
     art::draw_ship(&mut canvas, &Transform::at(140.0, 575.0).scaled(art::SCALE), 0.0);
-    baiter::draw_baiter(&mut canvas, &Transform::at(300.0, 545.0).scaled(art::SCALE));
-    bomber::draw_bomber(&mut canvas, &Transform::at(520.0, 590.0).scaled(art::SCALE));
-    bomber::draw_bomber(&mut canvas, &Transform::at(570.0, 590.0).scaled(art::SCALE));
-    for (x, y) in [(470.0, 600.0), (430.0, 585.0), (395.0, 605.0)] {
-        mine::draw_mine(&mut canvas, &Transform::at(x, y).scaled(art::SCALE));
+    pod::draw_pod(&mut canvas, &Transform::at(640.0, 560.0).scaled(art::SCALE));
+    let pack = [
+        (430.0, 570.0, false),
+        (465.0, 590.0, false),
+        (500.0, 556.0, false),
+        (520.0, 600.0, true),
+        (560.0, 582.0, false),
+        (395.0, 598.0, false),
+    ];
+    for (x, y, right) in pack {
+        let t = Transform::at(x, y).scaled(art::SCALE).flipped(right);
+        swarmer::draw_swarmer(&mut canvas, &t);
     }
-    art::draw_lander(&mut canvas, &Transform::at(720.0, 560.0).scaled(art::SCALE));
-    art::draw_mutant(&mut canvas, &Transform::at(840.0, 580.0).scaled(art::SCALE));
+    art::draw_lander(&mut canvas, &Transform::at(820.0, 560.0).scaled(art::SCALE));
 
     write_png(Path::new(&path), &buf, W, H);
     println!("wrote {path}");

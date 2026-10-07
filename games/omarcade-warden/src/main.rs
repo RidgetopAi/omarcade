@@ -757,6 +757,7 @@ impl Warden {
         // they converge on the respawn point and kill the next life
         // instantly — the exact death loop the invulnerability exists to
         // prevent, reintroduced by an oversight.
+        let was_y = self.ship.y;
         let ship_pos = if self.flying() {
             self.ship.step(input, &self.terrain, dt);
             self.camera.follow(&self.ship, dt);
@@ -799,7 +800,13 @@ impl Warden {
 
         // Enemies that want to shoot say so; the bolts are built here,
         // because `Enemies` does not know what a Shot is.
-        self.enemies.set_ship_vx(self.ship.vx);
+        // ★ THE BAITER'S CHASE: the ship's velocity — vertical measured,
+        // since the climb is direct — and how keen it is to re-aim.
+        self.enemies.set_chase(enemy::Chase {
+            vx: self.ship.vx,
+            vy: (self.ship.y - was_y) / dt.max(1e-6),
+            seek: self.director.baiter_seek(),
+        });
         let wants = self.enemies.step(&self.terrain, &mut self.people, ship_pos, dt);
         // ★ W3: and Bombers say where they dropped a mine.
         for (x, y) in self.enemies.take_mines() {
@@ -2316,5 +2323,23 @@ mod tests {
         assert_eq!(g.enemies.count(enemy::Kind::Pod), 0, "the Pod survived the beam");
         assert!(g.score >= enemy::POD_POINTS);
         assert!(g.enemies.count(enemy::Kind::Swarmer) > 0, "no Swarmers came out");
+    }
+
+    /// ★ THE BAITERS ARE TOLD THE TRUTH, through the real update: the
+    /// wave's re-aim chance, and the ship's climb as it actually happens.
+    #[test]
+    fn baiters_chase_the_real_ship_and_the_waves_keenness() {
+        let mut g = game();
+        immortal(&mut g);
+        g.on_input(InputEvent::KeyDown(Key::Up));
+        let mut audio = AudioSystem::new();
+        for _ in 0..10 {
+            let mut a = audio.handle();
+            g.update(1.0 / 60.0, &mut a);
+        }
+        let c = g.enemies.chase();
+        assert_eq!(c.seek, g.director.baiter_seek());
+        assert!(c.seek < 0.5, "seek {} is not wave 1's", c.seek);
+        assert!(c.vy > flight::CLIMB_SPEED * 0.5, "climbing ship reported vy {}", c.vy);
     }
 }

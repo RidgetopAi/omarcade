@@ -50,22 +50,25 @@ pub const SWARMER_POINTS: u32 = 150;
 /// ship is doing — so it cannot be outrun, which is the point of it.
 pub const BAITER_MARGIN: f32 = 380.0;
 
-/// Inside this horizontal distance a Baiter stops closing and matches the
-/// ship's speed (the original's ±20 px).
+/// Inside this horizontal distance a Baiter stops re-aiming sideways and
+/// keeps the speed it has (the original's ±20 px) — so it overshoots.
 pub const BAITER_CLOSE: f32 = 63.0;
 
-/// How fast a Baiter changes altitude: half the ship's climb, as in the
-/// original.
-pub const BAITER_CLIMB: f32 = 240.0;
+/// ★ THE ORIGINAL'S WINDOW: A BAITER ONLY RECONSIDERS NOW AND THEN.
+/// Every 18 frames (its 3-image cycle at `NAP 6`) it rolls a byte, and
+/// re-aims only if the byte beats `UFOSK` — about 1 time in 5 at the
+/// start of wave 1 ([`crate::waves::baiter_seek`]). Between re-aims it
+/// flies on its old heading: it overshoots, drifts, and that drift is
+/// where a player lines up a shot or slips away. (Ours used to re-aim
+/// every ~0.4 s, and at once on any overshoot — glued to you, Brian found.)
+pub const BAITER_SEEK_PERIOD: f32 = 18.0 / 60.0;
 
-/// A Baiter sits this far off your altitude, either way, re-chosen each
-/// re-aim — so it hangs near your line rather than on it.
-pub const BAITER_BIAS: f32 = 70.0;
-
-/// Seconds between re-aims, at most: it re-aims on a random roll rather
-/// than every frame (the original's `UFOSK`), which is what keeps it
-/// beatable at all.
-pub const BAITER_RETARGET: f32 = 0.6;
+/// When it re-aims and is more than 10 lines off your altitude, its
+/// vertical speed becomes (your vertical speed + 1 line a frame toward
+/// you) ÷ 2 (UFONV). Holding still, that closes at 90 u/s.
+pub const BAITER_VSEEK: f32 = 3.0 * 60.0;
+/// Inside this altitude gap it leaves its vertical speed alone (10 lines).
+pub const BAITER_Y_CLOSE: f32 = 30.0;
 
 /// How often a Baiter fires, seconds at pressure 1.0 — "fires often".
 /// Brian's spec: "shoot faster THAN YOU". Its shots are faster than a
@@ -452,6 +455,8 @@ impl Enemy {
     /// A Baiter, warping in. Announced through `spawn` like every arrival,
     /// so Brian's Warp plays for it — his call: "the sound I just made we
     /// will use for spawns of landers and baiters".
+    ///
+    /// ⚠️ `aux` and `bias` start at zero ON PURPOSE: the first step aims.
     pub fn baiter(x: f32, y: f32) -> Self {
         Self { kind: Kind::Baiter, fire_cooldown: BAITER_FIRE_INTERVAL, ..Self::lander(x, y, 0.0) }
     }
@@ -613,7 +618,7 @@ impl Enemy {
         terrain: &Terrain,
         prey: Option<(f32, f32)>,
         ship: Option<(f32, f32)>,
-        ship_vx: f32,
+        chase: Chase,
         noise: &mut u32,
         pressure: f32,
         dt: f32,
@@ -645,7 +650,7 @@ impl Enemy {
         match self.kind {
             Kind::Lander => self.step_lander(terrain, prey, ship, noise, pressure, dt),
             Kind::Mutant => self.step_mutant(ship, noise, pressure, dt),
-            Kind::Baiter => self.step_baiter(ship, ship_vx, noise, pressure, dt),
+            Kind::Baiter => self.step_baiter(ship, chase, noise, pressure, dt),
             Kind::Bomber => self.step_bomber(terrain, ship, noise, dt),
             Kind::Pod => self.step_pod(terrain, dt),
             Kind::Swarmer => self.step_swarmer(ship, noise, pressure, dt),
@@ -895,16 +900,20 @@ impl Enemy {
         }
     }
 
-    /// ★ THE BAITER: it cannot be outrun.
+    /// ★ THE BAITER (UFOST/UFOLP/UFONV): it cannot be outrun, but it
+    /// does not steer every moment either.
     ///
-    /// Its X speed is the SHIP's plus [`BAITER_MARGIN`] toward the ship,
-    /// re-aimed on a random roll; its altitude closes on yours at half
-    /// your climb rate, offset by a re-chosen [`BAITER_BIAS`] so it hangs
-    /// near your line rather than sitting on it. And it fires often.
+    /// It aims once as it arrives. After that, every
+    /// [`BAITER_SEEK_PERIOD`] it re-aims only on a roll that succeeds
+    /// `chase.seek` of the time. A re-aim sets X to the SHIP's speed plus
+    /// [`BAITER_MARGIN`] toward you (unless already within
+    /// [`BAITER_CLOSE`], when X is left alone) and, unless within
+    /// [`BAITER_Y_CLOSE`], Y to half of your vertical speed plus
+    /// [`BAITER_VSEEK`] toward you. Between re-aims it simply flies on.
     fn step_baiter(
         &mut self,
         ship: Option<(f32, f32)>,
-        ship_vx: f32,
+        chase: Chase,
         noise: &mut u32,
         pressure: f32,
         dt: f32,
@@ -915,30 +924,31 @@ impl Enemy {
             return Outcome::None;
         };
         let dx = world::delta(self.x, sx);
+        let dy = sy - self.y;
 
+        // ⚠️ `bias` IS "HAS AIMED YET": a Baiter always aims as it arrives
+        // (UFOST calls UFONV0 unconditionally); only later re-aims roll.
         self.aux -= dt;
         if self.aux <= 0.0 {
-            self.aux = BAITER_RETARGET * (0.25 + 0.75 * next01(noise));
-            self.bias = (next01(noise) - 0.5) * 2.0 * BAITER_BIAS;
-            self.vx = if dx.abs() > BAITER_CLOSE {
-                ship_vx + BAITER_MARGIN * dx.signum()
-            } else {
-                ship_vx
-            };
-        }
-        // ⚠️ AN OVERSHOOT RE-AIMS AT ONCE. Without this a Baiter that
-        // passed the ship at 1000 u/s would carry on for up to a whole
-        // re-aim interval in the wrong direction, which reads as a bug,
-        // not as a feint.
-        if dx.abs() > BAITER_CLOSE && (self.vx - ship_vx) * dx < 0.0 {
-            self.aux = 0.0;
+            self.aux += BAITER_SEEK_PERIOD;
+            let first = self.bias == 0.0;
+            if first || next01(noise) < chase.seek {
+                self.bias = 1.0;
+                if dx.abs() > BAITER_CLOSE {
+                    self.vx = chase.vx + BAITER_MARGIN * dx.signum();
+                }
+                if dy.abs() > BAITER_Y_CLOSE {
+                    self.vy = (chase.vy + BAITER_VSEEK * dy.signum()) * 0.5;
+                }
+            }
         }
         self.x = world::wrap(self.x + self.vx * dt);
-
-        let want = sy + self.bias;
-        let climb = BAITER_CLIMB * dt;
-        self.y += (want - self.y).clamp(-climb, climb);
-        self.y = self.y.clamp(40.0, world::VIEW_H * 0.95);
+        self.y += self.vy * dt;
+        let (low, high) = (40.0, world::VIEW_H * 0.95);
+        if self.y < low || self.y > high {
+            self.y = self.y.clamp(low, high);
+            self.vy = 0.0;
+        }
 
         self.fire_cooldown -= dt;
         if self.fire_cooldown <= 0.0 && dx.abs() < world::VIEW_W * 0.6 {
@@ -1097,6 +1107,16 @@ impl Enemy {
     }
 }
 
+/// What a Baiter chases with: the ship's velocity (its vertical speed is
+/// measured, since its climb is direct), and the chance a re-aim roll
+/// succeeds ([`crate::waves::baiter_seek`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Chase {
+    pub vx: f32,
+    pub vy: f32,
+    pub seek: f32,
+}
+
 /// What a Lander's step needs its owner to do.
 ///
 /// The Lander cannot reach the Humanoid list, so it says what happened
@@ -1155,9 +1175,9 @@ pub struct Enemies {
     pressure: f32,
     /// Where the round-robin hand-out of targets got to (GTARG's TPTR).
     next_target: usize,
-    /// The ship's horizontal speed, set by the owner each step — the one
-    /// thing a Baiter needs that a position does not carry.
-    ship_vx: f32,
+    /// What a Baiter needs that a position does not carry, set by the
+    /// owner each step.
+    chase: Chase,
     /// Mines Bombers have dropped since this was last read.
     mines: Vec<(f32, f32)>,
     /// People a Lander has taken hold of since this was last read — the
@@ -1175,7 +1195,7 @@ impl Enemies {
             fused: 0,
             pressure: 1.0,
             next_target: 0,
-            ship_vx: 0.0,
+            chase: Chase { vx: 0.0, vy: 0.0, seek: 1.0 },
             mines: Vec::new(),
             grabbed: 0,
         }
@@ -1187,9 +1207,15 @@ impl Enemies {
         std::mem::replace(&mut self.grabbed, 0)
     }
 
-    /// The ship's horizontal speed, for the Baiters.
-    pub fn set_ship_vx(&mut self, vx: f32) {
-        self.ship_vx = vx;
+    /// The ship's velocity, and how keen a Baiter is to re-aim
+    /// ([`crate::waves::baiter_seek`]).
+    pub fn set_chase(&mut self, chase: Chase) {
+        self.chase = chase;
+    }
+
+    #[cfg(test)]
+    pub fn chase(&self) -> Chase {
+        self.chase
     }
 
     /// Mines dropped since this was last asked, and forget them — the
@@ -1345,7 +1371,7 @@ impl Enemies {
         let mut shots_wanted = Vec::new();
         let mut noise = self.noise;
         let pressure = self.pressure;
-        let ship_vx = self.ship_vx;
+        let chase = self.chase;
         let mut mines = Vec::new();
         // ⚠️ ACCUMULATED LOCALLY, not written straight to `self.fused`.
         // The loop below holds `&mut` borrows of `self.live`, so the
@@ -1390,7 +1416,7 @@ impl Enemies {
                 None => None,
             };
 
-            match l.step(terrain, prey, ship, ship_vx, &mut noise, pressure, dt) {
+            match l.step(terrain, prey, ship, chase, &mut noise, pressure, dt) {
                 Outcome::None => {}
 
                 Outcome::LaysMine => mines.push((l.x, l.y)),
@@ -2198,24 +2224,98 @@ mod tests {
         e
     }
 
+    /// The chase at the start of wave 1: re-aims ~21% of rolls.
+    fn wave_one(vx: f32, vy: f32) -> Chase {
+        Chase { vx, vy, seek: crate::waves::baiter_seek(1, 0.0) }
+    }
+
     /// ★ A BAITER CANNOT BE OUTRUN: the ship flat out, the Baiter a screen
-    /// behind — it closes anyway.
+    /// behind. With the original's lazy re-aiming it does not sit on you —
+    /// it overshoots, runs on, and comes back (measured: swings of ±500–
+    /// 1100 u) — but it keeps CROSSING you, and never strays much beyond a
+    /// screen. Five seeds, so one lucky roll cannot pass it.
     #[test]
     fn a_baiter_cannot_be_outrun() {
         let t = Terrain::generate(256, 0x0DEF_E4DE);
-        let mut people = Humanoids::new();
-        let mut es = Enemies::new();
-        let mut sx = 1000.0f32;
-        es.spawn(flying(Enemy::baiter(sx - world::VIEW_W, 300.0)));
         let top = 640.0;
         let dt = 1.0 / 240.0;
-        for _ in 0..(240 * 4) {
-            sx = world::wrap(sx + top * dt);
-            es.set_ship_vx(top);
+        for seed in 1..=5u32 {
+            let mut people = Humanoids::new();
+            let mut es = Enemies::new();
+            es.reseed(seed.wrapping_mul(0x9E37_79B9));
+            let mut sx = 1000.0f32;
+            es.spawn(flying(Enemy::baiter(sx - world::VIEW_W, 300.0)));
+            es.set_chase(wave_one(top, 0.0));
+            let (mut worst, mut crossings, mut ahead) = (0.0f32, 0, false);
+            for i in 0..(240 * 12) {
+                sx = world::wrap(sx + top * dt);
+                es.step(&t, &mut people, Some((sx, 300.0)), dt);
+                let d = world::delta(sx, es.get(0).unwrap().x);
+                if i > 240 * 4 {
+                    worst = worst.max(d.abs());
+                    if (d > 0.0) != ahead {
+                        crossings += 1;
+                    }
+                }
+                ahead = d > 0.0;
+            }
+            assert!(crossings >= 2, "seed {seed}: crossed the ship only {crossings} times in 8 s");
+            assert!(worst < world::VIEW_W * 1.3, "seed {seed}: the ship got {worst:.0} away");
+        }
+    }
+
+    /// ★ IT FLIES ON BETWEEN RE-AIMS. With re-aiming switched off it aims
+    /// once as it arrives — and then overshoots the ship and keeps going,
+    /// rather than snapping back (the window Brian's flight was missing).
+    #[test]
+    fn a_baiter_aims_on_arrival_then_flies_on() {
+        let t = Terrain::generate(256, 0x0DEF_E4DE);
+        let mut people = Humanoids::new();
+        let mut es = Enemies::new();
+        let sx = 1000.0;
+        es.spawn(flying(Enemy::baiter(sx - 300.0, 300.0)));
+        es.set_chase(Chase { vx: 0.0, vy: 0.0, seek: 0.0 });
+        let dt = 1.0 / 240.0;
+        es.step(&t, &mut people, Some((sx, 300.0)), dt);
+        let aimed = es.get(0).unwrap().vx;
+        assert_eq!(aimed, BAITER_MARGIN, "it did not aim on arrival");
+        for _ in 0..(240 * 3) {
             es.step(&t, &mut people, Some((sx, 300.0)), dt);
         }
-        let gap = world::delta(es.get(0).unwrap().x, sx).abs();
-        assert!(gap < BAITER_CLOSE * 2.0, "the ship outran it: {gap:.0} apart after 4 s");
+        let b = es.get(0).unwrap();
+        assert_eq!(b.vx, aimed, "it re-aimed with re-aiming off");
+        assert!(world::delta(sx, b.x) > world::VIEW_W * 0.5, "it did not overshoot");
+    }
+
+    /// Already within 20 px of the ship, a re-aim leaves X alone (UFONV1).
+    #[test]
+    fn a_baiter_level_with_you_does_not_re_aim_sideways() {
+        let t = Terrain::generate(256, 0x0DEF_E4DE);
+        let mut people = Humanoids::new();
+        let mut es = Enemies::new();
+        es.spawn(flying(Enemy::baiter(1010.0, 300.0)));
+        es.set_chase(Chase { vx: 0.0, vy: 0.0, seek: 0.0 });
+        es.step(&t, &mut people, Some((1000.0, 300.0)), 1.0 / 240.0);
+        assert_eq!(es.get(0).unwrap().vx, 0.0);
+    }
+
+    /// ★ ITS CLIMB IS THE ORIGINAL'S: on a re-aim, half of (your vertical
+    /// speed + 1 line a frame toward you) — 90 u/s at a ship holding still,
+    /// and it closes faster on a ship climbing toward it than away.
+    #[test]
+    fn a_baiter_closes_altitude_at_the_originals_rate() {
+        let t = Terrain::generate(256, 0x0DEF_E4DE);
+        let dt = 1.0 / 240.0;
+        let climb = |ship_vy: f32| {
+            let mut people = Humanoids::new();
+            let mut es = Enemies::new();
+            es.spawn(flying(Enemy::baiter(1000.0, 200.0)));
+            es.set_chase(Chase { vx: 0.0, vy: ship_vy, seek: 0.0 });
+            es.step(&t, &mut people, Some((1000.0, 500.0)), dt);
+            es.get(0).unwrap().vy
+        };
+        assert_eq!(climb(0.0), BAITER_VSEEK * 0.5);
+        assert_eq!(climb(-100.0), (BAITER_VSEEK - 100.0) * 0.5);
     }
 
     /// ★ A BOMBER HOLDS NEAR YOUR ALTITUDE, NOT ON IT — and never fires.

@@ -50,6 +50,16 @@ pub const BAITER_SECONDS: [f32; 4] = [48.0, 44.0, 36.0, 32.0];
 /// on (the original's −4 and −12 ticks).
 pub const BAITER_FASTER_PER_WAVE: f32 = 1.0;
 pub const BAITER_FASTER_PER_RAMP: f32 = 3.0;
+/// ★ HOW KEEN A BAITER IS TO RE-AIM (`UFOSK`). Each roll re-aims if a
+/// random byte is above this — so 200 is a 55-in-256 chance (~21%). The
+/// original's row, with its starting difficulty applied: 200/180/160/160
+/// in waves 1–4, 8 lower per wave after (to wave 14), 12 lower every
+/// [`RAMP_SECONDS`] a wave runs on, and never below 40 (~84%).
+pub const BAITER_SKIP: [f32; 4] = [200.0, 180.0, 160.0, 160.0];
+pub const BAITER_SKIP_PER_WAVE: f32 = 8.0;
+pub const BAITER_SKIP_PER_RAMP: f32 = 12.0;
+pub const BAITER_SKIP_FLOOR: f32 = 40.0;
+
 /// The timer never goes below this.
 pub const BAITER_FLOOR: f32 = 6.0;
 /// With this few enemies left the timer is capped at half, then a quarter.
@@ -146,6 +156,17 @@ pub fn baiter_seconds(wave: u32, seconds: f32) -> f32 {
     let later = wave.saturating_sub(LANDERS.len() as u32) as f32 * BAITER_FASTER_PER_WAVE;
     let ramps = (seconds.max(0.0) / RAMP_SECONDS).floor() * BAITER_FASTER_PER_RAMP;
     (BAITER_SECONDS[column(wave)] - later - ramps).max(BAITER_FLOOR)
+}
+
+/// The chance a Baiter's re-aim roll succeeds, `seconds` into `wave`.
+pub fn baiter_seek(wave: u32, seconds: f32) -> f32 {
+    let later = wave.clamp(LANDERS.len() as u32, PRESSURE_LAST_WAVE) - LANDERS.len() as u32;
+    let ramps = (seconds.max(0.0) / RAMP_SECONDS).floor();
+    let skip = (BAITER_SKIP[column(wave)]
+        - later as f32 * BAITER_SKIP_PER_WAVE
+        - ramps * BAITER_SKIP_PER_RAMP)
+        .max(BAITER_SKIP_FLOOR);
+    (255.0 - skip) / 256.0
 }
 
 /// Seconds between squads in `wave`.
@@ -297,6 +318,11 @@ impl Director {
     /// The current [`pressure`].
     pub fn pressure(&self) -> f32 {
         pressure(self.wave, self.elapsed)
+    }
+
+    /// The current [`baiter_seek`].
+    pub fn baiter_seek(&self) -> f32 {
+        baiter_seek(self.wave, self.elapsed)
     }
 
     /// Advance, told what is alive and how many Humanoids are left. At
@@ -563,6 +589,19 @@ mod tests {
             }
         }
         assert_eq!(seen, vec![(2, BOMBERS[1])]);
+    }
+
+    /// ★ THE BAITER'S RE-AIM CHANCE IS THE ORIGINAL'S: 55 in 256 at the
+    /// start of wave 1, keener the longer a wave runs and the later the
+    /// wave, and never past the floor.
+    #[test]
+    fn a_baiter_grows_keener_to_re_aim() {
+        assert_eq!(baiter_seek(1, 0.0), 55.0 / 256.0);
+        assert_eq!(baiter_seek(1, 10.0), 67.0 / 256.0);
+        assert_eq!(baiter_seek(4, 0.0), 95.0 / 256.0);
+        assert_eq!(baiter_seek(6, 0.0), 111.0 / 256.0);
+        assert_eq!(baiter_seek(30, 0.0), baiter_seek(14, 0.0));
+        assert_eq!(baiter_seek(14, 1000.0), (255.0 - BAITER_SKIP_FLOOR) / 256.0);
     }
 
     /// ★ W4: wave 1 has no Pods; waves 2, 3 and 4 place 1, 3 and 4 —

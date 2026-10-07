@@ -261,20 +261,20 @@ fn draw_enemies(canvas: &mut Canvas<'_>, enemies: &Enemies, camera: &Camera, tim
             // that is merely far away.
             Phase::Warping => {
                 let p = l.progress();
-                draw_enemy(canvas, l.kind, sx, sy, art::SCALE * (0.15 + 0.85 * p), time);
+                draw_enemy(canvas, l.kind, sx, sy, art::SCALE * (0.15 + 0.85 * p), time, l.vx);
             }
             // Hunting and carrying look the same as hovering — the
             // TRACTOR BEAM is what tells you which is which, and it is
             // drawn separately so it sits under the Lander.
             Phase::Hovering | Phase::Hunting | Phase::Grabbing | Phase::Carrying => {
-                draw_enemy(canvas, l.kind, sx, sy, art::SCALE, time);
+                draw_enemy(canvas, l.kind, sx, sy, art::SCALE, time, l.vx);
             }
             // Dying: one bright frame of the shape blowing outward,
             // under the particles. Short enough that it reads as the
             // instant of destruction rather than as an animation.
             Phase::Dying => {
                 let p = l.progress();
-                draw_enemy(canvas, l.kind, sx, sy, art::SCALE * (1.0 + p * 0.9), time);
+                draw_enemy(canvas, l.kind, sx, sy, art::SCALE * (1.0 + p * 0.9), time, l.vx);
             }
         }
     }
@@ -314,14 +314,18 @@ fn draw_people(canvas: &mut Canvas<'_>, people: &Humanoids, camera: &Camera) {
 ///
 /// `time` drives what animates: the Baiter's rim lights step at the
 /// original's 3-frame shimmer (20 Hz), the Bomber's body at its 6-frame
-/// palette cycle (10 Hz).
-fn draw_enemy(canvas: &mut Canvas<'_>, kind: Kind, sx: f32, sy: f32, scale: f32, time: f32) {
+/// palette cycle (10 Hz). `vx` turns a Swarmer to face the way it flies;
+/// nothing else has a front.
+fn draw_enemy(canvas: &mut Canvas<'_>, kind: Kind, sx: f32, sy: f32, scale: f32, time: f32, vx: f32) {
     let t = Transform::at(sx, sy).scaled(scale);
     match kind {
         Kind::Lander => art::draw_lander(canvas, &t),
         Kind::Mutant => art::draw_mutant(canvas, &t),
         Kind::Baiter => art::draw_baiter(canvas, &t, (time * 20.0) as u32),
         Kind::Bomber => art::draw_bomber(canvas, &t, (time * 10.0) as u32),
+        Kind::Pod => art::draw_pod(canvas, &t),
+        // The art points left; flipped, it points right.
+        Kind::Swarmer => art::draw_swarmer(canvas, &t.flipped(vx > 0.0)),
     }
 }
 

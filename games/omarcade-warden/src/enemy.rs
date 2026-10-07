@@ -33,6 +33,10 @@ pub const MUTANT_POINTS: u32 = 150;
 /// What a Baiter and a Bomber are worth (`a7f355dd`, Brian's chart).
 pub const BAITER_POINTS: u32 = 200;
 pub const BOMBER_POINTS: u32 = 250;
+/// ★ W4. A Pod is the most valuable thing in the sky (`PRBKIL: KILO
+/// $0210`), and a Swarmer is worth a Mutant (`MSWKIL: LDD #$0115`).
+pub const POD_POINTS: u32 = 1000;
+pub const SWARMER_POINTS: u32 = 150;
 
 // ---------------------------------------------------------------------
 // W3: the Baiter
@@ -97,6 +101,93 @@ pub const BOMBER_MINE_RATE: f32 = 1.4;
 /// Horizontal distance within which a Bomber counts as on screen.
 pub const BOMBER_ON_SCREEN: f32 = world::VIEW_W * 0.55;
 
+// ---------------------------------------------------------------------
+// W4: the Pod and the Swarmer (PRBST, PRBKIL, MMSW, MSWM, SWBMB in
+// defb6.src)
+// ---------------------------------------------------------------------
+
+/// One original pixel a frame, measured SCREEN-relatively: 3.16 units per
+/// original pixel (the Baiter's and the Bomber's scale) at 60 Hz. The Pod
+/// and the Swarmer are things you meet on screen, so their speeds are
+/// read against the screen, not against a lap of the world.
+const SCREEN_PX_PER_FRAME: f32 = 3.16 * 60.0;
+
+/// One original line a frame, vertically: 3 units a line (the Lander's
+/// scale, [`LANDER_VSPEED`]) at 60 Hz.
+const LINE_PER_FRAME: f32 = 3.0 * 60.0;
+
+/// A Pod drifts at a random X speed up to 1 px a frame either way (PRBST:
+/// `SEED & $3F - $20`, in 32nds)…
+pub const POD_DRIFT_MAX: f32 = SCREEN_PX_PER_FRAME;
+/// …and a random Y speed of 32–64 256ths of a line a frame, never less
+/// (`ORB #$20` / `ANDB #$DF` force the floor): 22.5–45 u/s.
+pub const POD_VY_MIN: f32 = 32.0 / 256.0 * LINE_PER_FRAME;
+pub const POD_VY_MAX: f32 = 64.0 / 256.0 * LINE_PER_FRAME;
+
+/// Swarmers alive at once, at most (MMSW: `CMPA #20`). A Pod that bursts
+/// with the sky already full lets out only what fits.
+pub const MAX_SWARMERS: usize = 20;
+
+/// How many Swarmers a Pod lets out: the original's `RMAX(6)`, which is
+/// NOT an even 1–6. RMAX halves a random byte until it is ≤ 6 and adds
+/// one, so it lands on 4–7 for 253 of 256 bytes — about 5.5 a Pod.
+pub fn burst_count(byte: u8) -> usize {
+    let mut r = byte;
+    while r > 6 {
+        r >>= 1;
+    }
+    r as usize + 1
+}
+
+/// The burst: each Swarmer flies out at a random velocity (RANDV) — up to
+/// 1 px a frame sideways and 1 line a frame up or down…
+pub const SWARMER_BURST_VX: f32 = SCREEN_PX_PER_FRAME;
+pub const SWARMER_BURST_VY: f32 = LINE_PER_FRAME;
+/// …for a random 0–31 frames before it turns on you (`PTIME = HSEED &
+/// $1F`). That stagger is what makes a burst a scatter rather than a
+/// formation.
+pub const SWARMER_SCATTER_MAX: f32 = 31.0 / 60.0;
+
+/// A Swarmer's chase speed at pressure 1.0: `SWXV`, $20 in wave 1 with
+/// the starting difficulty applied, which is 1 px a frame.
+pub const SWARMER_SPEED: f32 = SCREEN_PX_PER_FRAME;
+
+/// ★ BRIAN'S TIP, AND THE ORIGINAL'S RULE: FLY CLOSE BEHIND THEM AND THEY
+/// DO NOT TURN. A Swarmer picks its direction toward you and keeps it
+/// until it is more than 150 px past you (MSWM: `ADDD #150*32`, `CMPD
+/// #300*32`). Inside that, it flies on.
+pub const SWARMER_TURN_GAP: f32 = 150.0 * 3.16;
+
+/// The undulation. Every 3 frames (`NAP 3`) a Swarmer's vertical speed
+/// is pushed toward your altitude by its OWN fixed acceleration — a
+/// random 0–31 256ths of a line a frame (`HSEED & SWAC`) — then damped by
+/// 1/64, nudged by a random ±16 256ths, and capped at 2 lines a frame.
+/// Bang-bang steering with that little damping overshoots, which is the
+/// sine-like weave; a Swarmer that rolled a small acceleration barely
+/// weaves at all.
+pub const SWARMER_TICK: f32 = 3.0 / 60.0;
+pub const SWARMER_ACCEL_MAX: f32 = 31.0 / 256.0 * LINE_PER_FRAME;
+pub const SWARMER_NUDGE: f32 = 16.0 / 256.0 * LINE_PER_FRAME;
+pub const SWARMER_VY_MAX: f32 = 2.0 * LINE_PER_FRAME;
+pub const SWARMER_DAMPING: f32 = 1.0 / 64.0;
+
+/// How often a Swarmer tries to fire, seconds, at pressure 1.0.
+///
+/// ⚠️ OURS, NOT THE ORIGINAL'S. SWSTIM re-arms every 0.55–1.05 s, which
+/// with a pack of six is a hail; Brian's spec is "fires sometimes". Like
+/// the original it only fires while HEADING FOR YOU and on screen, so a
+/// Swarmer you are behind never shoots back.
+pub const SWARMER_FIRE_INTERVAL: f32 = 2.4;
+
+/// ★ A SWARMER SHOOTS FORWARD, NOT AT YOU (SWBMB): the shot flies the way
+/// the Swarmer is going and drops to your altitude over the time it takes
+/// to cover 256 original pixels. So its angle is set by your height
+/// difference, and a ship that is behind the pack is never in its line.
+pub const SWARMER_SHOT_REACH: f32 = 256.0 * 3.16;
+/// ⚠️ OURS: the original's is 8× the Swarmer's speed, ~1500 u/s here.
+/// The Baiter's speed keeps it in the family of dodgeable pellets.
+pub const SWARMER_SHOT_SPEED: f32 = 640.0;
+
 /// How fast a Mutant chases, in world units per second.
 ///
 /// ★ FAST ENOUGH TO BE FRIGHTENING, SLOWER THAN THE SHIP AT FULL
@@ -160,6 +251,8 @@ pub const LANDER_HALF_H: f32 = 7.5 * crate::art::SCALE;
 /// the two cannot drift apart (docs/warden-plan.md recommendation 2).
 pub const BAITER_HALF: (f32, f32) = scaled(crate::art::half_extents(&crate::art::BAITER_LAYERS));
 pub const BOMBER_HALF: (f32, f32) = scaled(crate::art::half_extents(&crate::art::BOMBER_LAYERS));
+pub const POD_HALF: (f32, f32) = scaled(crate::art::half_extents(&crate::art::POD_LAYERS));
+pub const SWARMER_HALF: (f32, f32) = scaled(crate::art::half_extents(&crate::art::SWARMER_LAYERS));
 
 const fn scaled(e: (f32, f32)) -> (f32, f32) {
     (e.0 * crate::art::SCALE, e.1 * crate::art::SCALE)
@@ -298,6 +391,11 @@ pub enum Kind {
     /// ★ W3. Drifts at a constant speed, holds near your altitude, never
     /// fires — and lays mines where you can see it.
     Bomber,
+    /// ★ W4. Drifts, never fires, worth 1000 — and full of Swarmers.
+    Pod,
+    /// ★ W4. What a Pod lets out: a small, weaving chaser that comes in
+    /// packs and only turns round once it is well past you.
+    Swarmer,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -318,9 +416,11 @@ pub struct Enemy {
     /// Landers and Mutants move by phase.
     pub vy: f32,
     /// Baiter: seconds to its next re-aim. Bomber: its cruise altitude
-    /// while off screen.
+    /// while off screen. Swarmer: time banked toward its next 3-frame
+    /// tick, and before that, how long its scatter lasts.
     pub aux: f32,
     /// Baiter: the altitude offset it is holding from the ship.
+    /// Swarmer: its own fixed vertical acceleration (how hard it weaves).
     pub bias: f32,
     /// Index of the Humanoid being hunted or carried, if any.
     ///
@@ -360,6 +460,27 @@ impl Enemy {
     /// while off screen.
     pub fn bomber(x: f32, y: f32, vx: f32, cruise: f32) -> Self {
         Self { kind: Kind::Bomber, aux: cruise, ..Self::lander(x, y, vx) }
+    }
+
+    /// ★ W4. A Pod, warping in, drifting at `(vx, vy)`. Placed at the
+    /// start of its wave, like the Bombers, through `spawn`.
+    pub fn pod(x: f32, y: f32, vx: f32, vy: f32) -> Self {
+        Self { kind: Kind::Pod, vy, ..Self::lander(x, y, vx) }
+    }
+
+    /// ★ W4. A Swarmer, already out — bursting from a Pod, it does not
+    /// warp. It flies at `(vx, vy)` for `scatter` seconds, then turns on
+    /// the ship; `accel` is how hard it weaves.
+    pub fn swarmer(x: f32, y: f32, vx: f32, vy: f32, scatter: f32, accel: f32) -> Self {
+        Self {
+            kind: Kind::Swarmer,
+            fire_cooldown: SWARMER_FIRE_INTERVAL,
+            vy,
+            aux: scatter,
+            bias: accel,
+            phase: Phase::Hovering,
+            ..Self::lander(x, y, vx)
+        }
     }
 
     /// A Mutant, already formed, outside the arrival machinery.
@@ -409,6 +530,8 @@ impl Enemy {
             Kind::Mutant => MUTANT_POINTS,
             Kind::Baiter => BAITER_POINTS,
             Kind::Bomber => BOMBER_POINTS,
+            Kind::Pod => POD_POINTS,
+            Kind::Swarmer => SWARMER_POINTS,
         }
     }
 
@@ -418,6 +541,8 @@ impl Enemy {
             Kind::Lander | Kind::Mutant => (LANDER_HALF_W, LANDER_HALF_H),
             Kind::Baiter => BAITER_HALF,
             Kind::Bomber => BOMBER_HALF,
+            Kind::Pod => POD_HALF,
+            Kind::Swarmer => SWARMER_HALF,
         }
     }
 
@@ -522,6 +647,8 @@ impl Enemy {
             Kind::Mutant => self.step_mutant(ship, noise, pressure, dt),
             Kind::Baiter => self.step_baiter(ship, ship_vx, noise, pressure, dt),
             Kind::Bomber => self.step_bomber(terrain, ship, noise, dt),
+            Kind::Pod => self.step_pod(terrain, dt),
+            Kind::Swarmer => self.step_swarmer(ship, noise, pressure, dt),
         }
     }
 
@@ -760,7 +887,9 @@ impl Enemy {
     /// only there so the match stays total.
     pub fn shot_speed(&self) -> f32 {
         match self.kind {
-            Kind::Lander | Kind::Bomber => LANDER_SHOT_SPEED,
+            // A Bomber and a Pod never fire; their entries keep the match total.
+            Kind::Lander | Kind::Bomber | Kind::Pod => LANDER_SHOT_SPEED,
+            Kind::Swarmer => SWARMER_SHOT_SPEED,
             Kind::Mutant => crate::shot::ENEMY_SHOT_SPEED,
             Kind::Baiter => BAITER_SHOT_SPEED,
         }
@@ -867,6 +996,104 @@ impl Enemy {
             return Outcome::LaysMine;
         }
         Outcome::None
+    }
+}
+
+impl Enemy {
+    /// ★ THE POD: drifts and never fires. It bounces between the
+    /// mountains and the top of the sky rather than leaving the playfield.
+    /// (The bounce is ours; the drift is PRBST's.)
+    fn step_pod(&mut self, terrain: &Terrain, dt: f32) -> Outcome {
+        self.x = world::wrap(self.x + self.vx * dt);
+        self.y += self.vy * dt;
+        let floor = (terrain.height_at(self.x) + 60.0).min(world::VIEW_H * 0.5);
+        let ceiling = world::VIEW_H * 0.92;
+        if self.y < floor {
+            self.y = floor;
+            self.vy = self.vy.abs();
+        } else if self.y > ceiling {
+            self.y = ceiling;
+            self.vy = -self.vy.abs();
+        }
+        Outcome::None
+    }
+
+    /// ★ THE SWARMER (MSWM). Scatter first, then chase: X at its fixed
+    /// speed toward you, re-chosen only once it is [`SWARMER_TURN_GAP`]
+    /// past you; Y weaving toward your altitude on a 3-frame tick.
+    fn step_swarmer(
+        &mut self,
+        ship: Option<(f32, f32)>,
+        noise: &mut u32,
+        pressure: f32,
+        dt: f32,
+    ) -> Outcome {
+        // The scatter: flying out of the Pod on the burst's velocity.
+        if self.phase == Phase::Hovering {
+            self.x = world::wrap(self.x + self.vx * dt);
+            self.y += self.vy * dt;
+            self.y = self.y.clamp(20.0, world::VIEW_H * 0.95);
+            if self.elapsed < self.aux {
+                return Outcome::None;
+            }
+            self.phase = Phase::Hunting;
+            self.aux = 0.0;
+            // MSWM's entry: pick a side and go.
+            if let Some((sx, _)) = ship {
+                let dir = if world::delta(self.x, sx) < 0.0 { -1.0 } else { 1.0 };
+                self.vx = dir * SWARMER_SPEED * pressure;
+            }
+        }
+
+        let Some((sx, sy)) = ship else {
+            // No ship: carry on the way it was going.
+            self.x = world::wrap(self.x + self.vx * dt);
+            return Outcome::None;
+        };
+        let dx = world::delta(self.x, sx);
+        let speed = SWARMER_SPEED * pressure;
+
+        // ⚠️ ONLY WHEN WELL PAST. Inside the gap the direction is kept, so
+        // a ship that slips in behind a pack is never turned on.
+        if dx.abs() > SWARMER_TURN_GAP {
+            self.vx = dx.signum() * speed;
+        } else {
+            self.vx = self.vx.signum() * speed;
+        }
+
+        // The weave, on the original's 3-frame tick.
+        self.aux += dt;
+        while self.aux >= SWARMER_TICK {
+            self.aux -= SWARMER_TICK;
+            let toward = if sy > self.y { 1.0 } else { -1.0 };
+            self.vy = (self.vy + toward * self.bias).clamp(-SWARMER_VY_MAX, SWARMER_VY_MAX);
+            self.vy -= self.vy * SWARMER_DAMPING;
+            self.vy += (next01(noise) - 0.5) * 2.0 * SWARMER_NUDGE;
+        }
+
+        self.x = world::wrap(self.x + self.vx * dt);
+        self.y += self.vy * dt;
+        self.y = self.y.clamp(20.0, world::VIEW_H * 0.95);
+
+        // ★ IT FIRES ONLY WHILE HEADING FOR YOU, and only on screen
+        // (SWBMB: `EORA OXV,X` / `BMI SWBX`). The timer re-arms either way.
+        self.fire_cooldown -= dt;
+        if self.fire_cooldown <= 0.0 {
+            self.fire_cooldown =
+                SWARMER_FIRE_INTERVAL * (0.6 + 0.8 * next01(noise)) / pressure;
+            let heading_for_you = self.vx * dx > 0.0;
+            if heading_for_you && dx.abs() < world::VIEW_W * 0.55 {
+                return Outcome::Fires;
+            }
+        }
+        Outcome::None
+    }
+
+    /// Where a Swarmer's shot goes: FORWARD, the way it is flying, dropping
+    /// to `sy` over [`SWARMER_SHOT_REACH`]. Never back at a ship behind it.
+    pub fn swarmer_aim(&self, sy: f32) -> (f32, f32) {
+        let dir = if self.vx < 0.0 { -1.0 } else { 1.0 };
+        (dir * SWARMER_SHOT_REACH, sy - self.y)
     }
 }
 
@@ -1288,8 +1515,36 @@ impl Enemies {
     }
 
     /// Kill the one at `index` and report its points.
+    ///
+    /// ★ A POD BURSTS. Its Swarmers are pushed straight into the list,
+    /// NOT through `spawn`: they do not warp in, and the original plays
+    /// no arrival for them — the Pod's own death is the sound (PRBKIL).
+    /// ⚠️ APPENDED, SO EVERY EXISTING INDEX STAYS PUT. The smart bomb
+    /// walks indices fixed before it started, so Swarmers born from a Pod
+    /// it killed are past the end of its walk and survive it — the
+    /// original's rule ("they aren't drawn yet").
     pub fn kill(&mut self, index: usize) -> u32 {
-        self.live[index].kill()
+        let worth = self.live[index].kill();
+        if self.live[index].kind == Kind::Pod {
+            let (x, y) = (self.live[index].x, self.live[index].y);
+            self.burst(x, y);
+        }
+        worth
+    }
+
+    /// Let a Pod's Swarmers out at `(x, y)`, as many as [`burst_count`]
+    /// rolls and [`MAX_SWARMERS`] allows.
+    fn burst(&mut self, x: f32, y: f32) {
+        let want = burst_count((self.next_noise() >> 24) as u8);
+        let room = MAX_SWARMERS.saturating_sub(self.count(Kind::Swarmer));
+        for _ in 0..want.min(room) {
+            let mut n = self.next_noise();
+            let vx = (next01(&mut n) - 0.5) * 2.0 * SWARMER_BURST_VX;
+            let vy = (next01(&mut n) - 0.5) * 2.0 * SWARMER_BURST_VY;
+            let scatter = next01(&mut n) * SWARMER_SCATTER_MAX;
+            let accel = next01(&mut n) * SWARMER_ACCEL_MAX;
+            self.live.push(Enemy::swarmer(x, y, vx, vy, scatter, accel));
+        }
     }
 
     /// The enemy at `index`, for a caller that needs to aim from it.
@@ -2027,5 +2282,167 @@ mod tests {
         es.spawn(flying(Enemy::baiter(1000.0, 300.0)));
         assert_eq!(es.hit_test(1000.0 + 11.5 * s, 300.0), Some(0), "missed inside the hull");
         assert_eq!(es.hit_test(1000.0 + 13.0 * s, 300.0), None, "hit outside the hull");
+    }
+
+    // ----- W4: the Pod and the Swarmer -----
+
+    /// ★ RMAX(6) IS 4–7, NOT 1–6: every byte, counted.
+    #[test]
+    fn a_pod_holds_four_to_seven_swarmers_almost_always() {
+        let counts: Vec<usize> = (0..=255u8).map(burst_count).collect();
+        assert!(counts.iter().all(|n| (1..=7).contains(n)));
+        let high = counts.iter().filter(|&&n| n >= 4).count();
+        assert_eq!(high, 253, "RMAX(6) lands on 4–7 for 253 of 256 bytes");
+        let mean = counts.iter().sum::<usize>() as f32 / 256.0;
+        assert!((mean - 5.45).abs() < 0.01, "mean {mean}");
+    }
+
+    /// ★ A SHOT POD BURSTS where it died — and the Swarmers do NOT count as
+    /// arrivals, so no Warp plays for them (the Pod's death is the sound).
+    #[test]
+    fn a_pod_bursts_into_swarmers_where_it_dies() {
+        let mut es = Enemies::new();
+        es.spawn(flying(Enemy::pod(1200.0, 400.0, 0.0, 30.0)));
+        es.take_spawned();
+        assert_eq!(es.kill(0), POD_POINTS);
+        let n = es.count(Kind::Swarmer);
+        assert!((1..=7).contains(&n), "{n} swarmers");
+        for e in es.iter().filter(|e| e.kind == Kind::Swarmer) {
+            assert_eq!((e.x, e.y), (1200.0, 400.0));
+            assert!(e.is_target(), "a Swarmer out of a Pod can be shot at once");
+        }
+        assert_eq!(es.take_spawned(), 0, "the burst announced itself as an arrival");
+    }
+
+    /// ★ NEVER MORE THAN TWENTY: a Pod that bursts into a full sky lets
+    /// out only what fits.
+    #[test]
+    fn swarmers_are_capped_at_twenty() {
+        let mut es = Enemies::new();
+        for _ in 0..8 {
+            es.spawn(flying(Enemy::pod(1200.0, 400.0, 0.0, 30.0)));
+        }
+        for i in 0..8 {
+            es.kill(i);
+        }
+        assert_eq!(es.count(Kind::Swarmer), MAX_SWARMERS);
+    }
+
+    /// A Swarmer already chasing at `vx`, with no weave. ⚠️ ALREADY
+    /// HUNTING: one straight out of a Pod picks its side toward you on its
+    /// first step (MSWM's entry), which is not what these tests are about.
+    fn swarmer_at(x: f32, y: f32, vx: f32) -> Enemy {
+        Enemy { phase: Phase::Hunting, ..Enemy::swarmer(x, y, vx, 0.0, 0.0, 0.0) }
+    }
+
+    /// ★ BRIAN'S TIP: FLY CLOSE BEHIND THEM AND THEY DO NOT TURN. A
+    /// Swarmer heading east, with the ship just behind it to the west,
+    /// keeps going east — until it is more than the turn gap past.
+    #[test]
+    fn a_swarmer_keeps_its_heading_until_well_past_you() {
+        let t = terrain();
+        let mut people = nobody();
+        let mut es = Enemies::new();
+        let sx = 1000.0;
+        es.spawn(swarmer_at(sx + 40.0, 300.0, SWARMER_SPEED));
+        let dt = 1.0 / 240.0;
+        let mut turned_at = None;
+        for i in 0..(240 * 6) {
+            es.step(&t, &mut people, Some((sx, 300.0)), dt);
+            let e = es.get(0).unwrap();
+            if e.vx < 0.0 {
+                turned_at = Some((i, world::delta(sx, e.x)));
+                break;
+            }
+        }
+        let (_, gap) = turned_at.expect("it never turned back");
+        // Measured after the turning step has already moved it back one
+        // step's travel (under a unit at 240 Hz).
+        assert!(gap > SWARMER_TURN_GAP - 1.0, "it turned only {gap:.0} past the ship");
+        assert!(gap < SWARMER_TURN_GAP + 10.0, "it overshot to {gap:.0} before turning");
+    }
+
+    /// ★ IT ONLY SHOOTS WHILE HEADING FOR YOU. With the ship behind it, a
+    /// Swarmer never fires; with the ship ahead, it does.
+    #[test]
+    fn a_swarmer_never_fires_back_at_a_ship_behind_it() {
+        let t = terrain();
+        let mut people = nobody();
+        let dt = 1.0 / 240.0;
+
+        let mut es = Enemies::new();
+        es.spawn(swarmer_at(1040.0, 300.0, SWARMER_SPEED));
+        // ⚠️ LONGER THAN THE FIRST FIRE INTERVAL (2.4 s), or "it never
+        // fired" would be true of any Swarmer, heading or not.
+        for _ in 0..(240 * 8) {
+            // Keep it just ahead of the ship, both moving east.
+            let sx = world::delta(0.0, es.get(0).unwrap().x) - 40.0;
+            let wants = es.step(&t, &mut people, Some((sx, 300.0)), dt);
+            assert!(wants.is_empty(), "it fired back at a ship behind it");
+        }
+
+        let mut es = Enemies::new();
+        es.spawn(swarmer_at(800.0, 300.0, SWARMER_SPEED));
+        let mut fired = 0;
+        for _ in 0..(240 * 6) {
+            let sx = world::wrap(es.get(0).unwrap().x + 300.0);
+            fired += es.step(&t, &mut people, Some((sx, 300.0)), dt).len();
+        }
+        assert!(fired > 0, "it never fired at a ship ahead of it");
+    }
+
+    /// ★ ITS SHOT GOES FORWARD: the way it flies, dropping toward you.
+    #[test]
+    fn a_swarmer_shoots_forward_not_at_you() {
+        let s = swarmer_at(1000.0, 300.0, -SWARMER_SPEED);
+        let (dx, dy) = s.swarmer_aim(200.0);
+        assert!(dx < 0.0, "a westbound Swarmer shot east");
+        assert!(dy < 0.0, "a shot aimed above a ship below");
+    }
+
+    /// ★ THE WEAVE: a Swarmer that rolled a strong acceleration crosses
+    /// your altitude again and again rather than settling on it.
+    #[test]
+    fn a_swarmer_weaves_across_your_altitude() {
+        let t = terrain();
+        let mut people = nobody();
+        let mut es = Enemies::new();
+        es.spawn(Enemy::swarmer(1000.0, 450.0, 0.0, 0.0, 0.0, SWARMER_ACCEL_MAX));
+        let dt = 1.0 / 240.0;
+        let sy = 300.0;
+        let (mut crossings, mut above) = (0, true);
+        for _ in 0..(240 * 8) {
+            let sx = es.get(0).unwrap().x + 100.0;
+            es.step(&t, &mut people, Some((sx, sy)), dt);
+            let now = es.get(0).unwrap().y > sy;
+            if now != above {
+                crossings += 1;
+                above = now;
+            }
+        }
+        assert!(crossings >= 4, "only {crossings} crossings in 8 s: it settled, not weaved");
+    }
+
+    /// ★ A POD NEVER FIRES, and stays in the sky.
+    #[test]
+    fn a_pod_drifts_and_never_fires() {
+        let t = terrain();
+        let mut people = nobody();
+        let mut es = Enemies::new();
+        es.spawn(flying(Enemy::pod(1000.0, 400.0, POD_DRIFT_MAX, -POD_VY_MAX)));
+        let dt = 1.0 / 240.0;
+        let mut highest_late = 0.0f32;
+        for i in 0..(240 * 30) {
+            let wants = es.step(&t, &mut people, Some((1000.0, 400.0)), dt);
+            assert!(wants.is_empty(), "a Pod fired");
+            let p = es.get(0).unwrap();
+            assert!(p.y > t.height_at(p.x) && p.y < world::VIEW_H, "left the sky at {}", p.y);
+            if i > 240 * 10 {
+                highest_late = highest_late.max(p.y);
+            }
+        }
+        // ★ IT BOUNCES: sent downward, it reaches the floor within seconds
+        // and must come back up into the sky, not sit pinned to the floor.
+        assert!(highest_late > world::VIEW_H * 0.6, "pinned low: never above {highest_late:.0}");
     }
 }

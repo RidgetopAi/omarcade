@@ -81,6 +81,10 @@ const MUTANT_COLOUR: Color = Color::rgb(255, 40, 200);
 /// changes what a player flies toward.
 const BAITER_COLOUR: Color = Color::rgb(0, 220, 230);
 const BOMBER_COLOUR: Color = Color::rgb(170, 90, 255);
+/// ★ W4: the Pod in its purple, the Swarmer in its red — a pack reads on
+/// the scanner as a little scatter of red, which is what it is.
+const POD_COLOUR: Color = Color::rgb(200, 80, 255);
+const SWARMER_COLOUR: Color = Color::rgb(255, 50, 50);
 const PERSON_COLOUR: Color = Color::rgb(90, 255, 140);
 
 /// The scanner's coordinate frame: the whole world, squashed to fit.
@@ -309,6 +313,8 @@ fn draw_enemies(canvas: &mut Canvas<'_>, s: &Scanner, enemies: &Enemies, time: f
             // not pulsing — the pulse is reserved for the Mutant.
             Kind::Baiter => blip(canvas, x, y, 2.4, scaled(BAITER_COLOUR, 0.95)),
             Kind::Bomber => blip(canvas, x, y, 2.0, scaled(BOMBER_COLOUR, 0.9)),
+            Kind::Pod => blip(canvas, x, y, 2.4, scaled(POD_COLOUR, 0.95)),
+            Kind::Swarmer => blip(canvas, x, y, 1.4, scaled(SWARMER_COLOUR, 0.9)),
             Kind::Mutant => {
                 // ★ THE PULSE. Runs on the clock, not the frame, and is
                 // offset by world position so a cluster of Mutants does

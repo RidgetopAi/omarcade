@@ -653,6 +653,23 @@ impl Warden {
         }
     }
 
+    /// ★ W4: this wave's Pods, each at a random place at least most of a
+    /// screen from the ship, drifting its own random way (PRBST). They
+    /// warp in through `spawn`, as the Bombers do.
+    fn spawn_pods(&mut self, count: usize) {
+        for _ in 0..count {
+            let away = world::VIEW_W * 0.8 + self.roll() * (world::WORLD_W - 1.6 * world::VIEW_W);
+            let x = world::wrap(self.ship.x + away);
+            let y = world::VIEW_H * (0.4 + 0.45 * self.roll());
+            let vx = (self.roll() - 0.5) * 2.0 * enemy::POD_DRIFT_MAX;
+            let mut vy = enemy::POD_VY_MIN + self.roll() * (enemy::POD_VY_MAX - enemy::POD_VY_MIN);
+            if self.roll() < 0.5 {
+                vy = -vy;
+            }
+            self.enemies.spawn(enemy::Enemy::pod(x, y, vx, vy));
+        }
+    }
+
     /// ★ W3: a Baiter, warping in just off one edge of the screen — near
     /// enough to arrive in seconds, never in your lap.
     fn spawn_baiter(&mut self) {
@@ -675,6 +692,7 @@ impl Warden {
                 self.enemies.squad(n, self.ship.x, seed, self.world_ended);
             }
             Some(Event::Bombers(n)) => self.spawn_bombers(n),
+            Some(Event::Pods(n)) => self.spawn_pods(n),
             Some(Event::Baiter) => self.spawn_baiter(),
             Some(Event::Cleared) => {
                 // The wave is held. Nothing in flight may still kill the
@@ -794,6 +812,11 @@ impl Warden {
                 let (dx, dy, speed, mutant) = match self.enemies.get(index) {
                     // ⚠️ A MUTANT NEVER SHOOTS STRAIGHT (Brian's rule,
                     // enforced in `aim_at`); a Lander's slow shot may.
+                    // ★ W4: a Swarmer shoots FORWARD, not at you.
+                    Some(s) if s.kind == enemy::Kind::Swarmer => {
+                        let (dx, dy) = s.swarmer_aim(sy);
+                        (dx, dy, s.shot_speed(), false)
+                    }
                     Some(m) if m.is_mutant() => {
                         let (dx, dy) = m.aim_at(sx, sy, &mut noise);
                         (dx, dy, m.shot_speed(), true)
@@ -956,6 +979,8 @@ impl Warden {
             enemy::Kind::Lander | enemy::Kind::Mutant => self.effects.explode_lander(lx, ly, lvx),
             enemy::Kind::Baiter => self.effects.explode_baiter(lx, ly, lvx),
             enemy::Kind::Bomber => self.effects.explode_bomber(lx, ly, lvx),
+            enemy::Kind::Pod => self.effects.explode_pod(lx, ly, lvx),
+            enemy::Kind::Swarmer => self.effects.explode_swarmer(lx, ly, lvx),
         }
         if kind == enemy::Kind::Mutant {
             self.mutant_killed_this_frame = true;
@@ -2228,5 +2253,68 @@ mod tests {
             "speed escaped the clamp: {}",
             g.ship.vx
         );
+    }
+
+    // ----- W4 -----
+
+    /// ★ THE SMART BOMB AND THE POD: the Pod dies at full points, and the
+    /// Swarmers it lets out SURVIVE the bomb that freed them (the
+    /// original's "they aren't drawn yet").
+    #[test]
+    fn swarmers_from_a_bombed_pod_survive_the_bomb() {
+        let mut g = game();
+        g.lives.state = lives::State::Alive;
+        g.enemies.clear();
+        let mut p = enemy::Enemy::pod(g.ship.x + 200.0, g.ship.y, 0.0, 30.0);
+        p.phase = enemy::Phase::Hovering;
+        g.enemies.spawn(p);
+        g.on_input(InputEvent::KeyDown(Key::B));
+        assert_eq!(g.score, enemy::POD_POINTS, "only the Pod scores");
+        assert!(g.enemies.count(enemy::Kind::Swarmer) > 0, "the bomb took the Swarmers too");
+    }
+
+    /// ★ THROUGH THE REAL LOOP: wave 2 opens with its one Pod, and wave 1
+    /// never has one.
+    #[test]
+    fn wave_two_brings_its_pod() {
+        let mut g = game();
+        immortal(&mut g);
+        play_until(&mut g, 200.0, |g| {
+            if g.director.wave() == 1 {
+                assert_eq!(g.enemies.count(enemy::Kind::Pod), 0, "a Pod in wave 1");
+            }
+            g.director.wave() == 2
+        });
+        let mut audio = AudioSystem::new();
+        for _ in 0..30 {
+            let mut a = audio.handle();
+            g.update(1.0 / 60.0, &mut a);
+        }
+        assert_eq!(g.enemies.count(enemy::Kind::Pod), waves::PODS[1]);
+    }
+
+    /// ★ THE LASER BURSTS A POD, through the real update: a beam fired
+    /// at it kills it, and its Swarmers are in the sky.
+    #[test]
+    fn shooting_a_pod_lets_out_its_swarmers() {
+        let mut g = game();
+        immortal(&mut g);
+        g.enemies.clear();
+        let ahead = g.ship.facing.sign() * 150.0;
+        let mut p = enemy::Enemy::pod(world::wrap(g.ship.x + ahead), g.ship.y, 0.0, 0.0);
+        p.phase = enemy::Phase::Hovering;
+        g.enemies.spawn(p);
+        g.on_input(InputEvent::KeyDown(Key::Space));
+        let mut audio = AudioSystem::new();
+        for _ in 0..30 {
+            let mut a = audio.handle();
+            g.update(1.0 / 60.0, &mut a);
+            if g.enemies.count(enemy::Kind::Swarmer) > 0 {
+                break;
+            }
+        }
+        assert_eq!(g.enemies.count(enemy::Kind::Pod), 0, "the Pod survived the beam");
+        assert!(g.score >= enemy::POD_POINTS);
+        assert!(g.enemies.count(enemy::Kind::Swarmer) > 0, "no Swarmers came out");
     }
 }

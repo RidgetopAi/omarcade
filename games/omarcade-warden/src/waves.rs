@@ -17,10 +17,8 @@
 //! testable without a world, and keeps the one place that CAN see the
 //! world — `main` — the one place that changes it.
 //!
-//! ★ W3 ADDED THE BOMBER COLUMN AND THE BAITER TIMER. Pods arrive with
-//! the Pods themselves in W4, for the same reason `Kind` has no empty
-//! variants: a count for a thing that cannot exist is a number that
-//! pretends.
+//! ★ W3 ADDED THE BOMBER COLUMN AND THE BAITER TIMER; W4 THE POD COLUMN.
+//! Swarmers have no column: they only ever come out of a Pod.
 
 /// Landers per wave, waves 1–4. Wave 5 on repeats the last column.
 ///
@@ -33,6 +31,10 @@ pub const LANDERS: [usize; 4] = [15, 20, 20, 20];
 /// Placed when the wave starts, in squads of up to [`BOMBER_SQUAD`].
 pub const BOMBERS: [usize; 4] = [0, 3, 4, 5];
 pub const BOMBER_SQUAD: usize = 3;
+
+/// ★ W4. Pods per wave, waves 1–4: the original's table, and Brian's spec
+/// ("never more than 4"). Placed when the wave starts, like the Bombers.
+pub const PODS: [usize; 4] = [0, 1, 3, 4];
 
 /// A Bomber's constant drift, world units per second, waves 1–4: the
 /// original's `TIEXV` $20/$28/$2C/$30 (1–1.5 px a frame) × 60 × 3.16.
@@ -131,6 +133,10 @@ pub fn landers(wave: u32) -> usize {
 pub fn bombers(wave: u32) -> usize {
     BOMBERS[column(wave)]
 }
+/// Pods in `wave`.
+pub fn pods(wave: u32) -> usize {
+    PODS[column(wave)]
+}
 pub fn bomber_speed(wave: u32) -> f32 {
     BOMBER_SPEED[column(wave)]
 }
@@ -205,7 +211,8 @@ pub struct Census {
     /// Landers alive — what the squad cap counts (the original's LNDCNT).
     pub landers: usize,
     /// Every hostile that must die for the wave to end: Landers, Mutants,
-    /// Bombers. Not Baiters — they leave when the wave is won.
+    /// Bombers, Pods, Swarmers. Not Baiters — they leave when the wave is
+    /// won.
     pub hostiles: usize,
     /// Baiters alive.
     pub baiters: usize,
@@ -218,6 +225,8 @@ pub enum Event {
     Squad(usize),
     /// ★ W3. Place this many Bombers (once, at the start of a wave).
     Bombers(usize),
+    /// ★ W4. Place this many Pods (once, at the start of a wave).
+    Pods(usize),
     /// ★ W3. A Baiter arrives: the wave has gone on long enough.
     Baiter,
     /// Every hostile is dead and none are left to come. The wave is held.
@@ -240,6 +249,8 @@ pub struct Director {
     elapsed: f32,
     /// Bombers still to place this wave.
     bombers_pending: usize,
+    /// Pods still to place this wave.
+    pods_pending: usize,
     /// Until the next Baiter.
     baiter_timer: f32,
 }
@@ -264,6 +275,7 @@ impl Director {
             squad_timer: 0.0,
             elapsed: 0.0,
             bombers_pending: bombers(wave),
+            pods_pending: pods(wave),
             baiter_timer: baiter_seconds(wave, 0.0),
         }
     }
@@ -310,6 +322,10 @@ impl Director {
                 if self.bombers_pending > 0 {
                     let n = std::mem::take(&mut self.bombers_pending);
                     return Some(Event::Bombers(n));
+                }
+                if self.pods_pending > 0 {
+                    let n = std::mem::take(&mut self.pods_pending);
+                    return Some(Event::Pods(n));
                 }
 
                 let left = census.hostiles + self.reserve;
@@ -547,6 +563,22 @@ mod tests {
             }
         }
         assert_eq!(seen, vec![(2, BOMBERS[1])]);
+    }
+
+    /// ★ W4: wave 1 has no Pods; waves 2, 3 and 4 place 1, 3 and 4 —
+    /// each exactly once, at the start.
+    #[test]
+    fn pods_arrive_once_at_the_start_of_their_wave() {
+        let mut d = Director::new();
+        let mut seen = Vec::new();
+        for _ in 0..(240 * 240) {
+            match d.step(DT, c(0), 5) {
+                Some(Event::Pods(n)) => seen.push((d.wave(), n)),
+                Some(Event::NextWave) if d.wave() == 5 => break,
+                _ => {}
+            }
+        }
+        assert_eq!(seen, vec![(2, 1), (3, 3), (4, 4)]);
     }
 
     /// ★ THE SQUAD CAP COUNTS LANDERS ONLY. Five Bombers drifting about

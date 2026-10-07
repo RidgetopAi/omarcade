@@ -161,6 +161,25 @@ fn main() {
             enemies.spawn(baiter);
         }
 
+        // ★ W4: a Pod drifting, and another just shot — its Swarmers
+        // scattering out of it through the real step, starting to turn.
+        "w4" => {
+            camera.snap_to(&ship);
+            let base = ship.x;
+            let mut pod = enemy::Enemy::pod(world::wrap(base + 700.0), ship.y + 150.0, -60.0, 30.0);
+            pod.phase = enemy::Phase::Hovering;
+            enemies.spawn(pod);
+            let mut burst = enemy::Enemy::pod(world::wrap(base + 420.0), ship.y + 40.0, 0.0, 0.0);
+            burst.phase = enemy::Phase::Hovering;
+            enemies.spawn(burst);
+            enemies.kill(1);
+            for _ in 0..(0.45 / dt) as usize {
+                enemies.step(&terrain, &mut people, Some((ship.x, ship.y)), dt);
+            }
+            effects.explode_pod(world::wrap(base + 420.0), ship.y + 40.0, 0.0);
+            effects.update(0.12);
+        }
+
         // ★ W1: out of lives, with the score and the way back in.
         "gameover" => {
             camera.snap_to(&ship);
@@ -441,7 +460,7 @@ fn main() {
             eprintln!(
                 "scenes: rest | cruise | west | turn | low | seam | \
                  thrust | thrust-west | mutants | apocalypse | rescue | combat | \
-                 tally | gameover | popups | hyperspace | smartbomb | bombburst | w3"
+                 tally | gameover | popups | hyperspace | smartbomb | bombburst | w3 | w4"
             );
             std::process::exit(2);
         }

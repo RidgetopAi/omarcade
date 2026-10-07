@@ -61,6 +61,20 @@ const BAITER_COLORS: [Color; 4] = [
     Color::rgb(255, 60, 210),
     Color::rgb(255, 170, 40),
 ];
+/// ★ W4: a Pod dies in its own purple and red, a Swarmer in red and orange.
+const POD_COLORS: [Color; 4] = [
+    Color::rgb(168, 60, 255),
+    Color::rgb(255, 40, 72),
+    Color::rgb(255, 220, 120),
+    Color::rgb(220, 140, 255),
+];
+const SWARMER_COLORS: [Color; 4] = [
+    Color::rgb(235, 36, 36),
+    Color::rgb(255, 160, 40),
+    Color::rgb(255, 230, 150),
+    Color::rgb(255, 90, 60),
+];
+
 const BOMBER_COLORS: [Color; 4] = [
     Color::rgb(232, 40, 165),
     Color::rgb(180, 70, 255),
@@ -226,6 +240,14 @@ impl Effects {
     /// ★ W3: a Bomber blowing apart, in its own magentas and gold.
     pub fn explode_bomber(&mut self, x: f32, y: f32, vx: f32) {
         self.explode_in(x, y, vx, &BOMBER_COLORS);
+    }
+
+    pub fn explode_pod(&mut self, x: f32, y: f32, vx: f32) {
+        self.explode_in(x, y, vx, &POD_COLORS);
+    }
+
+    pub fn explode_swarmer(&mut self, x: f32, y: f32, vx: f32) {
+        self.explode_in(x, y, vx, &SWARMER_COLORS);
     }
 
     /// An enemy burst in `COLORS` — the Lander's shape of explosion, worn

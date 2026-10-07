@@ -895,3 +895,94 @@ pub const BAITER_LAYERS: [Shape<'static>; 7] = [
 pub const BOMBER_LAYERS: [Shape<'static>; 5] =
     [BOMBER_FIN_LEFT, BOMBER_FIN_RIGHT, BOMBER_BODY, BOMBER_PANEL, BOMBER_CORE];
 pub const MINE_LAYERS: [Shape<'static>; 2] = [MINE_CROSS, MINE_CORE];
+
+// =====================================================================
+// W4: the Pod and the Swarmer — Claude's drafts, approved by Brian
+// 2026-10-06 ("approve"). Exports kept in assets-inbox/ for the
+// playground round trip until W6 retires the inbox.
+// =====================================================================
+
+/// burst — authored in tools/vector-playground.html.
+pub const POD_BURST: Shape = Shape::new(&[
+    (0.00, -6.60),
+    (1.26, -3.05),
+    (4.67, -4.67),
+    (3.05, -1.26),
+    (6.60, 0.00),
+    (3.05, 1.26),
+    (4.67, 4.67),
+    (1.26, 3.05),
+    (0.00, 6.60),
+    (-1.26, 3.05),
+    (-4.67, 4.67),
+    (-3.05, 1.26),
+    (-6.60, 0.00),
+    (-3.05, -1.26),
+    (-4.67, -4.67),
+    (-1.26, -3.05),
+]);
+
+/// star — authored in tools/vector-playground.html.
+pub const POD_STAR: Shape = Shape::new(&[
+    (3.11, -3.11),
+    (1.60, 0.00),
+    (3.11, 3.11),
+    (0.00, 1.60),
+    (-3.11, 3.11),
+    (-1.60, 0.00),
+    (-3.11, -3.11),
+    (0.00, -1.60),
+]);
+
+/// core — authored in tools/vector-playground.html.
+pub const POD_CORE: Shape = Shape::new(&[
+    (1.50, 0.00),
+    (1.06, 1.06),
+    (0.00, 1.50),
+    (-1.06, 1.06),
+    (-1.50, 0.00),
+    (-1.06, -1.06),
+    (0.00, -1.50),
+    (1.06, -1.06),
+]);
+
+/// body — authored in tools/vector-playground.html.
+pub const SWARMER_BODY: Shape = Shape::new(&[
+    (-3.80, 0.00),
+    (-0.71, -1.92),
+    (0.57, -2.48),
+    (1.96, -2.27),
+    (3.01, -1.34),
+    (3.40, 0.00),
+    (3.01, 1.34),
+    (1.96, 2.27),
+    (0.57, 2.48),
+    (-0.71, 1.92),
+]);
+
+/// glow — authored in tools/vector-playground.html.
+pub const SWARMER_GLOW: Shape = Shape::new(&[
+    (0.20, 0.00),
+    (1.10, -1.20),
+    (2.30, -1.05),
+    (2.75, 0.00),
+    (2.30, 1.05),
+    (1.10, 1.20),
+]);
+
+/// Draw a Pod: purple burst, red star, hot core.
+pub fn draw_pod(canvas: &mut Canvas<'_>, t: &Transform) {
+    POD_BURST.fill(canvas, t, Color::rgb(168, 60, 255));
+    POD_STAR.fill(canvas, t, Color::rgb(255, 40, 72));
+    POD_CORE.fill(canvas, t, Color::rgb(255, 220, 120));
+}
+
+/// Draw a Swarmer. The art points LEFT; the caller flips it to face the
+/// way it is flying, so a pack reads as heading somewhere.
+pub fn draw_swarmer(canvas: &mut Canvas<'_>, t: &Transform) {
+    SWARMER_BODY.fill(canvas, t, Color::rgb(235, 36, 36));
+    SWARMER_GLOW.fill(canvas, t, Color::rgb(255, 160, 40));
+}
+
+pub const POD_LAYERS: [Shape<'static>; 3] = [POD_BURST, POD_STAR, POD_CORE];
+pub const SWARMER_LAYERS: [Shape<'static>; 2] = [SWARMER_BODY, SWARMER_GLOW];

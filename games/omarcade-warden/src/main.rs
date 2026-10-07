@@ -2342,4 +2342,19 @@ mod tests {
         assert!(c.seek < 0.5, "seek {} is not wave 1's", c.seek);
         assert!(c.vy > flight::CLIMB_SPEED * 0.5, "climbing ship reported vy {}", c.vy);
     }
+
+    /// ★ THE ORIGINAL'S PACE, THROUGH THE REAL LOOP: with nothing killed,
+    /// wave 1's second squad still arrives on its 7.5 s timer, because the
+    /// cap is the original's 8 — ten Landers hunting by 9 s, not five.
+    #[test]
+    fn the_second_squad_comes_on_its_timer_without_a_kill() {
+        let mut g = game();
+        immortal(&mut g);
+        let mut audio = AudioSystem::new();
+        for _ in 0..(9 * 60) {
+            let mut a = audio.handle();
+            g.update(1.0 / 60.0, &mut a);
+        }
+        assert_eq!(g.enemies.count(enemy::Kind::Lander), 2 * waves::SQUAD_SIZE);
+    }
 }

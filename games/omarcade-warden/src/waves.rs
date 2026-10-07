@@ -76,15 +76,17 @@ pub const SQUAD_SECONDS: [f32; 4] = [7.5, 6.25, 5.0, 4.0];
 /// `WAVSIZ` is 5 in every wave.
 pub const SQUAD_SIZE: usize = 5;
 
-/// A squad arrives on its timer only while FEWER than this many hostiles
+/// A squad arrives on its timer only while FEWER than this many Landers
 /// are alive.
 ///
-/// ⚠️ SCALED FOR OUR WORLD, NOT COPIED. The original caps at 8 in a world
-/// ~6.7 screens round; ours is 4 (`world::WORLD_SCREENS`). Same lap time
-/// (6 s here, ~5.7 s there), so the same count would be ~1.7× as many
-/// enemies per screen. 8 × 4 / 6.7 = 4.8 → 5, which keeps the per-screen
-/// density the original had (1.19 → 1.25). Brian's to retune by feel.
-pub const SQUAD_ALIVE_CAP: usize = 5;
+/// ★ THE ORIGINAL'S 8, COPIED — BRIAN'S CALL (2026-10-06, "A"). It was 5,
+/// scaled down so our 4-screen world held the original's Landers per
+/// SCREEN. But abduction PACE is set by how many Landers are hunting, not
+/// by how crowded a screen is, and with 5 the second squad waited for a
+/// kill. Measured, passive player, people taken by 30 s / 60 s: original
+/// 3.8 / 7.0, cap 5 3.0 / 6.4, cap 8 4.0 / 7.3. The cost, accepted: ~1.7×
+/// the original's Landers per screen.
+pub const SQUAD_ALIVE_CAP: usize = 8;
 
 /// How often the pressure ramps within a wave, in seconds (the
 /// original's intra-wave delta: every 40 ticks ≈ 10 s).

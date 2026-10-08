@@ -233,6 +233,10 @@ pub const LANDER_SHOT_SPEED: f32 = 480.0;
 /// sniping: standing still is punished, moving is enough.
 pub const LANDER_AIM_ERROR: f32 = 0.12;
 
+/// How often a Lander's shot leads a moving ship rather than aiming
+/// where it is: the original's SHOOT leads when SEED > 120, 135 of 256.
+pub const LANDER_LEAD_CHANCE: f32 = 135.0 / 256.0;
+
 /// ★ THE MINIMUM ANGLE OF A MUTANT'S SHOT, in radians off horizontal.
 ///
 /// ⚠️ BRIAN'S SPEC: "NEVER SHOOT STRAIGHT — always at an angle." This is
@@ -898,13 +902,28 @@ impl Enemy {
         (angle.cos() * dir, angle.sin())
     }
 
-    /// Where a Lander's shot should go: at `(sx, sy)`, give or take
-    /// [`LANDER_AIM_ERROR`]. Unlike a Mutant's it may fly level — the
-    /// never-straight rule is Brian's for Mutants, and a slow level shot
-    /// is the easiest thing in the game to step out of.
-    pub fn lander_aim(&self, sx: f32, sy: f32, noise: &mut u32) -> (f32, f32) {
-        let dx = world::delta(self.x, sx);
-        let dy = sy - self.y;
+    /// Where a Lander's shot should go: at the ship at `(sx, sy)`, give
+    /// or take [`LANDER_AIM_ERROR`] — and, [`LANDER_LEAD_CHANCE`] of the
+    /// time, at where a ship moving at `(svx, svy)` WILL be when the shot
+    /// gets there. Unlike a Mutant's it may fly level — the never-straight
+    /// rule is Brian's for Mutants, and a slow level shot is the easiest
+    /// thing in the game to step out of.
+    ///
+    /// ★ THE ORIGINAL'S ANSWER TO FLYING THE LINE (SHOOT, defb6.src: when
+    /// SEED > 120 the player's velocity PLAXV is added to the shot's).
+    /// Brian: "hardly any landers will pick up a humanoid if you just go
+    /// down the line". A ship at top speed outruns a shot aimed where it
+    /// is; one aimed where it is going meets it. A ship that is not
+    /// racing along has no lead to take, so to it nothing has changed.
+    pub fn lander_aim(&self, sx: f32, sy: f32, svx: f32, svy: f32, noise: &mut u32) -> (f32, f32) {
+        let mut dx = world::delta(self.x, sx);
+        let mut dy = sy - self.y;
+        if next01(noise) < LANDER_LEAD_CHANCE {
+            if let Some(t) = intercept_time(dx, dy, svx, svy, LANDER_SHOT_SPEED) {
+                dx += svx * t;
+                dy += svy * t;
+            }
+        }
         let angle = dy.atan2(dx) + (next01(noise) - 0.5) * 2.0 * LANDER_AIM_ERROR;
         (angle.cos(), angle.sin())
     }
@@ -1640,6 +1659,27 @@ fn next01(seed: &mut u32) -> f32 {
     (*seed & 0x00FF_FFFF) as f32 / 0x0100_0000 as f32
 }
 
+/// When a shot fired now at `speed` meets a target `(dx, dy)` away moving
+/// at `(vx, vy)`: the first t > 0 with |d + v·t| = speed·t. None when the
+/// target is outrunning the shot, which then aims where the target is.
+fn intercept_time(dx: f32, dy: f32, vx: f32, vy: f32, speed: f32) -> Option<f32> {
+    let a = vx * vx + vy * vy - speed * speed;
+    let b = 2.0 * (dx * vx + dy * vy);
+    let c = dx * dx + dy * dy;
+    if a.abs() < 1e-3 {
+        return (b < 0.0).then(|| -c / b);
+    }
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        return None;
+    }
+    let r = disc.sqrt();
+    [(-b - r) / (2.0 * a), (-b + r) / (2.0 * a)]
+        .into_iter()
+        .filter(|t| *t > 0.0)
+        .reduce(f32::min)
+}
+
 /// A deterministic 0..1 from an integer, for placement that repeats.
 fn hash01(mut h: u32) -> f32 {
     h ^= h >> 16;
@@ -1841,6 +1881,65 @@ mod tests {
         assert!(speeds[speeds.len() - 1] - speeds[0] > DRIFT_MAX * 0.5, "speeds barely vary");
 
         assert!(east > 5 && west > 5, "all one way: {east} east, {west} west");
+    }
+
+    /// Where a slow Lander shot fired at a ship racing past below it
+    /// ends up relative to the ship: the closest it comes, in units.
+    fn closest_pass(aim: (f32, f32), ship: (f32, f32), svx: f32) -> f32 {
+        let l = Enemy::lander(1000.0, 500.0, 0.0);
+        let (mut bx, mut by) = (l.x, l.y);
+        let (mut sx, sy) = ship;
+        let mut best = f32::MAX;
+        for _ in 0..240 {
+            let dt = 1.0 / 120.0;
+            bx += aim.0 * LANDER_SHOT_SPEED * dt;
+            by += aim.1 * LANDER_SHOT_SPEED * dt;
+            sx += svx * dt;
+            best = best.min(((bx - sx).powi(2) + (by - sy).powi(2)).sqrt());
+        }
+        best
+    }
+
+    /// ★★ A LEADING SHOT MEETS A SHIP RACING THE LINE; A PLAIN ONE
+    /// FALLS BEHIND IT (SHOOT, defb6.src). Over many shots from a Lander
+    /// above a ship flying toward and under it at top speed: the shots
+    /// that lead it pass close, and without the lead none do.
+    #[test]
+    fn some_lander_shots_lead_a_moving_ship() {
+        let l = Enemy::lander(1000.0, 500.0, 0.0);
+        let ship = (1400.0, 250.0);
+        let svx = -crate::flight::TOP_SPEED;
+        let (mut close, mut still_close) = (0, 0);
+        for seed in 1..400u32 {
+            let mut n = seed.wrapping_mul(0x9E37_79B9) | 1;
+            if closest_pass(l.lander_aim(ship.0, ship.1, svx, 0.0, &mut n), ship, svx) < 40.0 {
+                close += 1;
+            }
+            let mut n = seed.wrapping_mul(0x9E37_79B9) | 1;
+            if closest_pass(l.lander_aim(ship.0, ship.1, 0.0, 0.0, &mut n), ship, svx) < 40.0 {
+                still_close += 1;
+            }
+        }
+        assert!(close > 100, "only {close} of 399 leading shots met the ship");
+        assert_eq!(still_close, 0, "a shot that does not lead met the ship");
+    }
+
+    /// A ship that is not moving gets the same shot it always did.
+    #[test]
+    fn a_still_ship_gets_no_lead() {
+        let l = Enemy::lander(1000.0, 500.0, 0.0);
+        for seed in 1..50u32 {
+            let mut a = seed;
+            let lead = l.lander_aim(1300.0, 300.0, 0.0, 0.0, &mut a);
+            // The same noise draws by hand — the lead coin, then the
+            // error — with no lead applied: it must be the same shot.
+            let mut n = seed;
+            let _ = next01(&mut n);
+            let angle = (300.0f32 - l.y).atan2(world::delta(l.x, 1300.0))
+                + (next01(&mut n) - 0.5) * 2.0 * LANDER_AIM_ERROR;
+            let plain = (angle.cos(), angle.sin());
+            assert!((lead.0 - plain.0).abs() < 1e-5 && (lead.1 - plain.1).abs() < 1e-5);
+        }
     }
 
     /// ★★ A SQUAD IS SPREAD, NOT CLUMPED, AND NOT EVENLY SPACED EITHER.

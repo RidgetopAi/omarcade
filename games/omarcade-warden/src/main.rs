@@ -802,9 +802,10 @@ impl Warden {
         // because `Enemies` does not know what a Shot is.
         // ★ THE BAITER'S CHASE: the ship's velocity — vertical measured,
         // since the climb is direct — and how keen it is to re-aim.
+        let (ship_vx, ship_vy) = (self.ship.vx, (self.ship.y - was_y) / dt.max(1e-6));
         self.enemies.set_chase(enemy::Chase {
-            vx: self.ship.vx,
-            vy: (self.ship.y - was_y) / dt.max(1e-6),
+            vx: ship_vx,
+            vy: ship_vy,
             seek: self.director.baiter_seek(),
         });
         let wants = self.enemies.step(&self.terrain, &mut self.people, ship_pos, dt);
@@ -829,7 +830,7 @@ impl Warden {
                         (dx, dy, m.shot_speed(), true)
                     }
                     Some(l) => {
-                        let (dx, dy) = l.lander_aim(sx, sy, &mut noise);
+                        let (dx, dy) = l.lander_aim(sx, sy, ship_vx, ship_vy, &mut noise);
                         (dx, dy, l.shot_speed(), false)
                     }
                     None => continue,
@@ -1479,7 +1480,7 @@ mod tests {
     /// thrust one way, firing nonstop, held `alt` above the ground (0 =
     /// a passive player: no thrust, no fire). Returns (people grabbed,
     /// people lost, seconds to clear wave 1 or None) within `secs`.
-    fn sweep(seed: u32, secs: f32, alt: f32) -> (usize, usize, Option<f32>) {
+    fn sweep(seed: u32, secs: f32, alt: f32) -> (usize, usize, u32, Option<f32>) {
         let mut g = game_seeded(seed);
         immortal(&mut g);
         if alt > 0.0 {
@@ -1509,10 +1510,10 @@ mod tests {
                 }
             }
             if g.director.wave() > 1 {
-                return (grabs, lost, Some(f as f32 / 60.0));
+                return (grabs, lost, 1_000 - g.lives.remaining, Some(f as f32 / 60.0));
             }
         }
-        (grabs, lost, None)
+        (grabs, lost, 1_000 - g.lives.remaining, None)
     }
 
     /// An instrument, not a check: `cargo test --release measure_sweeper
@@ -1521,18 +1522,20 @@ mod tests {
     #[ignore]
     fn measure_sweeper() {
         for alt in [0.0, 270.0, 285.0, 300.0] {
-            let (mut tg, mut tl, mut cl) = (0, 0, vec![]);
+            let (mut tg, mut tl, mut td, mut cl) = (0, 0, 0, vec![]);
             for s in 0..20u32 {
-                let (g, l, c) = sweep(0x1000 + s * 7919, 120.0, alt);
+                let (g, l, d, c) = sweep(0x1000 + s * 7919, 120.0, alt);
+                td += d;
                 tg += g;
                 tl += l;
                 cl.extend(c);
             }
             let mean = cl.iter().sum::<f32>() / cl.len().max(1) as f32;
             println!(
-                "alt {alt}: mean grabs {:.2} lost {:.2}, cleared {}/20 mean {mean:.1}s",
+                "alt {alt}: mean grabs {:.2} lost {:.2} deaths {:.2}, cleared {}/20 mean {mean:.1}s",
                 tg as f32 / 20.0,
                 tl as f32 / 20.0,
+                td as f32 / 20.0,
                 cl.len()
             );
         }

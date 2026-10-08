@@ -334,6 +334,23 @@ pub const ALIGN_X: f32 = 32.0 * world::WORLD_W / 2048.0;
 /// do (YMIN+2), so its arrival and its sink are both in view.
 pub const ARRIVE_HEIGHT: f32 = world::VIEW_H * 0.9;
 
+/// No Lander arrives closer than this to the player, either way.
+pub const ARRIVE_CLEAR: f32 = world::VIEW_W * 0.35;
+
+/// Where in its own slot of the world a Lander arrives: anywhere in the
+/// middle 70%, so neighbours are at least 30% of a slot apart (~190 u
+/// for a squad of 5) yet the gaps between them still vary.
+pub const ARRIVE_JITTER: (f32, f32) = (0.15, 0.85);
+
+/// The original's hover is a BAND, not a line (LANDS0: sink while above
+/// GETALT−50, climb only once more than 20 lines below it, else hold).
+/// 20 lines at 3 u a line. Over rising ground a Lander rides the bottom
+/// of the band, over falling ground the top, so a squad hovers at
+/// different heights and one altitude does not line them all up for the
+/// laser — Brian: "hardly any landers will pick up a humanoid if you
+/// just go down the line".
+pub const HOVER_BAND: f32 = 20.0 * 3.0;
+
 /// How close, horizontally, a Lander must be to grab.
 pub const GRAB_REACH_X: f32 = 16.0;
 
@@ -682,7 +699,11 @@ impl Enemy {
                 // from the top to its hunting height.
                 let want = terrain.height_at(self.x) + HOVER_HEIGHT;
                 let v = LANDER_VSPEED * pressure * dt;
-                self.y += (want - self.y).clamp(-v, v);
+                if self.y > want {
+                    self.y = (self.y - v).max(want);
+                } else if self.y < want - HOVER_BAND {
+                    self.y = (self.y + v).min(want - HOVER_BAND);
+                }
 
                 // Its person is handed out by the owner before this step
                 // (`Enemies::step`, GTARG). ★ PASSING OVER THEM is the only
@@ -1298,26 +1319,28 @@ impl Enemies {
         self.claimed.clear();
     }
 
-    /// Bring `count` Landers in at random places near the top of the sky,
-    /// each drifting its own random way at its own random speed.
+    /// Bring `count` Landers in near the top of the sky, spread round the
+    /// world, each drifting its own random way at its own random speed.
     ///
-    /// ★ THE ORIGINAL'S ARRIVAL (LANDST): a random world X, the top of the
-    /// playfield, RMAX(LNDXV) for the speed and a coin for the direction.
-    /// Random, not spread evenly — evenly spaced arrivals grabbed in
-    /// unison all round the world, which is half of why wave 1 was too
-    /// hard. ⚠️ Never in the player's lap: an arrival inside the screen's
-    /// middle is moved half a screen on, so nothing appears on top of you.
+    /// ★ THE ORIGINAL'S ARRIVAL (LANDST): the top of the playfield,
+    /// RMAX(LNDXV) for the speed and a coin for the direction. Its X is
+    /// plain random, but in a world a quarter the size in screens that
+    /// put two or three of a squad in one spot — Brian, flying it: "the
+    /// landers seem to be spawning in groups too close together". So the
+    /// world away from the player is cut into one slot per Lander and
+    /// each lands at a random place in the middle of its own slot:
+    /// never stacked, and still not evenly spaced (evenly spaced arrivals
+    /// grabbed in unison all round the world). ⚠️ Never in the player's
+    /// lap: the slots start and end [`ARRIVE_CLEAR`] either side of them.
     pub fn arrive(&mut self, count: usize, avoid_x: f32, seed: u32) {
+        let span = world::WORLD_W - 2.0 * ARRIVE_CLEAR;
+        let slot = span / count.max(1) as f32;
         for i in 0..count {
             // ⚠️ wrapping_mul, NOT `*`: a plain multiply panics in a debug
             // build from i = 2 onward.
             let k = seed.wrapping_add((i as u32).wrapping_mul(2_654_435_761));
-            let mut x = world::wrap(hash01(k) * world::WORLD_W);
-            if world::delta(avoid_x, x).abs() < world::VIEW_W * 0.35 {
-                // Pushed half a screen further away from the player (an
-                // exact 0.0 has signum 1.0, so it still moves).
-                x = world::wrap(x + world::VIEW_W * 0.5 * world::delta(avoid_x, x).signum());
-            }
+            let within = ARRIVE_JITTER.0 + hash01(k) * (ARRIVE_JITTER.1 - ARRIVE_JITTER.0);
+            let x = world::wrap(avoid_x + ARRIVE_CLEAR + slot * (i as f32 + within));
             let steps = 1 + (hash01(k ^ 0x5851_F42D) * DRIFT_STEPS as f32) as u32;
             let speed = DRIFT_MAX * steps.min(DRIFT_STEPS) as f32 / DRIFT_STEPS as f32;
             let dir = if hash01(k ^ 0x9E37_79B9) < 0.5 { -1.0 } else { 1.0 };
@@ -1763,20 +1786,37 @@ mod tests {
         assert!(ls.is_empty(), "the corpse should be gone");
     }
 
-    #[test]
-    fn landers_follow_the_ridge_rather_than_a_fixed_height() {
+    /// Where a still Lander at x = 500 settles, starting at height `y`.
+    fn settle_from(y: f32) -> (f32, f32) {
         let t = terrain();
         let mut ls = Enemies::new();
-        // Start at a wrong height and let it settle.
-        ls.spawn(Enemy::lander(500.0, 10.0, 0.0));
+        ls.spawn(Enemy::lander(500.0, y, 0.0));
         ls.step(&t, &mut nobody(), None, WARP_SECONDS + 0.01);
         // Eight seconds: it moves at LNDYV now, not by easing.
         for _ in 0..480 {
             ls.step(&t, &mut nobody(), None, 1.0 / 60.0);
         }
         let l = ls.iter().next().unwrap();
-        let want = t.height_at(l.x) + HOVER_HEIGHT;
-        assert!((l.y - want).abs() < 4.0, "settled at {} not {want}", l.y);
+        (l.y, t.height_at(l.x) + HOVER_HEIGHT)
+    }
+
+    #[test]
+    fn landers_follow_the_ridge_rather_than_a_fixed_height() {
+        // From below, it climbs to the bottom of the band and holds.
+        let (y, want) = settle_from(10.0);
+        assert!((y - (want - HOVER_BAND)).abs() < 4.0, "settled at {y} not {}", want - HOVER_BAND);
+    }
+
+    /// ★ THE HOVER IS A BAND (LANDS0): from above it sinks to the top of
+    /// it, from below it climbs only to the bottom — so two Landers over
+    /// the same ground can hunt a band's height apart, and no one
+    /// altitude lines a squad up for the laser.
+    #[test]
+    fn the_hover_is_a_band_not_a_line() {
+        let (high, want) = settle_from(world::VIEW_H);
+        let (low, _) = settle_from(10.0);
+        assert!((high - want).abs() < 4.0, "from above settled at {high} not {want}");
+        assert!(high - low > HOVER_BAND * 0.9, "both settled on one line: {high} vs {low}");
     }
 
     /// ★ THE ORIGINAL'S ARRIVAL: at the top, never on the player, each
@@ -1800,15 +1840,31 @@ mod tests {
         speeds.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!(speeds[speeds.len() - 1] - speeds[0] > DRIFT_MAX * 0.5, "speeds barely vary");
 
-        // ★ RANDOM PLACES, NOT EVENLY SPACED. Even spacing was half of why
-        // a whole squad grabbed at once; the gaps between arrivals must
-        // differ, as the original's random X makes them.
-        let mut xs: Vec<f32> = ls.iter().map(|l| l.x).collect();
-        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let gaps: Vec<f32> = xs.windows(2).map(|w| w[1] - w[0]).collect();
-        let (lo, hi) = gaps.iter().fold((f32::MAX, 0.0f32), |(l, h), g| (l.min(*g), h.max(*g)));
-        assert!(hi - lo > world::VIEW_W * 0.25, "arrivals are evenly spaced: gaps {lo:.0}..{hi:.0}");
         assert!(east > 5 && west > 5, "all one way: {east} east, {west} west");
+    }
+
+    /// ★★ A SQUAD IS SPREAD, NOT CLUMPED, AND NOT EVENLY SPACED EITHER.
+    /// Clumped was Brian's complaint ("spawning in groups too close
+    /// together"); evenly spaced was half of why a whole squad once
+    /// grabbed at once. Over many seeds: no two of a squad of 5 closer
+    /// than 30% of a slot, and the gaps between them vary.
+    #[test]
+    fn a_squad_arrives_spread_round_the_world() {
+        let slot = (world::WORLD_W - 2.0 * ARRIVE_CLEAR) / SQUAD as f32;
+        const SQUAD: usize = 5;
+        let (mut lo, mut hi) = (f32::MAX, 0.0f32);
+        for seed in 0..200u32 {
+            let mut ls = Enemies::new();
+            ls.arrive(SQUAD, 1234.0, seed.wrapping_mul(0x9E37_79B9));
+            let mut xs: Vec<f32> = ls.iter().map(|l| world::delta(1234.0, l.x).rem_euclid(world::WORLD_W)).collect();
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for w in xs.windows(2) {
+                lo = lo.min(w[1] - w[0]);
+                hi = hi.max(w[1] - w[0]);
+            }
+        }
+        assert!(lo >= slot * 0.3 - 0.5, "two of a squad {lo:.0} apart (slot {slot:.0})");
+        assert!(hi - lo > slot * 0.8, "squads are evenly spaced: gaps {lo:.0}..{hi:.0}");
     }
 
     /// The same seed must give the same wave, or a screenshot cannot be

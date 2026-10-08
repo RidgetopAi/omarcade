@@ -1416,6 +1416,10 @@ mod tests {
     use super::*;
 
     fn game() -> Warden {
+        game_seeded(0x0DEF_E4DE)
+    }
+
+    fn game_seeded(seed: u32) -> Warden {
         let mut audio = AudioSystem::new();
         let laser = audio.register_sound(Box::new(sound::Laser::new()));
         let thrust = audio.register(Box::new(sound::Thrust::new()));
@@ -1438,7 +1442,7 @@ mod tests {
         // ⚠️ AN IN-MEMORY SCORE FILE, never loaded or saved: a test that
         // reaches game over must not write a player's real high scores.
         let scores = ScoreFile::new(GAME_ID, GAME_NAME);
-        Warden::new(Theme::fallback(), laser, thrust, warp, voices, scores, 0x0DEF_E4DE)
+        Warden::new(Theme::fallback(), laser, thrust, warp, voices, scores, seed)
     }
 
     /// Kill every enemy that can be killed right now, through the same
@@ -1467,6 +1471,71 @@ mod tests {
             }
         }
         panic!("not done after {max_seconds} s (wave {}, phase {:?})", g.director.wave(), g.director.phase());
+    }
+
+
+    /// ★ THE LINE SWEEPER — Brian: "hardly any landers will pick up a
+    /// humanoid if you just go down the line". An immortal player at full
+    /// thrust one way, firing nonstop, held `alt` above the ground (0 =
+    /// a passive player: no thrust, no fire). Returns (people grabbed,
+    /// people lost, seconds to clear wave 1 or None) within `secs`.
+    fn sweep(seed: u32, secs: f32, alt: f32) -> (usize, usize, Option<f32>) {
+        let mut g = game_seeded(seed);
+        immortal(&mut g);
+        if alt > 0.0 {
+            g.on_input(InputEvent::KeyDown(Key::T));
+            g.on_input(InputEvent::KeyDown(Key::Space));
+        }
+        let mut audio = AudioSystem::new();
+        let mut was: Vec<humanoid::State> = g.people.iter().map(|h| h.state).collect();
+        let (mut grabs, mut lost) = (0, 0);
+        for f in 0..(secs * 60.0) as usize {
+            if alt > 0.0 {
+                g.ship.y = g.terrain.height_at(g.ship.x) + alt;
+            }
+            {
+                let mut a = audio.handle();
+                g.update(1.0 / 60.0, &mut a);
+            }
+            for (i, h) in g.people.iter().enumerate() {
+                if i < was.len() && was[i] != h.state {
+                    if h.state == humanoid::State::Carried && was[i] == humanoid::State::Walking {
+                        grabs += 1;
+                    }
+                    if h.state == humanoid::State::Dead {
+                        lost += 1;
+                    }
+                    was[i] = h.state;
+                }
+            }
+            if g.director.wave() > 1 {
+                return (grabs, lost, Some(f as f32 / 60.0));
+            }
+        }
+        (grabs, lost, None)
+    }
+
+    /// An instrument, not a check: `cargo test --release measure_sweeper
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn measure_sweeper() {
+        for alt in [0.0, 270.0, 285.0, 300.0] {
+            let (mut tg, mut tl, mut cl) = (0, 0, vec![]);
+            for s in 0..20u32 {
+                let (g, l, c) = sweep(0x1000 + s * 7919, 120.0, alt);
+                tg += g;
+                tl += l;
+                cl.extend(c);
+            }
+            let mean = cl.iter().sum::<f32>() / cl.len().max(1) as f32;
+            println!(
+                "alt {alt}: mean grabs {:.2} lost {:.2}, cleared {}/20 mean {mean:.1}s",
+                tg as f32 / 20.0,
+                tl as f32 / 20.0,
+                cl.len()
+            );
+        }
     }
 
     /// A ship that cannot run out — the wave tests are about waves, and a

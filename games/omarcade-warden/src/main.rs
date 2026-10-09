@@ -1258,8 +1258,8 @@ impl Game for Warden {
         if self.fired_this_frame {
             audio.play(self.laser);
         }
-        // ★ EACH DEATH SAYS WHAT IT WAS. A Lander crumps, a Mutant
-        // bangs, a Humanoid you shot barely registers, and your own
+        // ★ EACH DEATH SAYS WHAT IT WAS. A Lander thuds and sours (the
+        // original's HBEV — Brian's pick over his Boom), a Mutant bangs, a Humanoid you shot barely registers, and your own
         // ship is the worst sound in the game.
         if self.lander_killed_this_frame {
             audio.play(self.boom);
@@ -1419,7 +1419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let thrust = audio.register(Box::new(sound::Thrust::new()));
     let warp = audio.register_sound(Box::new(sound::Warp::new()));
     let voices = Voices {
-        lander: audio.register_sound(Box::new(sound::Boom::new())),
+        lander: audio.register_sound(Box::new(sound::lander_hit())),
         mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
         bomber_hit: audio.register_sound(Box::new(sound::bomber_hit())),
         pod_hit: audio.register_sound(Box::new(sound::pod_hit())),
@@ -1461,7 +1461,7 @@ mod tests {
         let thrust = audio.register(Box::new(sound::Thrust::new()));
         let warp = audio.register_sound(Box::new(sound::Warp::new()));
         let voices = Voices {
-            lander: audio.register_sound(Box::new(sound::Boom::new())),
+            lander: audio.register_sound(Box::new(sound::lander_hit())),
             mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
             bomber_hit: audio.register_sound(Box::new(sound::bomber_hit())),
             pod_hit: audio.register_sound(Box::new(sound::pod_hit())),

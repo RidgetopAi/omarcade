@@ -212,17 +212,25 @@ pub type Laser = Zap;
 // comment under each one is how he picks it up.
 
 /// How long the blast lasts, in seconds.
+#[allow(dead_code)] // Brian's Boom, retired from play — see `Boom`.
 const BOOM_LEN: f32 = 0.580;
 
 /// ★ SUBTLE, AND DELIBERATELY SO. Brian checked the original machine:
 /// a Lander going up is not a spectacle, it is a soft crump. The whole
 /// character is a slow saw under a lowpass corner falling 1060 -> 260 Hz,
 /// with a long lazy decay that lets it settle rather than snap.
+#[allow(dead_code)] // Brian's Boom, retired from play — see `Boom`.
 const BOOM_ATTACK: f32 = 0.090;
+#[allow(dead_code)] // Brian's Boom, retired from play — see `Boom`.
 const BOOM_DECAY: f32 = 2.100;
+#[allow(dead_code)] // Brian's Boom, retired from play — see `Boom`.
 const BOOM_LEVEL: f32 = 0.250;
 
 /// A Lander dying. ★ BRIAN'S, BUILT BY EAR AGAINST THE ORIGINAL.
+///
+/// ⚠️ RETIRED FROM PLAY 2026-10-09: Brian A/B'd it against the original's
+/// HBEV ([`lander_hit`]) and chose HBEV. Kept, unwired and still tested,
+/// as his reference and so laser_check can render the comparison.
 ///
 /// ⚠️ THIS IS A SAW THROUGH A SWEEPING LOWPASS, NOT RING-MODULATED NOISE.
 /// The previous Boom was noise multiplied by a 62 Hz carrier, on the
@@ -233,6 +241,7 @@ const BOOM_LEVEL: f32 = 0.250;
 /// ⇒ THE `low` OUTPUT IS TAKEN, not `band`. The laser wants the bandpass
 /// (energy in a moving sliver); an explosion wants everything BELOW the
 /// corner, which is what makes it a body rather than a whistle.
+#[allow(dead_code)]
 pub struct Boom {
     t: f32,
     gain: f32,
@@ -242,12 +251,14 @@ pub struct Boom {
     band: f32,
 }
 
+#[allow(dead_code)]
 impl Default for Boom {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[allow(dead_code)]
 impl Boom {
     pub fn new() -> Self {
         Self { t: 0.0, gain: 1.0, alive: false, phase: [0.0; 1], low: 0.0, band: 0.0 }
@@ -2083,8 +2094,9 @@ const MUTANT_SHOT_CUT: f32 = 0.768;
 // | Baiter, Swarmer   | UFHSND/SWHSND | PROTV | 128 ms | 1.09 s | 07_G7_PROTV_baiter_swarmhit.wav |
 // | Lander            | LHSND  | HBEV  | 160 ms | 0.6 s       | 06_G6_HBEV_landerhit.wav       |
 //
-// ⚠️ THE LANDER'S STAYS BRIAN'S `Boom`. HBEV is built here as an A/B
-// candidate only; his voice is replaced only if he picks it.
+// ★ THE LANDER'S IS HBEV NOW. It was built as an A/B against Brian's
+// `Boom`, and on 2026-10-09 he picked it: "let's use original Lander
+// death". `Boom` stays in the file, unwired, as his reference.
 
 /// ★ A BOMBER DIES (HBDV, "heartbeat distorto"): a square two cycles to
 /// the table, one pass a period, periods doubling 1 → 192 — ~3.2 kHz down
@@ -2138,7 +2150,8 @@ fn baiter_hit_spec() -> GwaveSpec {
     }
 }
 
-/// ★ CANDIDATE, NOT WIRED: A LANDER DIES (HBEV, "heartbeat echo"): the
+/// ★ A LANDER DIES (HBEV, "heartbeat echo") — Brian's pick over his own
+/// `Boom` (2026-10-09). The
 /// 72-step sine, periods 1 … 22 then 64 — ~380 → 78 → 30 Hz in 142 ms —
 /// four echoes at 4/16 decay with wrap. A thud that sours. ~0.6 s.
 fn lander_hit_spec() -> GwaveSpec {
@@ -2265,9 +2278,7 @@ pub fn baiter_hit() -> BoardVoice<GwaveOnce> {
     gwave_once(baiter_hit_spec(), f32::MAX, BAITER_HIT_LEVEL)
 }
 
-/// The Lander's death as the original made it (HBEV) — an A/B
-/// candidate against Brian's `Boom`, rendered by `sound_lab`, not wired.
-#[allow(dead_code)]
+/// A Lander's death (HBEV).
 pub fn lander_hit() -> BoardVoice<GwaveOnce> {
     gwave_once(lander_hit_spec(), f32::MAX, LANDER_HIT_LEVEL)
 }
@@ -2649,7 +2660,7 @@ mod tests {
             ("bomber hit", &mut bomber_hit(), 1.4),
             ("pod hit", &mut pod_hit(), 1.0),
             ("baiter hit", &mut baiter_hit(), 1.3),
-            ("lander hit (candidate)", &mut lander_hit(), 0.8),
+            ("lander hit", &mut lander_hit(), 0.8),
             ("smart bomb", &mut SmartBomb::new(), 3.0),
             ("hyperspace", &mut Hyperspace::new(), 0.7),
             ("grab", &mut grab(), 1.0),
@@ -2716,7 +2727,7 @@ mod tests {
         let cases: [(&str, &mut dyn Voice, f32, f32); 4] = [
             ("bomber", &mut bomber_hit(), 1.15, 1.27),
             ("baiter/swarmer", &mut baiter_hit(), 1.03, 1.13),
-            ("lander (candidate)", &mut lander_hit(), 0.50, 0.66),
+            ("lander", &mut lander_hit(), 0.50, 0.66),
             ("pod", &mut pod_hit(), 0.76, 0.78),
         ];
         for (name, v, lo, hi) in cases {

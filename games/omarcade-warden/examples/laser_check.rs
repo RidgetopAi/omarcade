@@ -59,7 +59,7 @@ fn main() {
     // ★ THE FOUR DEATHS, each on its own. Only the Lander is Brian's;
     // the other three are placeholders waiting for his ear.
     let deaths: [(&str, &mut dyn Voice, f32, &str); 4] = [
-        ("lander", &mut sound::Boom::new(), 0.9, "BRIAN'S — subtle, like the original"),
+        ("lander", &mut sound::Boom::new(), 0.9, "BRIAN'S — retired from play 2026-10-09 for HBEV"),
         ("mutant", &mut sound::MutantBoom::new(), 0.8, "★ BRIAN'S — pure crackle, no body"),
         ("ship", &mut sound::ShipBoom::new(), 1.5, "placeholder — your own death"),
         ("person", &mut sound::PersonBoom::new(), 0.5, "placeholder — you broke the rule"),
@@ -91,12 +91,12 @@ fn main() {
         ("fusion", &mut sound::fusion(), 1.4),
         ("lander-shot", &mut sound::lander_shot(), 0.4),
         ("mutant-shot", &mut sound::mutant_shot(), 1.0),
-        // ★ W5: every enemy dies its own way. The Lander's HBEV is an A/B
-        // candidate against Brian's Boom (boom-lander.wav), not wired.
+        // ★ W5: every enemy dies its own way. The Lander's is HBEV, Brian's
+        // pick over his Boom (boom-lander.wav, kept as the reference).
         ("hit-bomber", &mut sound::bomber_hit(), 1.4),
         ("hit-pod", &mut sound::pod_hit(), 1.0),
         ("hit-baiter-swarmer", &mut sound::baiter_hit(), 1.3),
-        ("hit-lander-hbev-candidate", &mut sound::lander_hit(), 0.8),
+        ("hit-lander", &mut sound::lander_hit(), 0.8),
     ];
     for (name, v, secs) in events {
         let s = render(v, secs, &[0.0]);

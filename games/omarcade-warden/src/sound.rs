@@ -1580,6 +1580,21 @@ const GWAVE_PER_COUNT: f32 = 6.0;
 /// …and each completed pass of the wave costs this much more.
 const GWAVE_WAVE_END: f32 = 49.0;
 
+/// ★ THE CPU-GAP SILENCES. The board has one CPU, so while it rewrites the
+/// wave in RAM no sample goes out and the DAC just holds. WVDECA costs
+/// 65 cycles a sample plus 12 per sixteenth of decay (its SBA / DEC /
+/// BNE loop); WVTRAN (re-copying the ROM wave) 43 a sample; the GW0 scan
+/// that trims the pattern ~25 an entry. Counted from vsndrm1.src and
+/// checked against the emulator: an echo of PROTV (decay 3) goes silent
+/// for 7.4k cycles, a frequency step (decay 3 + re-copy + predecay 17)
+/// for 30.6k — this model gives 7.4k and 30.1k. Twelve of those are
+/// half of PROTV's 1.09 s. research-sound.md: "leave the CPU-gap
+/// silences in".
+const GWAVE_DECAY_PER_SAMPLE: f32 = 65.0;
+const GWAVE_DECAY_PER_FACTOR: f32 = 12.0;
+const GWAVE_COPY_PER_SAMPLE: f32 = 43.0;
+const GWAVE_SCAN_PER_ENTRY: f32 = 25.0;
+
 /// One count of a VARI half-cycle (DEX / BEQ / DECA / BNE).
 const VARI_COUNT_CYCLES: f32 = 14.0;
 /// The sweep's own bookkeeping between half-cycles.
@@ -1613,6 +1628,12 @@ impl WaveTable {
     /// A sine with its second harmonic — the bright, reedy one.
     fn two_harmonic(len: usize) -> Self {
         Self::from_fn(len, |t| 127.5 + 82.0 * t.sin() + 46.0 * (2.0 * t).sin())
+    }
+
+    /// A full-scale square, two cycles to the table — so each pass of the
+    /// wave sounds an octave above the table rate (the Bomber's hit).
+    fn square_twice(len: usize) -> Self {
+        Self::from_fn(len, |t| if (2.0 * t).sin() >= 0.0 { 255.0 } else { 0.0 })
     }
 
     /// The odd eight-step wave the Mutant's gun is built on: a lopsided
@@ -1658,6 +1679,8 @@ struct Gwave {
     echoes_left: u8,
     offset: u8,
     count_left: u8,
+    /// Cycles the CPU spends rewriting the wave before the next sample.
+    gap: f32,
 }
 
 impl Gwave {
@@ -1674,8 +1697,11 @@ impl Gwave {
             echoes_left: spec.echoes,
             offset: 0,
             count_left: spec.freq_count,
+            gap: 0.0,
         };
         g.decay(spec.predecay);
+        // Before the first sample: silent anyway, so it costs nothing.
+        g.gap = 0.0;
         g
     }
 
@@ -1683,6 +1709,10 @@ impl Gwave {
     /// a sixteenth of its ROM value `factor` times, modulo 256. Heavy
     /// decay turns a sine into spikes — that is the character.
     fn decay(&mut self, factor: u8) {
+        if factor != 0 {
+            self.gap += self.spec.wave.len as f32
+                * (GWAVE_DECAY_PER_SAMPLE + GWAVE_DECAY_PER_FACTOR * factor as f32);
+        }
         for i in 0..self.spec.wave.len {
             let step = (self.spec.wave.data[i] >> 4).wrapping_mul(factor);
             self.ram[i] = self.ram[i].wrapping_sub(step);
@@ -1714,6 +1744,7 @@ impl Gwave {
         // Keep only the entries the shift has not pushed past the end of
         // the counter (GW0): a rising pattern loses its top, a falling
         // one its bottom, until nothing is left.
+        self.gap += GWAVE_SCAN_PER_ENTRY * (self.end - self.start) as f32;
         let (mut found, mut new_start, mut new_end) = (false, self.start, self.end);
         for i in self.start..self.end {
             let (sum, carry) = self.offset.overflowing_add(self.spec.pattern[i]);
@@ -1733,6 +1764,7 @@ impl Gwave {
         self.end = new_end;
         if self.spec.echo_decay != 0 {
             self.ram = self.spec.wave.data;
+            self.gap += GWAVE_COPY_PER_SAMPLE * self.spec.wave.len as f32;
             self.decay(self.spec.predecay);
         }
         self.echoes_left = self.spec.echoes;
@@ -1761,7 +1793,10 @@ impl Gwave {
             self.load_entry();
             true
         } else {
-            self.end_of_pattern()
+            let more = self.end_of_pattern();
+            // The DAC holds this last sample while the CPU works.
+            b.hold += std::mem::take(&mut self.gap);
+            more
         }
     }
 }
@@ -2037,6 +2072,88 @@ fn mutant_shot_spec() -> GwaveSpec {
 }
 const MUTANT_SHOT_CUT: f32 = 0.768;
 
+// ----- the enemy dying: every kind its own (W5) -----
+//
+// The original gives every enemy its own death (defa7 sound table):
+//
+// | Kind              | Code  | Preset | Hold   | Full length | ROM render                     |
+// |-------------------|-------|--------|--------|-------------|--------------------------------|
+// | Bomber            | TIHSND | HBDV  | 160 ms | 1.22 s      | 01_G1_HBDV_bomberhit.wav       |
+// | Pod               | PRHSND | BBSV  | 256 ms | 5.3 s       | 05_G5_BBSV_podhit.wav          |
+// | Baiter, Swarmer   | UFHSND/SWHSND | PROTV | 128 ms | 1.09 s | 07_G7_PROTV_baiter_swarmhit.wav |
+// | Lander            | LHSND  | HBEV  | 160 ms | 0.6 s       | 06_G6_HBEV_landerhit.wav       |
+//
+// ⚠️ THE LANDER'S STAYS BRIAN'S `Boom`. HBEV is built here as an A/B
+// candidate only; his voice is replaced only if he picks it.
+
+/// ★ A BOMBER DIES (HBDV, "heartbeat distorto"): a square two cycles to
+/// the table, one pass a period, periods doubling 1 → 192 — ~3.2 kHz down
+/// to ~94 Hz in 152 ms — eight times, each echo 2/16 quieter with wrap.
+/// A falling zip, repeated, souring as it goes. 1.22 s.
+fn bomber_hit_spec() -> GwaveSpec {
+    GwaveSpec {
+        wave: WaveTable::square_twice(16),
+        cycles: 1,
+        echoes: 8,
+        echo_decay: 2,
+        predecay: 0,
+        freq_inc: 0,
+        freq_count: 0,
+        pattern: &[1, 1, 2, 2, 4, 4, 8, 8, 16, 32, 40, 48, 56, 64, 72, 80, 96, 112, 128, 160, 176, 192],
+    }
+}
+
+/// ★ A POD DIES (BBSV, "big ben"): a 16-step sine tolling between ~726 Hz
+/// and ~135 Hz, four passes each, ten pairs; fifteen echoes, each 1/16
+/// quieter. A bell. The full toll is 5.3 s; the game held it 256 ms and
+/// the next sound cut it, so ours is cut at [`POD_HIT_CUT`].
+fn pod_hit_spec() -> GwaveSpec {
+    GwaveSpec {
+        wave: WaveTable::sine(16),
+        cycles: 4,
+        echoes: 15,
+        echo_decay: 1,
+        predecay: 0,
+        freq_inc: 0,
+        freq_count: 0,
+        pattern: &[8, 64, 8, 64, 8, 64, 8, 64, 8, 64, 8, 64, 8, 64, 8, 64, 8, 64, 8, 64],
+    }
+}
+const POD_HIT_CUT: f32 = 0.768;
+
+/// ★ A BAITER OR A SWARMER DIES (PROTV): the 72-step sine pre-decayed
+/// into wrapped spikes, periods 1 … 12 (~380 → 126 Hz), twice, then every
+/// period one SHORTER a round — so it climbs back up as the pattern
+/// shrinks to nothing. A torn, rising wail. 1.09 s.
+fn baiter_hit_spec() -> GwaveSpec {
+    GwaveSpec {
+        wave: WaveTable::sine(72),
+        cycles: 1,
+        echoes: 2,
+        echo_decay: 3,
+        predecay: 17,
+        freq_inc: -1,
+        freq_count: 0,
+        pattern: &[1, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12],
+    }
+}
+
+/// ★ CANDIDATE, NOT WIRED: A LANDER DIES (HBEV, "heartbeat echo"): the
+/// 72-step sine, periods 1 … 22 then 64 — ~380 → 78 → 30 Hz in 142 ms —
+/// four echoes at 4/16 decay with wrap. A thud that sours. ~0.6 s.
+fn lander_hit_spec() -> GwaveSpec {
+    GwaveSpec {
+        wave: WaveTable::sine(72),
+        cycles: 1,
+        echoes: 4,
+        echo_decay: 4,
+        predecay: 0,
+        freq_inc: 0,
+        freq_count: 0,
+        pattern: &[1, 2, 4, 8, 9, 10, 11, 12, 14, 15, 16, 18, 20, 22, 64],
+    }
+}
+
 /// ★ SET DOWN SAFE (QUASAR): rising sweeps, 378 → 1530 Hz, each ~0.26 s,
 /// ten of them, each a little higher. Brian: "that classic phaser sound
 /// when dropped to ground".
@@ -2093,6 +2210,10 @@ const MUTANT_SHOT_LEVEL: f32 = 0.24;
 const SET_DOWN_LEVEL: f32 = 0.30;
 const FUSION_LEVEL: f32 = 0.26;
 const SCREAM_LEVEL: f32 = 0.30;
+const BOMBER_HIT_LEVEL: f32 = 0.30;
+const POD_HIT_LEVEL: f32 = 0.30;
+const BAITER_HIT_LEVEL: f32 = 0.30;
+const LANDER_HIT_LEVEL: f32 = 0.30;
 
 /// A single GWAVE preset, played once.
 pub struct GwaveOnce {
@@ -2127,6 +2248,28 @@ pub fn lander_shot() -> BoardVoice<GwaveOnce> {
 /// A Mutant's shot (CLDWN), cut where the game cuts it.
 pub fn mutant_shot() -> BoardVoice<GwaveOnce> {
     gwave_once(mutant_shot_spec(), MUTANT_SHOT_CUT, MUTANT_SHOT_LEVEL)
+}
+
+/// A Bomber's death (HBDV).
+pub fn bomber_hit() -> BoardVoice<GwaveOnce> {
+    gwave_once(bomber_hit_spec(), f32::MAX, BOMBER_HIT_LEVEL)
+}
+
+/// A Pod's death (BBSV), cut where the game's next sound would cut it.
+pub fn pod_hit() -> BoardVoice<GwaveOnce> {
+    gwave_once(pod_hit_spec(), POD_HIT_CUT, POD_HIT_LEVEL)
+}
+
+/// A Baiter's or a Swarmer's death (PROTV).
+pub fn baiter_hit() -> BoardVoice<GwaveOnce> {
+    gwave_once(baiter_hit_spec(), f32::MAX, BAITER_HIT_LEVEL)
+}
+
+/// The Lander's death as the original made it (HBEV) — an A/B
+/// candidate against Brian's `Boom`, rendered by `sound_lab`, not wired.
+#[allow(dead_code)]
+pub fn lander_hit() -> BoardVoice<GwaveOnce> {
+    gwave_once(lander_hit_spec(), f32::MAX, LANDER_HIT_LEVEL)
 }
 
 /// The catch: SPNRV three times, each restart 160 ms after the last —
@@ -2501,8 +2644,12 @@ mod tests {
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 14] = [
+        let cases: [(&str, &mut dyn Voice, f32); 18] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
+            ("bomber hit", &mut bomber_hit(), 1.4),
+            ("pod hit", &mut pod_hit(), 1.0),
+            ("baiter hit", &mut baiter_hit(), 1.3),
+            ("lander hit (candidate)", &mut lander_hit(), 0.8),
             ("smart bomb", &mut SmartBomb::new(), 3.0),
             ("hyperspace", &mut Hyperspace::new(), 0.7),
             ("grab", &mut grab(), 1.0),
@@ -2544,6 +2691,37 @@ mod tests {
             for x in s {
                 assert!(x.is_finite(), "{name} emitted {x}");
             }
+        }
+    }
+
+    /// How long a one-shot runs before it retires itself, in seconds.
+    fn run_length(v: &mut dyn Voice) -> f32 {
+        v.retrigger(1.0, 1.0);
+        let mut block = [0.0f32; 256];
+        let mut n = 0usize;
+        while v.alive() && n < (10.0 * SR) as usize {
+            v.render(&mut block, VoiceParams::SILENT, SR);
+            n += block.len();
+        }
+        n as f32 / SR
+    }
+
+    /// ★★ EVERY HIT RUNS AS LONG AS THE ORIGINAL'S (W5), measured by
+    /// running the sound ROM in the emulator: HBDV 1.22 s, PROTV 1.085 s,
+    /// HBEV ~0.6 s; the Pod's 5.3 s toll is cut at the game's 768 ms.
+    /// ⚠️ PROTV IS THE CPU-GAP GUARD: without the silences while the
+    /// board rewrites its wave it runs 0.59 s, and this fails.
+    #[test]
+    fn every_hit_runs_as_long_as_the_original() {
+        let cases: [(&str, &mut dyn Voice, f32, f32); 4] = [
+            ("bomber", &mut bomber_hit(), 1.15, 1.27),
+            ("baiter/swarmer", &mut baiter_hit(), 1.03, 1.13),
+            ("lander (candidate)", &mut lander_hit(), 0.50, 0.66),
+            ("pod", &mut pod_hit(), 0.76, 0.78),
+        ];
+        for (name, v, lo, hi) in cases {
+            let t = run_length(v);
+            assert!((lo..=hi).contains(&t), "{name} hit ran {t:.3} s, want {lo}..{hi}");
         }
     }
 

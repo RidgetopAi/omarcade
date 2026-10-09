@@ -244,6 +244,11 @@ struct Warden {
     warp: SoundId,
     boom: SoundId,
     mutant_boom: SoundId,
+    /// ★ W5: every other enemy dies its own way, as in the original.
+    bomber_hit: SoundId,
+    pod_hit: SoundId,
+    /// The Baiter's and the Swarmer's — the original shares one (PROTV).
+    baiter_hit: SoundId,
     ship_boom: SoundId,
     person_boom: SoundId,
     bomb_sound: SoundId,
@@ -298,6 +303,9 @@ struct Warden {
     // lost a life".
     lander_killed_this_frame: bool,
     mutant_killed_this_frame: bool,
+    bomber_killed_this_frame: bool,
+    pod_killed_this_frame: bool,
+    baiter_killed_this_frame: bool,
     person_killed_this_frame: bool,
     rescued_this_frame: bool,
     set_down_this_frame: bool,
@@ -318,6 +326,9 @@ struct Warden {
 struct Voices {
     lander: SoundId,
     mutant: SoundId,
+    bomber_hit: SoundId,
+    pod_hit: SoundId,
+    baiter_hit: SoundId,
     ship: SoundId,
     person: SoundId,
     /// ★ The smart bomb: everything on screen going at once.
@@ -388,6 +399,9 @@ impl Warden {
             warp,
             boom: voices.lander,
             mutant_boom: voices.mutant,
+            bomber_hit: voices.bomber_hit,
+            pod_hit: voices.pod_hit,
+            baiter_hit: voices.baiter_hit,
             ship_boom: voices.ship,
             person_boom: voices.person,
             bomb_sound: voices.smart_bomb,
@@ -411,6 +425,9 @@ impl Warden {
             fired_this_frame: false,
             lander_killed_this_frame: false,
             mutant_killed_this_frame: false,
+            bomber_killed_this_frame: false,
+            pod_killed_this_frame: false,
+            baiter_killed_this_frame: false,
             person_killed_this_frame: false,
             rescued_this_frame: false,
             set_down_this_frame: false,
@@ -980,9 +997,7 @@ impl Warden {
         };
         let points = self.enemies.kill(target);
         self.add_score(points, None);
-        // Each dies in its own colours. ⚠️ The Baiter's and Bomber's own
-        // hit voices are W5's (the original gives every type its own);
-        // until then they borrow the Lander's.
+        // Each dies in its own colours, and (W5) in its own voice.
         match kind {
             enemy::Kind::Lander | enemy::Kind::Mutant => self.effects.explode_lander(lx, ly, lvx),
             enemy::Kind::Baiter => self.effects.explode_baiter(lx, ly, lvx),
@@ -990,10 +1005,12 @@ impl Warden {
             enemy::Kind::Pod => self.effects.explode_pod(lx, ly, lvx),
             enemy::Kind::Swarmer => self.effects.explode_swarmer(lx, ly, lvx),
         }
-        if kind == enemy::Kind::Mutant {
-            self.mutant_killed_this_frame = true;
-        } else {
-            self.lander_killed_this_frame = true;
+        match kind {
+            enemy::Kind::Lander => self.lander_killed_this_frame = true,
+            enemy::Kind::Mutant => self.mutant_killed_this_frame = true,
+            enemy::Kind::Bomber => self.bomber_killed_this_frame = true,
+            enemy::Kind::Pod => self.pod_killed_this_frame = true,
+            enemy::Kind::Baiter | enemy::Kind::Swarmer => self.baiter_killed_this_frame = true,
         }
     }
 
@@ -1215,6 +1232,9 @@ impl Game for Warden {
         self.fired_this_frame = false;
         self.lander_killed_this_frame = false;
         self.mutant_killed_this_frame = false;
+        self.bomber_killed_this_frame = false;
+        self.pod_killed_this_frame = false;
+        self.baiter_killed_this_frame = false;
         self.person_killed_this_frame = false;
         self.rescued_this_frame = false;
         self.set_down_this_frame = false;
@@ -1246,6 +1266,18 @@ impl Game for Warden {
         }
         if self.mutant_killed_this_frame {
             audio.play(self.mutant_boom);
+        }
+        // ★ W5, THE ORIGINAL'S OWN DEATHS (vsndrm1.src): a Bomber's
+        // falling zip repeated (HBDV), a Pod's bell (BBSV), a Baiter's or
+        // Swarmer's torn rising wail (PROTV).
+        if self.bomber_killed_this_frame {
+            audio.play(self.bomber_hit);
+        }
+        if self.pod_killed_this_frame {
+            audio.play(self.pod_hit);
+        }
+        if self.baiter_killed_this_frame {
+            audio.play(self.baiter_hit);
         }
         if self.person_killed_this_frame {
             audio.play(self.person_boom);
@@ -1389,6 +1421,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let voices = Voices {
         lander: audio.register_sound(Box::new(sound::Boom::new())),
         mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
+        bomber_hit: audio.register_sound(Box::new(sound::bomber_hit())),
+        pod_hit: audio.register_sound(Box::new(sound::pod_hit())),
+        baiter_hit: audio.register_sound(Box::new(sound::baiter_hit())),
         ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
         person: audio.register_sound(Box::new(sound::PersonBoom::new())),
         smart_bomb: audio.register_sound(Box::new(sound::SmartBomb::new())),
@@ -1428,6 +1463,9 @@ mod tests {
         let voices = Voices {
             lander: audio.register_sound(Box::new(sound::Boom::new())),
             mutant: audio.register_sound(Box::new(sound::MutantBoom::new())),
+            bomber_hit: audio.register_sound(Box::new(sound::bomber_hit())),
+            pod_hit: audio.register_sound(Box::new(sound::pod_hit())),
+            baiter_hit: audio.register_sound(Box::new(sound::baiter_hit())),
             ship: audio.register_sound(Box::new(sound::ShipBoom::new())),
             person: audio.register_sound(Box::new(sound::PersonBoom::new())),
             smart_bomb: audio.register_sound(Box::new(sound::SmartBomb::new())),
@@ -1538,6 +1576,40 @@ mod tests {
                 td as f32 / 20.0,
                 cl.len()
             );
+        }
+    }
+
+    /// ★★ W5: EVERY ENEMY DIES IN ITS OWN VOICE, through the one
+    /// `destroy_enemy` the laser and the hull both use. Exactly one death
+    /// flag per kind — the Baiter and Swarmer share the original's PROTV.
+    #[test]
+    fn every_kind_dies_in_its_own_voice() {
+        use enemy::{Enemy, Kind, Phase};
+        let cases: [(Kind, Enemy); 6] = [
+            (Kind::Lander, Enemy::lander(500.0, 400.0, 0.0)),
+            (Kind::Mutant, Enemy::mutant(500.0, 400.0)),
+            (Kind::Bomber, Enemy::bomber(500.0, 400.0, 0.0, 400.0)),
+            (Kind::Pod, Enemy::pod(500.0, 400.0, 0.0, 0.0)),
+            (Kind::Baiter, Enemy::baiter(500.0, 400.0)),
+            (Kind::Swarmer, Enemy::swarmer(500.0, 400.0, 0.0, 0.0, 0.0, 0.0)),
+        ];
+        for (kind, mut e) in cases {
+            let mut g = game();
+            e.phase = Phase::Hovering;
+            g.enemies.spawn(e);
+            let i = g.enemies.len() - 1;
+            g.destroy_enemy(i);
+            let flags = [
+                (Kind::Lander, g.lander_killed_this_frame),
+                (Kind::Mutant, g.mutant_killed_this_frame),
+                (Kind::Bomber, g.bomber_killed_this_frame),
+                (Kind::Pod, g.pod_killed_this_frame),
+                (Kind::Baiter, g.baiter_killed_this_frame),
+            ];
+            let want = if kind == Kind::Swarmer { Kind::Baiter } else { kind };
+            for (k, set) in flags {
+                assert_eq!(set, k == want, "{kind:?} died: the {k:?} voice flag was {set}");
+            }
         }
     }
 

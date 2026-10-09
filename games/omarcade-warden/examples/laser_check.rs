@@ -84,13 +84,19 @@ fn main() {
 
     // ★ THE PEOPLE'S SOUNDS AND THE ENEMY'S GUNS — each A/B'd against
     // the emulated ROM render named in sound.rs.
-    let events: [(&str, &mut dyn Voice, f32); 6] = [
+    let events: [(&str, &mut dyn Voice, f32); 10] = [
         ("grab", &mut sound::grab(), 1.2),
         ("catch", &mut sound::catch(), 0.8),
         ("setdown", &mut sound::set_down(), 3.0),
         ("fusion", &mut sound::fusion(), 1.4),
         ("lander-shot", &mut sound::lander_shot(), 0.4),
         ("mutant-shot", &mut sound::mutant_shot(), 1.0),
+        // ★ W5: every enemy dies its own way. The Lander's HBEV is an A/B
+        // candidate against Brian's Boom (boom-lander.wav), not wired.
+        ("hit-bomber", &mut sound::bomber_hit(), 1.4),
+        ("hit-pod", &mut sound::pod_hit(), 1.0),
+        ("hit-baiter-swarmer", &mut sound::baiter_hit(), 1.3),
+        ("hit-lander-hbev-candidate", &mut sound::lander_hit(), 0.8),
     ];
     for (name, v, secs) in events {
         let s = render(v, secs, &[0.0]);

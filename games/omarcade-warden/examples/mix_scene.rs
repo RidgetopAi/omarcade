@@ -16,8 +16,13 @@
 //!     the original's sounds drove one full-scale DAC, so their relative
 //!     loudness IS its mix). ⚠️ Both are scaled to the same overall
 //!     loudness, so the louder one does not win the A/B by being louder.
-//! And it prints, for each, the peak at the default volume (0.5) and at
-//! full volume, where the mixer hard-clips at 1.0.
+//! And it prints, for each, the RAW summed peak at the default volume
+//! (0.5) and at full volume. ⚠️ This is the sum BEFORE the core mixer's
+//! limiter (LIMIT_CEILING 0.95, added in the same pass): in the game,
+//! anything listed as over 1.0 is held at the ceiling, not clipped.
+//!
+//! ★ Since the W5 level pass (Brian: "balance use original") the shipped
+//! levels ARE the original balance: the "move" column should read ~0.
 //!
 //! One voice per sound, retriggered, exactly as `register_sound` gives
 //! the game: a second Lander dying restarts the Lander voice.
@@ -174,6 +179,11 @@ fn main() {
     // Same overall loudness, so the A/B is about balance, not volume.
     let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
     let k = rms(&current) / rms(&original);
+    println!("equal-loudness scale k = {k:.4} ({:+.2} dB); final factor per voice = move × k:", db(k));
+    for ((t, _), g) in rendered.iter().zip(&gains) {
+        println!("    {:16} × {:.4}", t.name, g * k);
+    }
+    println!("    {:16} × {:.4}", "thrust", thrust_gain * k);
     for v in original.iter_mut() {
         *v *= k;
     }
@@ -193,13 +203,13 @@ fn main() {
             }
         }
         println!(
-            "{name}: peak {:.2} at default volume, {:.2} at full ({:.2}% of samples would clip)",
+            "{name}: raw peak {:.2} at default volume, {:.2} at full ({:.2}% of samples over 1.0 — the core limiter holds these at 0.95)",
             peak * DEFAULT_MASTER,
             peak,
             clipped * 100.0
         );
         for (t, n) in bins {
-            println!("    clips at full volume: {t:.1}–{:.1} s, {n} samples", t + 0.5);
+            println!("    over 1.0 at full volume (limited): {t:.1}–{:.1} s, {n} samples", t + 0.5);
         }
         // Written at the default volume, as a first launch would play it.
         let at_default: Vec<f32> = m.iter().map(|v| v * DEFAULT_MASTER).collect();

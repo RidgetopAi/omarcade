@@ -385,7 +385,7 @@ const MUTANT_BOOM_DECAY: f32 = 2.000;
 /// and shooting a person is a mistake, so the mistake must never be the
 /// more satisfying sound. 0.45 renders 0.395 and changes nothing else
 /// about the voice. ⇒ `the_four_deaths_are_distinguishable` caught this.
-const MUTANT_BOOM_LEVEL: f32 = 0.450;
+const MUTANT_BOOM_LEVEL: f32 = 0.642;
 
 pub struct MutantBoom {
     t: f32,
@@ -529,7 +529,7 @@ const WARP_LEN: f32 = 0.575;
 /// arriving swells until it is there.
 const WARP_ATTACK: f32 = 0.380;
 const WARP_DECAY: f32 = 1.000;
-const WARP_LEVEL: f32 = 0.510;
+const WARP_LEVEL: f32 = 0.513;
 
 /// A Lander materialising: noise and crackle through a bandpass
 /// sweeping UP.
@@ -794,7 +794,7 @@ const THRUST_WOBBLE_LEVEL: f32 = 0.25;
 /// pending Brian flying it. Set below the laser's measured 0.76 on
 /// purpose: a HELD sound fatigues far faster than a one-shot, and
 /// thrust is held for most of a game. ⇒ Revisit it BY FLYING IT.
-const THRUST_LEVEL: f32 = 1.632;
+const THRUST_LEVEL: f32 = 1.220;
 
 /// Below this much exhaust the voice writes silence.
 ///
@@ -1009,8 +1009,8 @@ const DC_BLOCK_HZ: f32 = 20.0;
 /// Output level. ⚠️ NOT THE PEAK — the crackle is full-scale 1-bit noise
 /// and the DC block overshoots its edges. Rendered and measured: see
 /// `no_voice_clips_at_full_gain`.
-const BOMB_LEVEL: f32 = 0.42;
-const SHIP_DEATH_LEVEL: f32 = 0.42;
+const BOMB_LEVEL: f32 = 0.233;
+const SHIP_DEATH_LEVEL: f32 = 0.259;
 
 /// ★ W5: A PERSON YOU SHOT (AHSND → LITE): one crackle, its clock falling
 /// ~18.6 kHz → 573 Hz over 0.70 s. Replaced a placeholder (W5).
@@ -1018,7 +1018,7 @@ const SHIP_DEATH_LEVEL: f32 = 0.42;
 /// it is the sound of a mistake — so it must stay QUIETER THAN A LANDER
 /// DYING (`the_four_deaths_are_distinguishable`). At 0.25 it measured
 /// RMS 0.24 against HBEV's 0.17 and broke that; 0.16 puts it under.
-const PERSON_CRACKLE_LEVEL: f32 = 0.16;
+const PERSON_CRACKLE_LEVEL: f32 = 0.142;
 
 // ---------------------------------------------------------------------
 // The board: the parts every Williams-mechanism voice shares
@@ -1372,7 +1372,7 @@ const HYPER_IN_PER_STEP: u8 = 9;
 
 /// ⚠️ NOT THE PEAK; rendered and measured in the clip test. Under the
 /// bomb's: a jump is a manoeuvre, not a detonation.
-const HYPER_LEVEL: f32 = 0.30;
+const HYPER_LEVEL: f32 = 0.428;
 
 #[derive(Debug, Clone, Copy)]
 enum HyperStage {
@@ -2170,20 +2170,29 @@ fn fusion_lo(n: u8) -> u8 {
 
 /// Levels. ⚠️ NOT PEAKS — each is rendered and measured in
 /// `no_voice_clips_at_full_gain`.
-const GRAB_LEVEL: f32 = 0.34;
-const CATCH_LEVEL: f32 = 0.40;
-const LANDER_SHOT_LEVEL: f32 = 0.26;
-const MUTANT_SHOT_LEVEL: f32 = 0.24;
-const SWARMER_SHOT_LEVEL: f32 = 0.24;
-const GAME_START_LEVEL: f32 = 0.30;
-const SET_DOWN_LEVEL: f32 = 0.30;
-const EXTRA_LIFE_LEVEL: f32 = 0.30;
-const FUSION_LEVEL: f32 = 0.26;
-const SCREAM_LEVEL: f32 = 0.30;
-const BOMBER_HIT_LEVEL: f32 = 0.30;
-const POD_HIT_LEVEL: f32 = 0.30;
-const BAITER_HIT_LEVEL: f32 = 0.30;
-const LANDER_HIT_LEVEL: f32 = 0.30;
+///
+/// ★★ EVERY LEVEL IN THIS FILE WAS SET BY THE W5 LEVEL PASS (2026-10-09,
+/// Brian: "balance use original"): each voice sits where the ORIGINAL put
+/// it relative to its laser, measured from the ROM renders (one full-
+/// scale DAC, so their relative loudness IS its mix), at the shipped
+/// mix's overall loudness. Brian's Mutant boom and our hyperspace (no
+/// original to follow) kept their balance; a shot person stays under a
+/// Lander's death (his rule). To re-run: `--example mix_scene`, whose
+/// "move" column should read ~0 for every voice.
+const GRAB_LEVEL: f32 = 0.280;
+const CATCH_LEVEL: f32 = 0.200;
+const LANDER_SHOT_LEVEL: f32 = 0.253;
+const MUTANT_SHOT_LEVEL: f32 = 0.244;
+const SWARMER_SHOT_LEVEL: f32 = 0.233;
+const GAME_START_LEVEL: f32 = 0.284;
+const SET_DOWN_LEVEL: f32 = 0.248;
+const EXTRA_LIFE_LEVEL: f32 = 0.255;
+const FUSION_LEVEL: f32 = 0.222;
+const SCREAM_LEVEL: f32 = 0.270;
+const BOMBER_HIT_LEVEL: f32 = 0.249;
+const POD_HIT_LEVEL: f32 = 0.271;
+const BAITER_HIT_LEVEL: f32 = 0.261;
+const LANDER_HIT_LEVEL: f32 = 0.272;
 
 /// A single GWAVE preset, played once.
 pub struct GwaveOnce {
@@ -2402,7 +2411,7 @@ impl Script for Sequence {
 /// tail. Laser noise, crackle, the explosion restarted once — ~3 s.
 /// research-sound.md §2, "Planet explodes".
 const PLANET: &[(Routine, u8, u8)] = &[(Routine::Turbo, 1, 4), (Routine::Lite, 2, 6), (Routine::Cannon, 2, 10)];
-const PLANET_LEVEL: f32 = 0.42;
+const PLANET_LEVEL: f32 = 0.262;
 
 /// The planet exploding (TBSND).
 pub fn planet() -> BoardVoice<Sequence> {
@@ -2418,9 +2427,9 @@ pub struct TurboLaser {
     run: Turbo,
 }
 const TURBO_LASER_CUT: f32 = 0.768;
-/// Matched to the Zap by measurement for a fair A/B: five shots at the fire
-/// interval, RMS over 0.5 s — Zap 0.174, TURBO 0.174 at this level.
-const TURBO_LASER_LEVEL: f32 = 0.19;
+/// Set by the W5 level pass (see the levels note by GRAB_LEVEL); it was
+/// 0.19, matched to the Zap for the A/B.
+const TURBO_LASER_LEVEL: f32 = 0.271;
 
 impl Script for TurboLaser {
     fn begin(&mut self, _b: &mut Board) {
@@ -2916,6 +2925,56 @@ mod tests {
     fn the_laser_is_cut_at_the_games_hold() {
         let t = run_length(&mut turbo_laser());
         assert!((0.76..=0.78).contains(&t), "laser ran {t:.3} s");
+    }
+
+    /// Loudness as the W5 level pass measures it: the loudest 300 ms RMS
+    /// of one trigger.
+    fn loudness(v: &mut dyn Voice) -> f32 {
+        v.retrigger(1.0, 1.0);
+        let x = render_all(v, 3.5);
+        let w = (0.3 * SR) as usize;
+        let hop = (0.05 * SR) as usize;
+        let mut best = 0.0f32;
+        let mut k = 0;
+        while k + w <= x.len() {
+            let r = (x[k..k + w].iter().map(|v| v * v).sum::<f32>() / w as f32).sqrt();
+            best = best.max(r);
+            k += hop;
+        }
+        best
+    }
+
+    /// ★★ THE ORIGINAL'S BALANCE (W5 level pass; Brian: "balance use
+    /// original"). Each voice's loudness relative to the laser, as the
+    /// ROM renders measure it on the real board, within 1 dB. A level
+    /// edited by itself — the usual way a mix drifts — fails here.
+    #[test]
+    fn every_voice_sits_where_the_original_put_it() {
+        let laser = loudness(&mut turbo_laser());
+        let cases: [(&str, &mut dyn Voice, f32); 18] = [
+            ("game start", &mut game_start(), -3.4),
+            ("warp", &mut Warp::new(), -0.4),
+            ("lander hit", &mut lander_hit(), -3.8),
+            ("bomber hit", &mut bomber_hit(), -0.3),
+            ("pod hit", &mut pod_hit(), -2.1),
+            ("baiter hit", &mut baiter_hit(), -1.8),
+            ("lander shot", &mut lander_shot(), -3.5),
+            ("mutant shot", &mut mutant_shot(), -4.8),
+            ("swarmer shot", &mut swarmer_shot(), -5.0),
+            ("grab", &mut grab(), -3.6),
+            ("catch", &mut catch(), -4.6),
+            ("set down", &mut set_down(), -0.3),
+            ("fusion", &mut fusion(), -1.1),
+            ("extra life", &mut extra_life_short(), 0.0),
+            ("person crackle (Brian's rule: under a Lander)", &mut person_crackle(), -4.8),
+            ("smart bomb", &mut SmartBomb::new(), -0.4),
+            ("ship death", &mut SmartBomb::ship_death(), -0.4),
+            ("planet", &mut planet(), -0.4),
+        ];
+        for (name, v, want) in cases {
+            let got = 20.0 * (loudness(v) / laser).log10();
+            assert!((got - want).abs() <= 1.0, "{name} sits {got:+.1} dB from the laser; the original put it at {want:+.1}");
+        }
     }
 
     /// ★ THE SWARMER'S SHOT RUNS AS LONG AS ED12 (0.60 s by the emulator).

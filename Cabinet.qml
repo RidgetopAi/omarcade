@@ -130,7 +130,79 @@ Item {
 
   function scan() {
     if (!scanProc.running) scanProc.running = true
+    if (!shippedProc.running) shippedProc.running = true
   }
+
+  // ---- what this copy of the suite ships ------------------------------
+  //
+  // ⚠️ `omarchy plugin update` PULLS NEW SOURCE AND BUILDS NOTHING. So
+  // when the suite gains a game, everyone who already had it keeps the
+  // old binaries, and a cabinet that only offers a build when it is
+  // EMPTY never offers one again — the new game simply never appears.
+  // Warden (0.2.0) was the first game to arrive that way.
+  //
+  // So the cabinet also asks what the suite SHIPS, and offers to build
+  // whatever is shipped but not installed. The answer comes from the
+  // launcher entries in packaging/: install.sh refuses to install a game
+  // without one, so the set of .desktop files is the set of GAMES, and
+  // each carries the game's display name — the only name a game that has
+  // never been played (so has written no score file) can show.
+  //
+  // [{ id: "omarcade-warden", name: "Warden" }, …], sorted by id.
+  property var shipped: []
+
+  Process {
+    id: shippedProc
+    running: false
+    workingDirectory: root.pluginDir
+    command: ["sh", "-c",
+      "for f in packaging/omarcade-*.desktop; do " +
+      "[ -f \"$f\" ] || continue; " +
+      "printf '%s\\t%s\\n' \"$(basename \"$f\" .desktop)\" " +
+      "\"$(sed -n 's/^Name=//p' \"$f\" | head -n 1)\"; done"]
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyShipped(text)
+    }
+  }
+
+  function applyShipped(output) {
+    var found = []
+    var lines = String(output || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var parts = lines[i].split("\t")
+      var id = parts[0].trim()
+      if (id.length === 0) continue
+      // The launcher says "Omarcade Volley" because an app menu holds
+      // other things called Volley. Inside the cabinet the suite name
+      // goes without saying, and in a list it reads as a fifth game.
+      var name = (parts[1] || "").trim().replace(/^Omarcade\s+/, "")
+      found.push({ id: id, name: name.length ? name : root.prettify(id) })
+    }
+    found.sort(function (a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0 })
+    if (JSON.stringify(found) !== JSON.stringify(root.shipped)) root.shipped = found
+  }
+
+  // Shipped but not installed. Empty on a fresh install — the empty
+  // cabinet's own offer covers that — and empty until both scans land.
+  readonly property var missing: {
+    if (root.games.length === 0) return []
+    var out = []
+    for (var i = 0; i < root.shipped.length; i++)
+      if (root.games.indexOf(root.shipped[i].id) < 0) out.push(root.shipped[i])
+    return out
+  }
+
+  // "Warden" · "Warden and Comet" · "A, B and C".
+  function namesOf(list) {
+    var names = list.map(function (g) { return g.name })
+    if (names.length <= 1) return names.join("")
+    return names.slice(0, -1).join(", ") + " and " + names[names.length - 1]
+  }
+
+  readonly property var countWords:
+    ["NO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE"]
 
   // ---- installing the games ------------------------------------------
   //
@@ -499,7 +571,11 @@ Item {
             if (pips.visible)     { h += pips.height;     n += 1 }
             if (panel.visible)    { h += panel.height;    n += 1 }
             if (prompt.visible)   { h += prompt.height;   n += 1 }
+            if (newGameOffer.visible) { h += newGameOffer.height; n += 1 }
             if (ruleOffer.visible) { h += ruleOffer.height; n += 1 }
+            // ⚠️ A NEW PART BELOW THE SCREEN MUST BE COUNTED HERE, or it
+            // pushes the screen off the bottom — the window rule offer
+            // and the new-game offer both had to be added by hand.
             // n parts, plus the screen itself, gives n gaps between them.
             return h + baseSpacing * n
           }
@@ -675,7 +751,11 @@ Item {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: "THREE GAMES, ONE CABINET"
+                // Counted from what the suite ships, so it cannot go
+                // stale the way "THREE GAMES" did when Warden arrived.
+                text: root.shipped.length > 0 && root.shipped.length < root.countWords.length
+                      ? root.countWords[root.shipped.length] + " GAMES, ONE CABINET"
+                      : "ONE CABINET"
                 color: root.accent
                 font.family: Style.font.family
                 font.pixelSize: Style.font.subtitle
@@ -704,9 +784,11 @@ Item {
                     return root.installError.length ? root.installError
                                                     : "The build did not finish."
                   default:
-                    return "Pixel Break, Volley, Omaprix and Warden aren't "
-                         + "built yet. It takes a couple of minutes, needs no "
-                         + "root, and writes nothing outside your home."
+                    return (root.shipped.length
+                              ? root.namesOf(root.shipped) + " aren't built yet. "
+                              : "The games aren't built yet. ")
+                         + "It takes a couple of minutes, needs no root, and "
+                         + "writes nothing outside your home."
                   }
                 }
               }
@@ -1070,6 +1152,87 @@ Item {
               running: window.visible
               NumberAnimation { from: 0.45; to: 1.0; duration: 1400; easing.type: Easing.InOutSine }
               NumberAnimation { from: 1.0; to: 0.45; duration: 1400; easing.type: Easing.InOutSine }
+            }
+          }
+
+          // ---- A NEW GAME TO BUILD ---------------------------------------
+          //
+          // The suite gained a game this copy has not built (see
+          // `shipped`). Below the prompt, like the window rule: the games
+          // already installed still play, so this must not get in their
+          // way. Gone once the build lands and the rescan finds it.
+          //
+          // ⚠️ The same install.sh and the same states as the empty
+          // cabinet's button. A rebuild recompiles every game, not only the
+          // new one — install.sh is idempotent and that is the path it
+          // has been tested on; a second, partial build path is a second
+          // thing to keep working.
+          Column {
+            id: newGameOffer
+            width: parent.width
+            spacing: Style.space(4)
+            visible: root.missing.length > 0
+
+            readonly property bool busy:
+              root.installState === "installing" || root.installState === "checking"
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+              color: Qt.rgba(root.foreground.r, root.foreground.g,
+                             root.foreground.b, 0.6)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              text: {
+                switch (root.installState) {
+                case "needsRust":
+                  return "Building needs Rust. Install it and come back:"
+                case "checking":
+                  return "Looking for a Rust toolchain…"
+                case "installing":
+                  return root.installLine.length ? root.installLine : "Working…"
+                case "failed":
+                  return root.installError.length ? root.installError
+                                                  : "The build did not finish."
+                default:
+                  return "New in this update: " + root.namesOf(root.missing)
+                       + ". Building takes a couple of minutes."
+                }
+              }
+            }
+
+            TextEdit {
+              visible: root.installState === "needsRust"
+              anchors.horizontalCenter: parent.horizontalCenter
+              readOnly: true
+              selectByMouse: true
+              text: root.rustCommand
+              color: root.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              anchors.horizontalCenter: parent.horizontalCenter
+              visible: !newGameOffer.busy && root.installState !== "needsRust"
+              text: root.installState === "failed"
+                    ? "TRY AGAIN"
+                    : root.missing.length === 1
+                      ? "BUILD " + root.missing[0].name.toUpperCase()
+                      : "BUILD THE NEW GAMES"
+              color: root.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: Style.space(1)
+
+              MouseArea {
+                anchors.fill: parent
+                anchors.margins: -Style.space(8)
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.beginInstall()
+              }
             }
           }
 

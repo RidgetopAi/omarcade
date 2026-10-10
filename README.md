@@ -6,8 +6,9 @@ Not emulation and not clones of anyone's ROMs — small games written from
 scratch in Rust, drawing straight into a pixel buffer, that read your active
 Omarchy theme and idle at roughly nothing when you're not playing.
 
-**Status:** early, but real. Three games (Pixel Break, Volley and Omaprix, a
-pseudo-3D racer) are playable and tested, the shared engine underneath them
+**Status:** early, but real. Four games (Pixel Break, Volley, Omaprix, a
+pseudo-3D racer, and Warden, a side-scrolling shooter) are playable and
+tested, the shared engine underneath them
 is the actual work, and the cabinet — a marquee in the Omarchy bar that opens
 into an upright arcade machine you walk with the arrow keys — is live.
 
@@ -29,7 +30,7 @@ omarchy plugin add https://github.com/RidgetopAi/omarcade.git --enable
 ```
 
 That puts the cabinet in your bar. Open it and it will offer to build the
-games — three Rust binaries, a couple of minutes, no root and nothing outside
+games — four Rust binaries, a couple of minutes, no root and nothing outside
 your own home directory.
 
 You need [Rust](https://rustup.rs) for that build (`sudo pacman -S rust` on
@@ -46,6 +47,15 @@ cd omarcade
 Same build, run directly. It installs the binaries to `~/.local/bin` and adds
 a desktop entry per game so they show up in your app launcher.
 
+### Upgrading
+
+`omarchy plugin update` brings the cabinet up to date but builds nothing, so
+a new game in the suite does not appear on its own. Rebuild to pick it up:
+
+```bash
+~/.config/omarchy/plugins/ridgetopai.omarcade/packaging/install.sh
+```
+
 ### Removing it
 
 ```bash
@@ -55,7 +65,7 @@ a desktop entry per game so they show up in your app launcher.
 That takes out the games, their launcher entries, the icon and the
 cabinet — everything Omarcade installed. Run it before
 `omarchy plugin remove`, not after: the uninstaller lives *inside* the
-plugin directory, so removing the plugin first leaves three binaries in
+plugin directory, so removing the plugin first leaves four binaries in
 `~/.local/bin` with nothing left to remove them.
 
 If you installed by cloning the repo yourself, run
@@ -170,6 +180,41 @@ blurred at start-up — so the game sits under the desktop you already chose.*
 
 ---
 
+## Warden
+
+```bash
+omarcade-warden
+```
+
+| Key | Action |
+| --- | --- |
+| `←` `→` | Face left / right |
+| `↑` `↓` | Climb / dive |
+| `T` | Thrust |
+| `Space` | Fire (hold it) |
+| `B` | Smart bomb |
+| `H` | Hyperspace |
+| `P` | Pause |
+| `Enter` | Play again, once the game is over |
+| `Esc` | Quit |
+
+A side-scrolling shooter over a planet that wraps around. Landers drift
+down to the surface and carry its people away; one that reaches the top
+of the sky with its passenger becomes a mutant that hunts you. Shoot the
+Lander and catch the person as they fall, or set them down safely.
+
+Lose every person and the planet goes with them — and every Lander left
+mutates at once. Bombers lay mines, Pods burst into Swarmers, and a
+Baiter comes for you if a wave drags on. The scanner along the top shows
+the whole world at once, so you can see where you're needed.
+
+![Warden](docs/cabinet/warden.png)
+
+*Warden: a Lander mid-abduction, another on its way, and one person already
+riding to safety under the ship.*
+
+---
+
 ## The cabinet
 
 Installing the plugin puts a marquee in your Omarchy bar showing the best
@@ -244,6 +289,16 @@ games/omarcade-racer/src/
   structures.rs / scenery.rs   gantries, billboards, and what lines the track
   render.rs    the horizon, the sky, and everything between
   main.rs      wiring
+games/omarcade-warden/src/
+  flight.rs    the ship: thrust, drag, facing, the camera's lead
+  world.rs     a planet that wraps, the mountains, the one distance function
+  enemy.rs     Landers, Mutants, Baiters, Bombers, Pods and Swarmers
+  humanoid.rs  the people: walking, carried off, falling, caught
+  waves.rs     what arrives when, and how much harder each wave gets
+  scanner.rs   the whole world in a strip
+  sound.rs     every voice, synthesised
+  render.rs    the world, the HUD and the scanner
+  main.rs      wiring
 Marquee.qml / Cabinet.qml / ScoreRecord.qml    the bar widget and the cabinet
 ```
 
@@ -260,7 +315,7 @@ live inside the bar — only the cabinet can.
 ## Development
 
 ```bash
-cargo test --workspace     # 804 tests
+cargo test --workspace     # 1046 tests
 cargo clippy --workspace
 cargo run -p omarcade-pixel-break
 ```
@@ -287,6 +342,8 @@ cargo run -p omarcade-volley --example dump_frame -- rally out.png
 #   scenes: select | serve | rally | matchpoint | won | lost
 cargo run -p omarcade-racer --example dump_frame -- drive out.png
 #   scenes: drive | race | qualify | grid | crash | clean
+cargo run -p omarcade-warden --example dump_frame -- rescue out.png
+#   scenes: rescue | combat | laser | mutants | smartbomb | hyperspace | gameover | …
 ```
 
 These are deterministic and run in milliseconds. They're the reason

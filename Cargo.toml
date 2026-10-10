@@ -5,7 +5,7 @@ members = ["core", "games/*"]
 # Shared metadata. Members inherit with `version.workspace = true` etc.,
 # so a release bump happens in exactly one place.
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"

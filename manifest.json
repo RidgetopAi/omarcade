@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "ridgetopai.omarcade",
   "name": "Omarcade",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Brian Ridgetopai",
-  "description": "Three original arcade games and a cabinet to keep them in — Pixel Break, Volley and Omaprix, native to Omarchy.",
+  "description": "Four original arcade games and a cabinet to keep them in — Pixel Break, Volley, Omaprix and Warden, native to Omarchy.",
   "homepage": "https://github.com/RidgetopAi/omarcade",
   "issues": "https://github.com/RidgetopAi/omarcade/issues",
   "kinds": [

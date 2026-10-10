@@ -151,6 +151,8 @@
     </div>
   </div>
   <h2 style="margin:0 14px 8px">Export
+    <input type="text" id="vname" value="Zap" spellcheck="false" size="14"
+           title="The voice's Rust name: the struct, and the prefix of its constants">
     <button class="ghost" id="b-copy">copy</button>
     <button class="ghost" id="b-import">import</button></h2>
   <textarea id="out" spellcheck="false"></textarea>
@@ -509,11 +511,26 @@ function fft(re, im) {
 // games/omarcade-warden/src/sound.rs and it compiles.
 // ─────────────────────────────────────────────────────────────────────
 
+/**
+ * The voice's name as a Rust type: UpperCamelCase, letters and digits
+ * only, starting with a letter. ★ Every export used to say `Zap` — the
+ * name field this read from had never been put on the page — so a new
+ * voice pasted into sound.rs collided with the laser.
+ * "mutant boom" → MutantBoom, "2nd hit" → V2ndHit, "" → Zap.
+ */
+function voiceName(raw) {
+  const words = String(raw || '').split(/[^A-Za-z0-9]+/).filter(Boolean);
+  let n = words.map(w => w[0].toUpperCase() + w.slice(1)).join('');
+  if (!n) return 'Zap';
+  if (!/^[A-Za-z]/.test(n)) n = 'V' + n;
+  return n;
+}
+
 function exportRust(st) {
   const live = st.oscs.filter(o => o.on);
   if (!live.length) return '// No oscillators are on — nothing to export.';
 
-  const name = (document.getElementById('vname')?.value || 'Zap').trim() || 'Zap';
+  const name = voiceName(document.getElementById('vname')?.value);
   const f = st.filter;
   const crackles = live.filter(o => o.wave === 'crackle');
   const usesNoise = live.some(o => o.wave === 'noise' || o.wave === 'crackle');
@@ -856,7 +873,7 @@ Object.keys(PRESETS).forEach(k => {
   pbox.appendChild(b);
 });
 
-['len', 'atk', 'dec', 'lvl', 'fhi', 'flo', 'fq'].forEach(id =>
+['len', 'atk', 'dec', 'lvl', 'fhi', 'flo', 'fq', 'vname'].forEach(id =>
   document.getElementById(id).addEventListener('input', () => refresh(false)));
 document.getElementById('fmode').addEventListener('change', () => refresh(false));
 
@@ -888,6 +905,9 @@ document.getElementById('b-import').onclick = () => {
     return;
   }
   state = normalise(st);
+  // ★ Keep the voice's own name: a pasted struct says what it is.
+  const named = box.value.match(/pub struct ([A-Za-z][A-Za-z0-9]*)/);
+  if (named) document.getElementById('vname').value = named[1];
   document.getElementById('len').value = state.len * 1000;
   document.getElementById('atk').value = state.attack * 100;
   document.getElementById('dec').value = state.decay;

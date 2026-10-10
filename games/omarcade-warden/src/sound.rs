@@ -499,16 +499,21 @@ impl Voice for MutantBoom {
 /// the worst sound in the game — the longest, the lowest, a slow decay
 /// that outlasts the others so it hangs there. An explosion you hear
 /// happening TO you rather than one you caused.
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 const SHIP_BOOM_LEN: f32 = 1.100;
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 const SHIP_BOOM_ATTACK: f32 = 0.010;
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 const SHIP_BOOM_DECAY: f32 = 1.200;
 /// ⚠️ 0.30, NOT the 0.42 this started at. At 0.42 the rendered peak was
 /// 1.03 — CLIPPING, because a resonant lowpass at Q 6.4 adds gain the
 /// level constant does not account for. The WAV writer clamps and would
 /// have hidden it; the mixer would not have.
 /// ⇒ ★ A `_LEVEL` CONSTANT IS NOT THE PEAK. Render and measure.
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 const SHIP_BOOM_LEVEL: f32 = 0.300;
 
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 pub struct ShipBoom {
     t: f32,
     gain: f32,
@@ -518,12 +523,14 @@ pub struct ShipBoom {
     band: f32,
 }
 
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 impl Default for ShipBoom {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 impl ShipBoom {
     pub fn new() -> Self {
         Self { t: 0.0, gain: 1.0, alive: false, phase: [0.0; 1], low: 0.0, band: 0.0 }
@@ -599,11 +606,16 @@ impl Voice for ShipBoom {
 /// exactly backwards.
 /// ⇒ So: short, thin, high, and over almost before it starts. A mistake
 /// noise, not an achievement noise.
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 const PERSON_BOOM_LEN: f32 = 0.260;
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 const PERSON_BOOM_ATTACK: f32 = 0.006;
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 const PERSON_BOOM_DECAY: f32 = 5.200;
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 const PERSON_BOOM_LEVEL: f32 = 0.180;
 
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 pub struct PersonBoom {
     t: f32,
     gain: f32,
@@ -613,12 +625,14 @@ pub struct PersonBoom {
     band: f32,
 }
 
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 impl Default for PersonBoom {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
 impl PersonBoom {
     pub fn new() -> Self {
         Self { t: 0.0, gain: 1.0, alive: false, phase: [0.0; 1], low: 0.0, band: 0.0 }
@@ -1155,9 +1169,16 @@ impl Voice for Thrust {
 /// The sound board's CPU clock: 3.579545 MHz ÷ 4.
 const WILLIAMS_CLOCK: f32 = 894_886.0;
 
-/// LITE bursts in the stutter, and how far apart (64 ms).
+/// LITE bursts in the smart bomb's stutter, and how far apart (64 ms):
+/// SBSND, repeat 6, timer 4 frames.
 const BOMB_STUTTERS: u8 = 6;
 const BOMB_STUTTER_CYCLES: f32 = 0.064 * WILLIAMS_CLOCK;
+
+/// ★ W5: THE SHIP'S DEATH IS THE SAME CHAIN, SLOWER (PDSND: LITE repeat
+/// 2, timer 8 frames, then CANNON): two crackles 128 ms apart, then the
+/// explosion's whole 2.6 s tail. ~2.8 s. ROM: 11_LITE.wav + 17_CANNON.wav.
+const DEATH_STUTTERS: u8 = 2;
+const DEATH_STUTTER_CYCLES: f32 = 0.128 * WILLIAMS_CLOCK;
 
 /// LITE and APPEAR share one routine (`LITEN`): cycles per sample are
 /// `LITE_BASE + LITE_PER_STEP × L`, and L moves by a step every few
@@ -1182,6 +1203,13 @@ const DC_BLOCK_HZ: f32 = 20.0;
 /// and the DC block overshoots its edges. Rendered and measured: see
 /// `no_voice_clips_at_full_gain`.
 const BOMB_LEVEL: f32 = 0.42;
+const SHIP_DEATH_LEVEL: f32 = 0.42;
+
+/// ★ W5: A PERSON YOU SHOT (AHSND → LITE): one crackle, its clock falling
+/// ~18.6 kHz → 573 Hz over 0.70 s. Replaces the `PersonBoom` placeholder.
+/// ⚠️ Brian's spec for this event is that it should NOT be satisfying —
+/// it is the sound of a mistake — so it sits well under the bomb.
+const PERSON_CRACKLE_LEVEL: f32 = 0.25;
 
 // ---------------------------------------------------------------------
 // The board: the parts every Williams-mechanism voice shares
@@ -1366,18 +1394,22 @@ fn park(b: &mut Board) {
 
 #[derive(Debug, Clone, Copy)]
 enum BombStage {
-    /// The crackle, on burst `n` of [`BOMB_STUTTERS`].
+    /// The crackle, on burst `n` of the stutter.
     Lite { burst: u8, routine: Liten },
     /// The explosion tail.
     Cannon(Cannon),
     Done,
 }
 
-/// The smart bomb: a stuttering crackle, then the big explosion.
+/// A stuttering crackle, then the big explosion (LITE × n, CANNON) —
+/// the original's smart bomb and, slower, its ship's death.
 pub struct SmartBomb {
     gain: f32,
     stage: BombStage,
     board: Board,
+    stutters: u8,
+    stutter_cycles: f32,
+    level: f32,
 }
 
 impl Default for SmartBomb {
@@ -1388,7 +1420,17 @@ impl Default for SmartBomb {
 
 impl SmartBomb {
     pub fn new() -> Self {
-        Self { gain: 1.0, stage: BombStage::Done, board: Board::new() }
+        Self::chain(BOMB_STUTTERS, BOMB_STUTTER_CYCLES, BOMB_LEVEL)
+    }
+
+    /// ★ W5: the ship's death (PDSND) — replaces the `ShipBoom`
+    /// placeholder.
+    pub fn ship_death() -> Self {
+        Self::chain(DEATH_STUTTERS, DEATH_STUTTER_CYCLES, SHIP_DEATH_LEVEL)
+    }
+
+    fn chain(stutters: u8, stutter_cycles: f32, level: f32) -> Self {
+        Self { gain: 1.0, stage: BombStage::Done, board: Board::new(), stutters, stutter_cycles, level }
     }
 }
 
@@ -1402,14 +1444,15 @@ impl Voice for SmartBomb {
                 continue;
             }
             let stage = &mut self.stage;
+            let (stutters, stutter_cycles) = (self.stutters, self.stutter_cycles);
             let y = self.board.sample(per_sample, r, |b| loop {
                 match stage {
                     BombStage::Lite { burst, routine } => {
                         // ★ THE STUTTER: every 64 ms the crackle restarts
                         // from its fastest clock, six times, before the
                         // explosion takes over.
-                        if routine.cycles >= BOMB_STUTTER_CYCLES {
-                            if *burst + 1 < BOMB_STUTTERS {
+                        if routine.cycles >= stutter_cycles {
+                            if *burst + 1 < stutters {
                                 *stage = BombStage::Lite { burst: *burst + 1, routine: Liten::lite() };
                                 Liten::begin(b);
                             } else {
@@ -1429,7 +1472,7 @@ impl Voice for SmartBomb {
                     BombStage::Done => return park(b),
                 }
             });
-            *sample = y * BOMB_LEVEL * self.gain;
+            *sample = y * self.level * self.gain;
         }
     }
 
@@ -2304,6 +2347,26 @@ pub fn mutant_shot() -> BoardVoice<GwaveOnce> {
     gwave_once(mutant_shot_spec(), MUTANT_SHOT_CUT, MUTANT_SHOT_LEVEL)
 }
 
+/// One LITE, run out.
+pub struct LiteOnce {
+    run: Liten,
+}
+
+impl Script for LiteOnce {
+    fn begin(&mut self, b: &mut Board) {
+        self.run = Liten::lite();
+        Liten::begin(b);
+    }
+    fn write(&mut self, b: &mut Board, _t: f32) -> bool {
+        self.run.write(b)
+    }
+}
+
+/// A person you shot (LITE).
+pub fn person_crackle() -> BoardVoice<LiteOnce> {
+    BoardVoice::with(LiteOnce { run: Liten::lite() }, PERSON_CRACKLE_LEVEL)
+}
+
 /// A Swarmer's shot (ED12).
 pub fn swarmer_shot() -> BoardVoice<GwaveOnce> {
     gwave_once(swarmer_shot_spec(), f32::MAX, SWARMER_SHOT_LEVEL)
@@ -2717,10 +2780,12 @@ mod tests {
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 20] = [
+        let cases: [(&str, &mut dyn Voice, f32); 22] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
             ("bomber hit", &mut bomber_hit(), 1.4),
             ("swarmer shot", &mut swarmer_shot(), 0.8),
+            ("ship death", &mut SmartBomb::ship_death(), 3.0),
+            ("person crackle", &mut person_crackle(), 0.8),
             ("extra life", &mut extra_life(), 5.6),
             ("pod hit", &mut pod_hit(), 1.0),
             ("baiter hit", &mut baiter_hit(), 1.3),
@@ -2808,6 +2873,20 @@ mod tests {
         assert!((5.1..=5.5).contains(&t), "extra life ran {t:.3} s");
         let t = run_length(&mut extra_life_short());
         assert!((1.49..=1.52).contains(&t), "short extra life ran {t:.3} s");
+    }
+
+    /// ★ W5: THE SHIP'S DEATH IS TWO CRACKLES 128 MS APART, THEN THE
+    /// WHOLE CANNON TAIL (PDSND): 0.256 + 2.58 s. The crackle you get for
+    /// shooting a person is one LITE, 0.70 s.
+    #[test]
+    fn the_ship_death_and_the_person_crackle_run_as_long_as_the_original() {
+        let t = run_length(&mut SmartBomb::ship_death());
+        assert!((2.7..=2.95).contains(&t), "ship death ran {t:.3} s");
+        let t = run_length(&mut person_crackle());
+        assert!((0.62..=0.75).contains(&t), "person crackle ran {t:.3} s");
+        // And the smart bomb is still six stutters: 0.384 + 2.58 s.
+        let t = run_length(&mut SmartBomb::new());
+        assert!((2.85..=3.1).contains(&t), "smart bomb ran {t:.3} s");
     }
 
     /// ★ THE SWARMER'S SHOT RUNS AS LONG AS ED12 (0.60 s by the emulator).

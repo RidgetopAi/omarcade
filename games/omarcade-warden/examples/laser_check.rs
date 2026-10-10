@@ -58,11 +58,13 @@ fn main() {
 
     // ★ THE FOUR DEATHS, each on its own. Only the Lander is Brian's;
     // the other three are placeholders waiting for his ear.
-    let deaths: [(&str, &mut dyn Voice, f32, &str); 4] = [
+    let deaths: [(&str, &mut dyn Voice, f32, &str); 6] = [
         ("lander", &mut sound::Boom::new(), 0.9, "BRIAN'S — retired from play 2026-10-09 for HBEV"),
         ("mutant", &mut sound::MutantBoom::new(), 0.8, "★ BRIAN'S — pure crackle, no body"),
-        ("ship", &mut sound::ShipBoom::new(), 1.5, "placeholder — your own death"),
-        ("person", &mut sound::PersonBoom::new(), 0.5, "placeholder — you broke the rule"),
+        ("ship-death", &mut sound::SmartBomb::ship_death(), 3.1, "W5: the original's PDSND (LITE x2 + CANNON)"),
+        ("person-crackle", &mut sound::person_crackle(), 0.9, "W5: the original's LITE"),
+        ("ship", &mut sound::ShipBoom::new(), 1.5, "old placeholder — retired for W5's ship death"),
+        ("person", &mut sound::PersonBoom::new(), 0.5, "old placeholder — retired for W5's crackle"),
     ];
     for (name, v, secs, what) in deaths {
         let s = render(v, secs, &[0.0]);

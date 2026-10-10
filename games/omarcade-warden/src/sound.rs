@@ -32,6 +32,10 @@ use omarcade_core::audio::{Voice, VoiceParams};
 // The laser
 // ---------------------------------------------------------------------
 
+// ⚠️ RETIRED FROM PLAY 2026-10-09: Brian A/B'd his Zap against the
+// original's TURBO (`turbo_laser`) and chose TURBO. The Zap is kept,
+// unwired and still tested, as his reference; laser_check renders both.
+//
 // ★★ BUILT BY EAR, NOT DERIVED. Brian designed this voice in
 // tools/sound-playground.html and exported it; the constants below are
 // his, verbatim, and the playground state rides in a comment at the end
@@ -50,9 +54,13 @@ use omarcade_core::audio::{Voice, VoiceParams};
 /// truncation IS the rapid-fire texture, and the full tail is what a
 /// single shot is for. ⇒ Do not "fix" this by shortening the sound or by
 /// adding voices without asking him.
+#[allow(dead_code)] // Brian's Zap, retired from play for TURBO — kept as his reference.
 const ZAP_LEN: f32 = 0.580;
+#[allow(dead_code)] // Brian's Zap, retired from play for TURBO — kept as his reference.
 const ZAP_ATTACK: f32 = 0.020;
+#[allow(dead_code)] // Brian's Zap, retired from play for TURBO — kept as his reference.
 const ZAP_DECAY: f32 = 0.700;
+#[allow(dead_code)] // Brian's Zap, retired from play for TURBO — kept as his reference.
 const ZAP_LEVEL: f32 = 0.550;
 
 /// Defender's laser: white noise through a hard downward bandpass sweep.
@@ -73,6 +81,7 @@ const ZAP_LEVEL: f32 = 0.550;
 /// — it could emit anything, and nobody has published the actual laser
 /// routine. This is an informed reading confirmed by Brian's ear, which
 /// is the authority the analysis does not have.
+#[allow(dead_code)] // Brian's Zap, retired from play for TURBO — kept as his reference.
 pub struct Zap {
     t: f32,
     gain: f32,
@@ -82,12 +91,14 @@ pub struct Zap {
     noise: u32,
 }
 
+#[allow(dead_code)] // Brian's Zap, retired from play for TURBO — kept as his reference.
 impl Default for Zap {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[allow(dead_code)] // Brian's Zap, retired from play for TURBO — kept as his reference.
 impl Zap {
     pub fn new() -> Self {
         Self {
@@ -182,6 +193,7 @@ impl Voice for Zap {
 
 /// The shipped laser. ★ Named `Laser` so the game wires up unchanged;
 /// `Zap` is the name the playground exported it under.
+#[allow(dead_code)] // Brian's Zap, retired from play for TURBO — kept as his reference.
 pub type Laser = Zap;
 
 // ── playground state, for round-tripping ──
@@ -2397,10 +2409,11 @@ pub fn planet() -> BoardVoice<Sequence> {
     BoardVoice::with(Sequence::new(PLANET), PLANET_LEVEL)
 }
 
-/// ★ CANDIDATE, NOT WIRED: THE ORIGINAL'S LASER (LASSND → TURBO), for
-/// Brian's A/B against his Zap. Cut at the game's 768 ms hold — in play
-/// a held thrust re-sends after it, and every new shot restarts it.
-/// His Zap stays unless he picks this.
+/// ★★ THE LASER: THE ORIGINAL'S (LASSND → TURBO). Brian A/B'd it against
+/// his own Zap at matched loudness on 2026-10-09 and chose it: "replace
+/// mine with yours...this is really good". Cut at the game's 768 ms hold
+/// — in play a held thrust re-sends after it — and every new shot
+/// restarts it, as the board's IRQ did.
 pub struct TurboLaser {
     run: Turbo,
 }
@@ -2418,8 +2431,7 @@ impl Script for TurboLaser {
     }
 }
 
-/// The original's laser (TURBO) — the A/B candidate.
-#[allow(dead_code)]
+/// The laser (TURBO).
 pub fn turbo_laser() -> BoardVoice<TurboLaser> {
     BoardVoice::with(TurboLaser { run: Turbo::new() }, TURBO_LASER_LEVEL)
 }
@@ -2772,7 +2784,7 @@ mod tests {
             ("ship death", &mut SmartBomb::ship_death(), 3.0),
             ("planet", &mut planet(), 3.2),
             ("game start", &mut game_start(), 3.3),
-            ("turbo laser (candidate)", &mut turbo_laser(), 0.9),
+            ("turbo laser", &mut turbo_laser(), 0.9),
             ("person crackle", &mut person_crackle(), 0.8),
             ("extra life", &mut extra_life(), 5.6),
             ("pod hit", &mut pod_hit(), 1.0),
@@ -2896,6 +2908,14 @@ mod tests {
     fn the_game_start_runs_as_long_as_the_original() {
         let t = run_length(&mut game_start());
         assert!((3.0..=3.25).contains(&t), "game start ran {t:.3} s");
+    }
+
+    /// ★ THE LASER (TURBO) IS CUT AT THE GAME'S 768 MS HOLD — left alone
+    /// the routine runs 9.79 s, a laser that drones over everything.
+    #[test]
+    fn the_laser_is_cut_at_the_games_hold() {
+        let t = run_length(&mut turbo_laser());
+        assert!((0.76..=0.78).contains(&t), "laser ran {t:.3} s");
     }
 
     /// ★ THE SWARMER'S SHOT RUNS AS LONG AS ED12 (0.60 s by the emulator).

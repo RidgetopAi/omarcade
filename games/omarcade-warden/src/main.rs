@@ -1474,7 +1474,7 @@ fn clock_seed() -> u32 {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let theme = Theme::load();
     let mut audio = AudioSystem::new();
-    let laser = audio.register_sound(Box::new(sound::Laser::new()));
+    let laser = audio.register_sound(Box::new(sound::turbo_laser()));
     // ⚠️ `register`, NOT `register_sound`. The engine is continuous: it
     // is enabled and fed, never played. Registering it as a one-shot
     // would hand it to `play`, which retriggers rather than sustains.
@@ -1523,7 +1523,7 @@ mod tests {
 
     fn game_seeded(seed: u32) -> Warden {
         let mut audio = AudioSystem::new();
-        let laser = audio.register_sound(Box::new(sound::Laser::new()));
+        let laser = audio.register_sound(Box::new(sound::turbo_laser()));
         let thrust = audio.register(Box::new(sound::Thrust::new()));
         let warp = audio.register_sound(Box::new(sound::Warp::new()));
         let voices = Voices {

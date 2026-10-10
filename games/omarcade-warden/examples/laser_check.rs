@@ -48,20 +48,20 @@ fn main() {
 
     // One shot, rendered past its own length so the retire is included.
     let single = render(&mut sound::Laser::new(), 0.8, &[0.0]);
-    emit(&dir.join("laser-single.wav"), &single, "one shot, full tail");
+    emit(&dir.join("laser-single.wav"), &single, "Brian's Zap (retired for TURBO), one shot");
 
     // Five shots at the real fire interval through ONE voice — what a
     // held trigger actually sounds like.
     let fires: Vec<f32> = (0..5).map(|i| i as f32 * FIRE_INTERVAL).collect();
     let rapid = render(&mut sound::Laser::new(), 1.6, &fires);
-    emit(&dir.join("laser-rapid.wav"), &rapid, "5 shots @ 0.16s, one voice");
+    emit(&dir.join("laser-rapid.wav"), &rapid, "Brian's Zap (retired), 5 shots @ 0.16s");
 
     // ★ W5 A/B: the original's laser (TURBO, cut at the 768 ms hold)
     // beside Brian's Zap — the same single shot and the same five.
     let single = render(&mut sound::turbo_laser(), 0.9, &[0.0]);
-    emit(&dir.join("laser-turbo-single.wav"), &single, "the original's TURBO, one shot");
+    emit(&dir.join("laser-turbo-single.wav"), &single, "★ THE LASER: TURBO, one shot");
     let rapid = render(&mut sound::turbo_laser(), 1.6, &fires);
-    emit(&dir.join("laser-turbo-rapid.wav"), &rapid, "TURBO, 5 shots @ 0.16s, one voice");
+    emit(&dir.join("laser-turbo-rapid.wav"), &rapid, "★ THE LASER: TURBO, 5 shots @ 0.16s");
 
     // ★ THE DEATHS, each on its own: Brian's two (his Boom, retired for
     // HBEV, kept as his reference; his Mutant) and the original's ship

@@ -262,6 +262,7 @@ struct Warden {
     swarmer_shot_sound: SoundId,
     extra_life_sound: SoundId,
     planet_sound: SoundId,
+    start_sound: SoundId,
     scream: VoiceId,
     /// Falls begun so far — the scream restarts when this moves.
     falls: u32,
@@ -319,6 +320,11 @@ struct Warden {
     awarded_this_frame: bool,
     died_this_frame: bool,
     world_ended_this_frame: bool,
+    /// ★ W5: a game has begun and its start tone is still to play.
+    /// ⚠️ NOT a `_this_frame` flag: it is set outside `update` (by
+    /// `new_game`, from `new` or from Enter), and `update` clears those
+    /// before stepping — this one is cleared only once it has played.
+    start_pending: bool,
 }
 
 /// Which enemy gun fired — each has its own voice.
@@ -367,6 +373,8 @@ struct Voices {
     extra_life: SoundId,
     /// ★ The planet exploding, when the last person is gone.
     planet: SoundId,
+    /// ★ A game beginning.
+    start: SoundId,
     /// ★ The scream of someone falling — CONTINUOUS, so it can stop the
     /// moment they are caught or land (see `sound::Scream`).
     scream: VoiceId,
@@ -437,6 +445,7 @@ impl Warden {
             swarmer_shot_sound: voices.swarmer_shot,
             extra_life_sound: voices.extra_life,
             planet_sound: voices.planet,
+            start_sound: voices.start,
             scream: voices.scream,
             falls: 0,
             falling: 0,
@@ -462,6 +471,7 @@ impl Warden {
             awarded_this_frame: false,
             died_this_frame: false,
             world_ended_this_frame: false,
+            start_pending: false,
         };
         g.new_game(seed);
         g
@@ -498,6 +508,9 @@ impl Warden {
         self.score = 0;
         self.world_ended = false;
         self.director = Director::new();
+        // ★ W5: every game, the first and each restart, opens on the
+        // original's start tone (SV3).
+        self.start_pending = true;
         self.mines.clear();
         self.popups.clear();
         self.smart_bombs = STARTING_SMART_BOMBS;
@@ -1355,6 +1368,9 @@ impl Game for Warden {
         if self.world_ended_this_frame {
             audio.play(self.planet_sound);
         }
+        if std::mem::take(&mut self.start_pending) {
+            audio.play(self.start_sound);
+        }
         // ★★ SOMETHING ARRIVED. One voice however many landed on the
         // same frame — the opening wave drops five at once, and five
         // retriggers of a single voice is four sounds cut dead at
@@ -1483,6 +1499,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         swarmer_shot: audio.register_sound(Box::new(sound::swarmer_shot())),
         extra_life: audio.register_sound(Box::new(sound::extra_life_short())),
         planet: audio.register_sound(Box::new(sound::planet())),
+        start: audio.register_sound(Box::new(sound::game_start())),
         scream: audio.register(Box::new(sound::Scream::new())),
     };
     let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
@@ -1528,6 +1545,7 @@ mod tests {
         swarmer_shot: audio.register_sound(Box::new(sound::swarmer_shot())),
         extra_life: audio.register_sound(Box::new(sound::extra_life_short())),
         planet: audio.register_sound(Box::new(sound::planet())),
+        start: audio.register_sound(Box::new(sound::game_start())),
             scream: audio.register(Box::new(sound::Scream::new())),
         };
         // ⚠️ AN IN-MEMORY SCORE FILE, never loaded or saved: a test that
@@ -1696,6 +1714,25 @@ mod tests {
         }
         assert!(swarmer, "no Swarmer shot was heard in 8 s");
         assert!(!lander, "a Swarmer's shot raised the Lander's flag");
+    }
+
+    /// ★ W5: EVERY GAME OPENS ON THE START TONE — the first, through the
+    /// real `update`, and a restart from Enter — and it plays once, not
+    /// every frame.
+    #[test]
+    fn every_game_opens_on_the_start_tone() {
+        let mut g = game();
+        assert!(g.start_pending, "the first game has no start tone");
+        let mut audio = AudioSystem::new();
+        {
+            let mut a = audio.handle();
+            g.update(1.0 / 60.0, &mut a);
+        }
+        assert!(!g.start_pending, "the start tone did not play on the first frame");
+        g.lives.remaining = 0;
+        g.lives.state = lives::State::GameOver;
+        g.on_input(InputEvent::KeyDown(Key::Enter));
+        assert!(g.start_pending, "a restart has no start tone");
     }
 
     /// A ship that cannot run out — the wave tests are about waves, and a

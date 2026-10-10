@@ -1622,7 +1622,8 @@ impl Gwave {
     /// The pattern is done: echo, then frequency-shift (GEND), or finish.
     fn end_of_pattern(&mut self) -> bool {
         self.decay(self.spec.echo_decay);
-        self.echoes_left -= 1;
+        // DEC GECNT: an echo count of 0 plays 256 times (SV3 does).
+        self.echoes_left = self.echoes_left.wrapping_sub(1);
         if self.echoes_left > 0 {
             self.entry = self.start;
             self.load_entry();
@@ -2069,6 +2070,24 @@ fn swarmer_shot_spec() -> GwaveSpec {
     }
 }
 
+/// ★ A GAME BEGINS (SV3, the 1-player start): the 72-step sine at
+/// ~166 Hz, one pass at a time, 256 times — and after every pass the
+/// table erodes by a sixteenth of the ROM wave, WITH WRAP, so the timbre
+/// cycles about every 16 passes; each erosion leaves the DAC holding for
+/// ~6 ms, which chops the tone. 3.14 s. ROM render 0a_G10_SV3_start1.wav.
+fn game_start_spec() -> GwaveSpec {
+    GwaveSpec {
+        wave: WaveTable::sine(72),
+        cycles: 1,
+        echoes: 0,
+        echo_decay: 1,
+        predecay: 1,
+        freq_inc: 1,
+        freq_count: 1,
+        pattern: &[8],
+    }
+}
+
 /// ★ SET DOWN SAFE (QUASAR): rising sweeps, 378 → 1530 Hz, each ~0.26 s,
 /// ten of them, each a little higher. Brian: "that classic phaser sound
 /// when dropped to ground".
@@ -2144,6 +2163,7 @@ const CATCH_LEVEL: f32 = 0.40;
 const LANDER_SHOT_LEVEL: f32 = 0.26;
 const MUTANT_SHOT_LEVEL: f32 = 0.24;
 const SWARMER_SHOT_LEVEL: f32 = 0.24;
+const GAME_START_LEVEL: f32 = 0.30;
 const SET_DOWN_LEVEL: f32 = 0.30;
 const EXTRA_LIFE_LEVEL: f32 = 0.30;
 const FUSION_LEVEL: f32 = 0.26;
@@ -2206,6 +2226,11 @@ impl Script for LiteOnce {
 /// A person you shot (LITE).
 pub fn person_crackle() -> BoardVoice<LiteOnce> {
     BoardVoice::with(LiteOnce { run: Liten::lite() }, PERSON_CRACKLE_LEVEL)
+}
+
+/// A game beginning (SV3).
+pub fn game_start() -> BoardVoice<GwaveOnce> {
+    gwave_once(game_start_spec(), f32::MAX, GAME_START_LEVEL)
 }
 
 /// A Swarmer's shot (ED12).
@@ -2713,12 +2738,13 @@ mod tests {
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 21] = [
+        let cases: [(&str, &mut dyn Voice, f32); 22] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
             ("bomber hit", &mut bomber_hit(), 1.4),
             ("swarmer shot", &mut swarmer_shot(), 0.8),
             ("ship death", &mut SmartBomb::ship_death(), 3.0),
             ("planet", &mut planet(), 3.2),
+            ("game start", &mut game_start(), 3.3),
             ("person crackle", &mut person_crackle(), 0.8),
             ("extra life", &mut extra_life(), 5.6),
             ("pod hit", &mut pod_hit(), 1.0),
@@ -2832,6 +2858,16 @@ mod tests {
         const TURBO_ALONE: &[(Routine, u8, u8)] = &[(Routine::Turbo, 1, 1)];
         let t = run_length(&mut BoardVoice::with(Sequence::new(TURBO_ALONE), 0.3));
         assert!((9.6..=9.95).contains(&t), "TURBO ran {t:.3} s");
+    }
+
+    /// ★ W5: A GAME BEGINS WITH SV3, 256 passes (an echo count of 0 is
+    /// 256 on the board) — 3.14 s by the emulator. With the echo count
+    /// read as 0 it would play once (~6 ms); with it panicking on
+    /// underflow, not at all.
+    #[test]
+    fn the_game_start_runs_as_long_as_the_original() {
+        let t = run_length(&mut game_start());
+        assert!((3.0..=3.25).contains(&t), "game start ran {t:.3} s");
     }
 
     /// ★ THE SWARMER'S SHOT RUNS AS LONG AS ED12 (0.60 s by the emulator).

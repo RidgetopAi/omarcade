@@ -59,6 +59,22 @@ struct Slot {
 /// that still feels instant at the moment of a crash.
 const DUCK_MAX_STEP: f32 = 1.0 / (0.010 * 48_000.0);
 
+/// ★ THE LIMITER'S CEILING. The mix is held under this however many
+/// voices pile up. Below it the limiter does nothing at all, sample for
+/// sample; only a mix that would have clipped is touched.
+///
+/// Why a limiter and not just lower levels: Warden mixes every voice
+/// (Brian: "don't cut sounds off"), and at full volume its busiest
+/// moments summed to 1.6 — 0.28% of samples hard-clipped (mix_scene,
+/// 2026-10-09). Turning every voice down would make every normal moment
+/// quieter to pay for a rare dense one. Brian: "limiter is fine".
+pub(crate) const LIMIT_CEILING: f32 = 0.95;
+
+/// How long the limiter takes to let go after a peak (time constant).
+/// Instant on the way in — so nothing passes the ceiling — and this slow
+/// on the way out, so the gain recovers as a swell, not a flutter.
+const LIMIT_RELEASE_SECONDS: f32 = 0.080;
+
 /// The audio-thread half of the system.
 pub(crate) struct Mixer {
     slots: Vec<Slot>,
@@ -73,6 +89,9 @@ pub(crate) struct Mixer {
     duck_target: f32,
     duck_step: f32,
     duck_except: Option<VoiceId>,
+    /// The limiter's peak envelope, and how much it decays each frame.
+    limit_env: f32,
+    limit_release: f32,
 }
 
 impl Mixer {
@@ -104,6 +123,8 @@ impl Mixer {
             duck_target: 1.0,
             duck_step: DUCK_MAX_STEP,
             duck_except: None,
+            limit_env: 0.0,
+            limit_release: (-1.0 / (LIMIT_RELEASE_SECONDS * sample_rate)).exp(),
         }
     }
 
@@ -208,9 +229,24 @@ impl Mixer {
             self.advance_duck(frames);
         }
 
-        // Nothing here should exceed full scale, but a voice with a
-        // runaway parameter would otherwise wrap and produce a loud
-        // click. Clamping is two instructions and removes the failure.
+        // ★ THE LIMITER. A peak envelope that jumps up instantly and
+        // decays over LIMIT_RELEASE_SECONDS; while it is above the
+        // ceiling, the frame is scaled down by exactly enough. Every
+        // channel carries the same mono mix, so one gain per frame.
+        for frame in out[..frames * channels].chunks_mut(channels) {
+            let x = frame[0].abs();
+            self.limit_env = x.max(self.limit_env * self.limit_release);
+            if self.limit_env > LIMIT_CEILING {
+                let g = LIMIT_CEILING / self.limit_env;
+                for s in frame.iter_mut() {
+                    *s *= g;
+                }
+            }
+        }
+
+        // Nothing should exceed full scale now, but a NaN-free runaway
+        // must still never wrap into a click. Clamping is two
+        // instructions and removes the failure outright.
         for s in out.iter_mut() {
             *s = s.clamp(-1.0, 1.0);
         }
@@ -375,6 +411,65 @@ mod tests {
         let mut out = [0.0f32; 16];
         m.fill(&mut out, 1);
         assert!(out.iter().all(|s| *s > 0.9), "the exempt voice should keep full gain");
+    }
+
+    /// A loud one-shot of `n` samples at `level`.
+    struct Loud {
+        left: usize,
+        level: f32,
+    }
+    impl Voice for Loud {
+        fn render(&mut self, out: &mut [f32], _p: VoiceParams, _sr: f32) {
+            for s in out.iter_mut() {
+                *s = if self.left > 0 { self.level } else { 0.0 };
+                self.left = self.left.saturating_sub(1);
+            }
+        }
+        fn alive(&self) -> bool {
+            self.left > 0
+        }
+        fn retrigger(&mut self, _g: f32, _p: f32) {
+            self.left = 4_800;
+        }
+    }
+
+    /// ★ A PILE-UP IS HELD AT THE CEILING, NOT CLIPPED, AND NOT CRUSHED:
+    /// three voices at 0.5 (1.5 summed) come out at the ceiling.
+    #[test]
+    fn the_limiter_holds_a_pile_up_at_the_ceiling() {
+        let voices: Vec<(Box<dyn Voice>, bool)> =
+            (0..3).map(|_| (Box::new(Constant(0.5)) as Box<dyn Voice>, false)).collect();
+        let (mut m, ring) = mixer(voices);
+        for i in 0..3 {
+            ring.push(Command::Enable { voice: VoiceId(i), on: true });
+        }
+        let mut out = [0.0f32; 64];
+        m.fill(&mut out, 1);
+        for s in out {
+            assert!(s <= LIMIT_CEILING + 1e-6, "{s} passed the ceiling");
+            assert!(s > LIMIT_CEILING - 0.01, "{s}: the pile-up was crushed, not limited");
+        }
+    }
+
+    /// ★ AND IT LETS GO. A loud burst over a quiet voice ducks the quiet
+    /// one only while the burst lasts plus the release: half a second
+    /// later the quiet voice is back to its own level exactly.
+    #[test]
+    fn the_limiter_lets_go_after_a_peak() {
+        let (mut m, ring) = mixer(vec![
+            (Box::new(Constant(0.5)), false),
+            (Box::new(Loud { left: 0, level: 1.0 }), true),
+        ]);
+        ring.push(Command::Enable { voice: VoiceId(0), on: true });
+        ring.push(Command::Play { sound: SoundId(1), gain: 1.0, pitch: 1.0 });
+        let mut out = [0.0f32; 512];
+        m.fill(&mut out, 1);
+        assert!(out[0] <= LIMIT_CEILING + 1e-6, "the burst passed the ceiling: {}", out[0]);
+        // 100 ms of burst, then 500 ms more.
+        for _ in 0..(48_000 * 6 / 10 / 512) {
+            m.fill(&mut out, 1);
+        }
+        assert!((out[511] - 0.5).abs() < 1e-3, "still ducked after the release: {}", out[511]);
     }
 
     #[test]

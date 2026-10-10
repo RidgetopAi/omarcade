@@ -261,6 +261,7 @@ struct Warden {
     mutant_shot_sound: SoundId,
     swarmer_shot_sound: SoundId,
     extra_life_sound: SoundId,
+    planet_sound: SoundId,
     scream: VoiceId,
     /// Falls begun so far — the scream restarts when this moves.
     falls: u32,
@@ -364,6 +365,8 @@ struct Voices {
     swarmer_shot: SoundId,
     /// ★ An extra ship, every 10,000.
     extra_life: SoundId,
+    /// ★ The planet exploding, when the last person is gone.
+    planet: SoundId,
     /// ★ The scream of someone falling — CONTINUOUS, so it can stop the
     /// moment they are caught or land (see `sound::Scream`).
     scream: VoiceId,
@@ -433,6 +436,7 @@ impl Warden {
             mutant_shot_sound: voices.mutant_shot,
             swarmer_shot_sound: voices.swarmer_shot,
             extra_life_sound: voices.extra_life,
+            planet_sound: voices.planet,
             scream: voices.scream,
             falls: 0,
             falling: 0,
@@ -1345,8 +1349,11 @@ impl Game for Warden {
         if self.set_down_this_frame {
             audio.play(self.set_down_sound);
         }
+        // ★ W5: THE PLANET GOES (TBSND) — laser noise, crackle, the
+        // explosion twice, then its tail. It borrowed the Lander's voice
+        // until now.
         if self.world_ended_this_frame {
-            audio.play_with(self.boom, 1.0, 1.0);
+            audio.play(self.planet_sound);
         }
         // ★★ SOMETHING ARRIVED. One voice however many landed on the
         // same frame — the opening wave drops five at once, and five
@@ -1475,6 +1482,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mutant_shot: audio.register_sound(Box::new(sound::mutant_shot())),
         swarmer_shot: audio.register_sound(Box::new(sound::swarmer_shot())),
         extra_life: audio.register_sound(Box::new(sound::extra_life_short())),
+        planet: audio.register_sound(Box::new(sound::planet())),
         scream: audio.register(Box::new(sound::Scream::new())),
     };
     let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
@@ -1519,6 +1527,7 @@ mod tests {
             mutant_shot: audio.register_sound(Box::new(sound::mutant_shot())),
         swarmer_shot: audio.register_sound(Box::new(sound::swarmer_shot())),
         extra_life: audio.register_sound(Box::new(sound::extra_life_short())),
+        planet: audio.register_sound(Box::new(sound::planet())),
             scream: audio.register(Box::new(sound::Scream::new())),
         };
         // ⚠️ AN IN-MEMORY SCORE FILE, never loaded or saved: a test that

@@ -1183,6 +1183,51 @@ impl Cannon {
     }
 }
 
+/// TURBO (`NOISE` with frequency decay): each sample is the shift
+/// register's bit times the amplitude; every 32 samples the amplitude
+/// drops by one and the delay loop grows by one count (8 cycles). So the
+/// noise CLOCK falls ~15.8 kHz → ~430 Hz while the level fades slowly,
+/// over 9.79 s if nothing cuts it. The original's laser — and the first
+/// beat of the planet going.
+#[derive(Debug, Clone, Copy)]
+struct Turbo {
+    amp: u8,
+    delay: u16,
+    count: u8,
+}
+
+/// TURBO's per-sample cost: the bit-picking (~48.5 cycles, the BCC
+/// splitting it by a load) plus 8 a delay count; and the bookkeeping
+/// between each run of 32.
+const TURBO_BASE: f32 = 48.5;
+const TURBO_PER_DELAY: f32 = 8.0;
+const TURBO_SAMPLES: u8 = 32;
+const TURBO_CYCLE_END: f32 = 30.0;
+
+impl Turbo {
+    fn new() -> Self {
+        Self { amp: 0xFF, delay: 1, count: TURBO_SAMPLES }
+    }
+
+    /// One DAC write. False once the amplitude has decayed away.
+    fn write(&mut self, b: &mut Board) -> bool {
+        let lo = b.lo;
+        b.dac = if b.shift(lo) { self.amp } else { 0 };
+        b.hold = TURBO_BASE + TURBO_PER_DELAY * self.delay as f32;
+        self.count -= 1;
+        if self.count == 0 {
+            self.count = TURBO_SAMPLES;
+            self.amp = self.amp.saturating_sub(1);
+            if self.amp == 0 {
+                return false;
+            }
+            self.delay += 1;
+            b.hold += TURBO_CYCLE_END;
+        }
+        true
+    }
+}
+
 /// Park the board silent once a voice has finished.
 fn park(b: &mut Board) {
     b.dac = 0x80;
@@ -2215,6 +2260,118 @@ pub fn catch() -> BoardVoice<CatchScript> {
     BoardVoice::with(CatchScript { run: Gwave::new(catch_spec()), sends: 1 }, CATCH_LEVEL)
 }
 
+/// A routine the game's sound table can send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Routine {
+    Turbo,
+    Lite,
+    Cannon,
+}
+
+/// One running routine.
+#[derive(Debug, Clone, Copy)]
+enum Running {
+    Turbo(Turbo),
+    Lite(Liten),
+    Cannon(Cannon),
+    Done,
+}
+
+impl Running {
+    fn start(send: Routine, b: &mut Board) -> Self {
+        match send {
+            Routine::Turbo => Running::Turbo(Turbo::new()),
+            Routine::Lite => {
+                Liten::begin(b);
+                Running::Lite(Liten::lite())
+            }
+            Routine::Cannon => Running::Cannon(Cannon::new(b)),
+        }
+    }
+
+    fn write(&mut self, b: &mut Board) -> bool {
+        let more = match self {
+            Running::Turbo(r) => r.write(b),
+            Running::Lite(r) => r.write(b),
+            Running::Cannon(r) => r.write(b),
+            Running::Done => false,
+        };
+        if !more {
+            *self = Running::Done;
+        }
+        more
+    }
+}
+
+/// ★ THE GAME'S SOUND TABLE, PLAYED: a list of (routine, repeats, timer
+/// in 16 ms frames). Each send cuts whatever was playing (the board's
+/// IRQ resets its stack); after the last timer the last routine runs out
+/// on its own. This is how defa7's multi-part sounds — the planet going,
+/// the ship dying, the smart bomb — were made from single routines.
+pub struct Sequence {
+    steps: &'static [(Routine, u8, u8)],
+    running: Running,
+    /// Index into `steps`, and how many sends of it have gone.
+    step: usize,
+    sent: u8,
+    /// When the next send is due, in seconds since the trigger.
+    next_at: f32,
+}
+
+/// One frame of the game's sound timer.
+const SOUND_FRAME: f32 = 0.016;
+
+impl Sequence {
+    fn new(steps: &'static [(Routine, u8, u8)]) -> Self {
+        Self { steps, running: Running::Done, step: 0, sent: 0, next_at: 0.0 }
+    }
+
+    fn send(&mut self, b: &mut Board) {
+        let (what, _, frames) = self.steps[self.step];
+        self.running = Running::start(what, b);
+        self.sent += 1;
+        self.next_at += frames as f32 * SOUND_FRAME;
+    }
+}
+
+impl Script for Sequence {
+    fn begin(&mut self, b: &mut Board) {
+        self.step = 0;
+        self.sent = 0;
+        self.next_at = 0.0;
+        self.send(b);
+    }
+
+    fn write(&mut self, b: &mut Board, t: f32) -> bool {
+        if t >= self.next_at {
+            let (_, repeats, _) = self.steps[self.step];
+            if self.sent < repeats {
+                self.send(b);
+            } else if self.step + 1 < self.steps.len() {
+                self.step += 1;
+                self.sent = 0;
+                self.send(b);
+            } else {
+                // The last send runs out on its own.
+                self.next_at = f32::MAX;
+            }
+        }
+        self.running.write(b)
+    }
+}
+
+/// ★ THE PLANET GOES (TBSND, defa7): TURBO once for 64 ms, LITE twice
+/// 96 ms apart, CANNON twice 160 ms apart, then that CANNON's whole
+/// tail. Laser noise, crackle, the explosion restarted once — ~3 s.
+/// research-sound.md §2, "Planet explodes".
+const PLANET: &[(Routine, u8, u8)] = &[(Routine::Turbo, 1, 4), (Routine::Lite, 2, 6), (Routine::Cannon, 2, 10)];
+const PLANET_LEVEL: f32 = 0.42;
+
+/// The planet exploding (TBSND).
+pub fn planet() -> BoardVoice<Sequence> {
+    BoardVoice::with(Sequence::new(PLANET), PLANET_LEVEL)
+}
+
 /// One VARI preset, played once.
 pub struct VariOnce {
     spec: VariSpec,
@@ -2556,11 +2713,12 @@ mod tests {
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 20] = [
+        let cases: [(&str, &mut dyn Voice, f32); 21] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
             ("bomber hit", &mut bomber_hit(), 1.4),
             ("swarmer shot", &mut swarmer_shot(), 0.8),
             ("ship death", &mut SmartBomb::ship_death(), 3.0),
+            ("planet", &mut planet(), 3.2),
             ("person crackle", &mut person_crackle(), 0.8),
             ("extra life", &mut extra_life(), 5.6),
             ("pod hit", &mut pod_hit(), 1.0),
@@ -2661,6 +2819,19 @@ mod tests {
         // And the smart bomb is still six stutters: 0.384 + 2.58 s.
         let t = run_length(&mut SmartBomb::new());
         assert!((2.85..=3.1).contains(&t), "smart bomb ran {t:.3} s");
+    }
+
+    /// ★ W5: THE PLANET'S SEQUENCE KEEPS THE GAME'S TIMERS (TBSND):
+    /// 64 ms of TURBO, two LITEs 96 ms apart, a CANNON cut at 160 ms, then
+    /// a second CANNON run out (2.58 s) — ~3.0 s. And TURBO alone runs the
+    /// 9.79 s the emulator times the original's laser at.
+    #[test]
+    fn the_planet_keeps_the_sound_tables_timing() {
+        let t = run_length(&mut planet());
+        assert!((2.9..=3.1).contains(&t), "planet ran {t:.3} s");
+        const TURBO_ALONE: &[(Routine, u8, u8)] = &[(Routine::Turbo, 1, 1)];
+        let t = run_length(&mut BoardVoice::with(Sequence::new(TURBO_ALONE), 0.3));
+        assert!((9.6..=9.95).contains(&t), "TURBO ran {t:.3} s");
     }
 
     /// ★ THE SWARMER'S SHOT RUNS AS LONG AS ED12 (0.60 s by the emulator).

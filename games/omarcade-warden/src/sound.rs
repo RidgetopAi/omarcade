@@ -2397,6 +2397,33 @@ pub fn planet() -> BoardVoice<Sequence> {
     BoardVoice::with(Sequence::new(PLANET), PLANET_LEVEL)
 }
 
+/// ★ CANDIDATE, NOT WIRED: THE ORIGINAL'S LASER (LASSND → TURBO), for
+/// Brian's A/B against his Zap. Cut at the game's 768 ms hold — in play
+/// a held thrust re-sends after it, and every new shot restarts it.
+/// His Zap stays unless he picks this.
+pub struct TurboLaser {
+    run: Turbo,
+}
+const TURBO_LASER_CUT: f32 = 0.768;
+/// Matched to the Zap by measurement for a fair A/B: five shots at the fire
+/// interval, RMS over 0.5 s — Zap 0.174, TURBO 0.174 at this level.
+const TURBO_LASER_LEVEL: f32 = 0.19;
+
+impl Script for TurboLaser {
+    fn begin(&mut self, _b: &mut Board) {
+        self.run = Turbo::new();
+    }
+    fn write(&mut self, b: &mut Board, t: f32) -> bool {
+        t < TURBO_LASER_CUT && self.run.write(b)
+    }
+}
+
+/// The original's laser (TURBO) — the A/B candidate.
+#[allow(dead_code)]
+pub fn turbo_laser() -> BoardVoice<TurboLaser> {
+    BoardVoice::with(TurboLaser { run: Turbo::new() }, TURBO_LASER_LEVEL)
+}
+
 /// One VARI preset, played once.
 pub struct VariOnce {
     spec: VariSpec,
@@ -2738,13 +2765,14 @@ mod tests {
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 22] = [
+        let cases: [(&str, &mut dyn Voice, f32); 23] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
             ("bomber hit", &mut bomber_hit(), 1.4),
             ("swarmer shot", &mut swarmer_shot(), 0.8),
             ("ship death", &mut SmartBomb::ship_death(), 3.0),
             ("planet", &mut planet(), 3.2),
             ("game start", &mut game_start(), 3.3),
+            ("turbo laser (candidate)", &mut turbo_laser(), 0.9),
             ("person crackle", &mut person_crackle(), 0.8),
             ("extra life", &mut extra_life(), 5.6),
             ("pod hit", &mut pod_hit(), 1.0),

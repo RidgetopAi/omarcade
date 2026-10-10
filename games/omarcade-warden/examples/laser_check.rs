@@ -56,6 +56,13 @@ fn main() {
     let rapid = render(&mut sound::Laser::new(), 1.6, &fires);
     emit(&dir.join("laser-rapid.wav"), &rapid, "5 shots @ 0.16s, one voice");
 
+    // ★ W5 A/B: the original's laser (TURBO, cut at the 768 ms hold)
+    // beside Brian's Zap — the same single shot and the same five.
+    let single = render(&mut sound::turbo_laser(), 0.9, &[0.0]);
+    emit(&dir.join("laser-turbo-single.wav"), &single, "the original's TURBO, one shot");
+    let rapid = render(&mut sound::turbo_laser(), 1.6, &fires);
+    emit(&dir.join("laser-turbo-rapid.wav"), &rapid, "TURBO, 5 shots @ 0.16s, one voice");
+
     // ★ THE DEATHS, each on its own: Brian's two (his Boom, retired for
     // HBEV, kept as his reference; his Mutant) and the original's ship
     // death and person crackle (W5).

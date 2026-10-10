@@ -24,7 +24,7 @@ PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
 # game is registered: the cabinet and the marquee discover games from
 # what is installed and what has written a score, never from a list of
 # their own.
-GAMES=(omarcade-pixel-break omarcade-volley omarcade-racer)
+GAMES=(omarcade-pixel-break omarcade-volley omarcade-racer omarcade-warden)
 
 # Every id this suite has shipped under and then renamed away from.
 #

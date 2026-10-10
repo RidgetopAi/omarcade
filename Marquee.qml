@@ -95,7 +95,7 @@ BarWidget {
   // however much it looks like it here. `scan` walks scoresDir, not
   // ~/.local/bin: a game that has never been played writes no file, so
   // this is true both on a fresh plugin-only install AND on a machine
-  // where all three games are installed but untouched.
+  // where every game is installed but untouched.
   //
   // That is exactly the behaviour the door needs. Both cases want the
   // marquee visible — one so the games can be installed, the other so

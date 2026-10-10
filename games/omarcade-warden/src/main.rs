@@ -23,12 +23,11 @@
 //!
 //! ★ S8 added the scanner: the whole world in a strip, with the view box.
 //!
-//! ⚠️ STILL MISSING (docs/warden-plan.md): waves, scoring and the score
-//! file (W1); smart bomb and hyperspace (W2); Baiters, Bombers, Pods and
-//! Swarmers (W3, W4); the sound pass (W5); the title screen and the
-//! cabinet registration in packaging/install.sh (W6). Until W6 the game
-//! is deliberately absent from the cabinet — an unfinished title has no
-//! business in front of anyone who installed the suite.
+//! ★ IN THE CABINET since 0.2.0: registered in packaging/install.sh with
+//! Brian's approval of the gameplay (W3) and the sound (W5).
+//!
+//! ⚠️ STILL MISSING (docs/warden-plan.md §W6): the title/attract screen,
+//! wave banners and the game-over screen.
 
 mod art;
 mod effects;

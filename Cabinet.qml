@@ -704,8 +704,8 @@ Item {
                     return root.installError.length ? root.installError
                                                     : "The build did not finish."
                   default:
-                    return "Pixel Break, Volley and Omaprix aren't built "
-                         + "yet. It takes a couple of minutes, needs no "
+                    return "Pixel Break, Volley, Omaprix and Warden aren't "
+                         + "built yet. It takes a couple of minutes, needs no "
                          + "root, and writes nothing outside your home."
                   }
                 }

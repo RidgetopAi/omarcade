@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Warden
+GenericName=Arcade Game
+Comment=Fly the planet's skies and keep its people from being carried off.
+Exec=@BINDIR@/omarcade-warden
+Icon=omarcade
+Terminal=false
+Categories=Game;ArcadeGame;
+Keywords=arcade;shooter;scrolling;retro;omarcade;game;
+StartupNotify=true
+StartupWMClass=omarcade

@@ -33,6 +33,11 @@
 #   racer        drive      the player's car with a rival close ahead and
 #                           the pack at mid-distance, under the wallpaper
 #                           sky. Reads as a racing game instantly.
+#   warden       rescue     a Lander mid-abduction, its beam on and a
+#                           person rising, with others on the ground and
+#                           one riding under the ship. The abduction is
+#                           what the game is about; `combat` and `laser`
+#                           read as any shooter.
 #
 # ⚠️ THE RACER'S SKY IS THE LIVE OMARCHY WALLPAPER, so this render
 # depends on the theme that is set when it runs. That is deliberate —
@@ -49,11 +54,11 @@ mkdir -p "$OUT"
 echo "building the dumpers (release: the racer's sky decode is slow in debug)"
 cargo build --release -q \
   -p omarcade-pixel-break -p omarcade-volley -p omarcade-racer \
-  --example dump_frame
+  -p omarcade-warden --example dump_frame
 
 render() {
   local pkg="$1" scene="$2" dest="$3"
-  # ⚠️ Scene THEN path for all three. dump_art takes them the other way
+  # ⚠️ Scene THEN path for all four. dump_art takes them the other way
   # round; that tool is not used here.
   cargo run --release -q -p "$pkg" --example dump_frame -- "$scene" "$dest"
 }
@@ -61,6 +66,7 @@ render() {
 render omarcade-pixel-break multiball "$OUT/pixel-break.png"
 render omarcade-volley      rally     "$OUT/volley.png"
 render omarcade-racer       drive     "$OUT/racer.png"
+render omarcade-warden      rescue    "$OUT/warden.png"
 
 # ⚠️ SHRINK THEM. dump_frame writes STORED-MODE deflate — valid PNG, no
 # compression — so every frame lands at ~2 MB. That is the right
@@ -78,6 +84,9 @@ if command -v magick >/dev/null 2>&1; then
 elif command -v optipng >/dev/null 2>&1; then
   echo "compressing"
   optipng -quiet -o2 "$OUT"/*.png
+elif command -v python3 >/dev/null 2>&1; then
+  echo "compressing (python fallback: lossless re-deflate, larger than optipng)"
+  python3 tools/png-recompress.py "$OUT"/*.png
 else
   echo "⚠️ no magick or optipng — art is correct but ~2 MB per file"
 fi

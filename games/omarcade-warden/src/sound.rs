@@ -491,211 +491,6 @@ impl Voice for MutantBoom {
 
 // ---------------------------------------------------------------------
 
-/// ⚠️ PLACEHOLDER — NOT BUILT BY EAR. ★ YOUR OWN DEATH, and it used to
-/// be the SAME SOUND as a Lander's.
-///
-/// That was the worst of the four collisions: the game gave identical
-/// feedback for "you scored" and "you lost a life". This is shaped to be
-/// the worst sound in the game — the longest, the lowest, a slow decay
-/// that outlasts the others so it hangs there. An explosion you hear
-/// happening TO you rather than one you caused.
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-const SHIP_BOOM_LEN: f32 = 1.100;
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-const SHIP_BOOM_ATTACK: f32 = 0.010;
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-const SHIP_BOOM_DECAY: f32 = 1.200;
-/// ⚠️ 0.30, NOT the 0.42 this started at. At 0.42 the rendered peak was
-/// 1.03 — CLIPPING, because a resonant lowpass at Q 6.4 adds gain the
-/// level constant does not account for. The WAV writer clamps and would
-/// have hidden it; the mixer would not have.
-/// ⇒ ★ A `_LEVEL` CONSTANT IS NOT THE PEAK. Render and measure.
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-const SHIP_BOOM_LEVEL: f32 = 0.300;
-
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-pub struct ShipBoom {
-    t: f32,
-    gain: f32,
-    alive: bool,
-    phase: [f32; 1],
-    low: f32,
-    band: f32,
-}
-
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-impl Default for ShipBoom {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-impl ShipBoom {
-    pub fn new() -> Self {
-        Self { t: 0.0, gain: 1.0, alive: false, phase: [0.0; 1], low: 0.0, band: 0.0 }
-    }
-}
-
-impl Voice for ShipBoom {
-    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
-        if !self.alive {
-            out.fill(0.0);
-            return;
-        }
-        let dt = 1.0 / sample_rate;
-
-        for sample in out.iter_mut() {
-            if self.t >= SHIP_BOOM_LEN {
-                *sample = 0.0;
-                self.alive = false;
-                continue;
-            }
-            let u = self.t / SHIP_BOOM_LEN;
-            let mut v = 0.0f32;
-
-            {
-                let hz = 28.0 * 1.0000_f32.powf(u.powf(0.920));
-                self.phase[0] = (self.phase[0] + hz * dt).fract();
-                let p = self.phase[0];
-                v += (2.0 * p - 1.0) * 1.000;
-            }
-
-            let c = 820.0 * 0.1400_f32.powf(u);
-            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);
-            let damp = (1.0 / 6.400_f32).min(1.0);
-            let high = v - self.low - damp * self.band;
-            self.band += g * high;
-            self.low += g * self.band;
-            v = self.low;
-
-            let env = if u < SHIP_BOOM_ATTACK {
-                u / SHIP_BOOM_ATTACK
-            } else {
-                (-(u - SHIP_BOOM_ATTACK) * SHIP_BOOM_DECAY).exp()
-            };
-
-            *sample = v * env * SHIP_BOOM_LEVEL * self.gain;
-            self.t += dt;
-        }
-    }
-
-    fn alive(&self) -> bool {
-        self.alive
-    }
-
-    fn retrigger(&mut self, gain: f32, _pitch: f32) {
-        self.t = 0.0;
-        self.gain = gain.clamp(0.0, 1.0);
-        self.alive = true;
-        self.low = 0.0;
-        self.band = 0.0;
-    }
-}
-
-// PLAYGROUND: {"len":1.1,"attack":0.01,"decay":1.2,"level":0.3,"filter":{"mode":"lp","from":820,"to":115,"q":6.4},"oscs":[{"on":true,"wave":"saw","from":28,"to":28,"curve":0.92,"duty":0.04,"dutyTo":0.08,"mix":1}]}
-
-// ---------------------------------------------------------------------
-
-/// ⚠️ PLACEHOLDER — NOT BUILT BY EAR. Shooting a Humanoid.
-///
-/// ★ AND IT SHOULD NOT BE SATISFYING. Brian's spec is DON'T SHOOT THEM,
-/// and the game deliberately lets you — "a rule the game quietly refuses
-/// to let you break is not a rule anyone ever feels" (main.rs). Giving
-/// that the same meaty boom as killing a Lander REWARDS it, which is
-/// exactly backwards.
-/// ⇒ So: short, thin, high, and over almost before it starts. A mistake
-/// noise, not an achievement noise.
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-const PERSON_BOOM_LEN: f32 = 0.260;
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-const PERSON_BOOM_ATTACK: f32 = 0.006;
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-const PERSON_BOOM_DECAY: f32 = 5.200;
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-const PERSON_BOOM_LEVEL: f32 = 0.180;
-
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-pub struct PersonBoom {
-    t: f32,
-    gain: f32,
-    alive: bool,
-    phase: [f32; 1],
-    low: f32,
-    band: f32,
-}
-
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-impl Default for PersonBoom {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[allow(dead_code)] // W5 placeholder, unwired; delete once Brian approves its replacement.
-impl PersonBoom {
-    pub fn new() -> Self {
-        Self { t: 0.0, gain: 1.0, alive: false, phase: [0.0; 1], low: 0.0, band: 0.0 }
-    }
-}
-
-impl Voice for PersonBoom {
-    fn render(&mut self, out: &mut [f32], _params: VoiceParams, sample_rate: f32) {
-        if !self.alive {
-            out.fill(0.0);
-            return;
-        }
-        let dt = 1.0 / sample_rate;
-
-        for sample in out.iter_mut() {
-            if self.t >= PERSON_BOOM_LEN {
-                *sample = 0.0;
-                self.alive = false;
-                continue;
-            }
-            let u = self.t / PERSON_BOOM_LEN;
-            let mut v = 0.0f32;
-
-            {
-                let hz = 150.0 * 1.0000_f32.powf(u.powf(0.920));
-                self.phase[0] = (self.phase[0] + hz * dt).fract();
-                let p = self.phase[0];
-                v += (2.0 * p - 1.0) * 1.000;
-            }
-
-            let c = 1400.0 * 0.5000_f32.powf(u);
-            let g = (2.0 * (PI * c.min(sample_rate * 0.45) / sample_rate).sin()).min(1.4);
-            let damp = (1.0 / 3.000_f32).min(1.0);
-            let high = v - self.low - damp * self.band;
-            self.band += g * high;
-            self.low += g * self.band;
-            v = self.low;
-
-            let env = if u < PERSON_BOOM_ATTACK {
-                u / PERSON_BOOM_ATTACK
-            } else {
-                (-(u - PERSON_BOOM_ATTACK) * PERSON_BOOM_DECAY).exp()
-            };
-
-            *sample = v * env * PERSON_BOOM_LEVEL * self.gain;
-            self.t += dt;
-        }
-    }
-
-    fn alive(&self) -> bool {
-        self.alive
-    }
-
-    fn retrigger(&mut self, gain: f32, _pitch: f32) {
-        self.t = 0.0;
-        self.gain = gain.clamp(0.0, 1.0);
-        self.alive = true;
-        self.low = 0.0;
-        self.band = 0.0;
-    }
-}
-
-// PLAYGROUND: {"len":0.26,"attack":0.006,"decay":5.2,"level":0.18,"filter":{"mode":"lp","from":1400,"to":700,"q":3},"oscs":[{"on":true,"wave":"saw","from":150,"to":150,"curve":0.92,"duty":0.04,"dutyTo":0.08,"mix":1}]}
 
 // ---------------------------------------------------------------------
 // The warp-in
@@ -977,7 +772,7 @@ const THRUST_WOBBLE_LEVEL: f32 = 0.25;
 /// OTHER HERE. A lowpass at Q 0.7 REMOVES energy: the raw filter output
 /// peaks around 0.276, so a gain of 0.45 renders at 0.124 — less than a
 /// third of what the name suggests. It takes ~1.63 to reach 0.45.
-/// ★ THIS IS THE `ShipBoom` LESSON RUNNING BACKWARDS. There, a RESONANT
+/// ★ THIS IS THE OLD SHIP-DEATH LESSON RUNNING BACKWARDS. There, a RESONANT
 /// filter at Q 6.4 ADDED gain the level constant said nothing about and
 /// the voice clipped at 1.03. Here a gentle filter subtracts it. Either
 /// direction, the rule is the same: A `_LEVEL` CONSTANT IS NOT THE PEAK.
@@ -1206,10 +1001,12 @@ const BOMB_LEVEL: f32 = 0.42;
 const SHIP_DEATH_LEVEL: f32 = 0.42;
 
 /// ★ W5: A PERSON YOU SHOT (AHSND → LITE): one crackle, its clock falling
-/// ~18.6 kHz → 573 Hz over 0.70 s. Replaces the `PersonBoom` placeholder.
+/// ~18.6 kHz → 573 Hz over 0.70 s. Replaced a placeholder (W5).
 /// ⚠️ Brian's spec for this event is that it should NOT be satisfying —
-/// it is the sound of a mistake — so it sits well under the bomb.
-const PERSON_CRACKLE_LEVEL: f32 = 0.25;
+/// it is the sound of a mistake — so it must stay QUIETER THAN A LANDER
+/// DYING (`the_four_deaths_are_distinguishable`). At 0.25 it measured
+/// RMS 0.24 against HBEV's 0.17 and broke that; 0.16 puts it under.
+const PERSON_CRACKLE_LEVEL: f32 = 0.16;
 
 // ---------------------------------------------------------------------
 // The board: the parts every Williams-mechanism voice shares
@@ -1423,8 +1220,7 @@ impl SmartBomb {
         Self::chain(BOMB_STUTTERS, BOMB_STUTTER_CYCLES, BOMB_LEVEL)
     }
 
-    /// ★ W5: the ship's death (PDSND) — replaces the `ShipBoom`
-    /// placeholder.
+    /// ★ W5: the ship's death (PDSND) — replaced a placeholder.
     pub fn ship_death() -> Self {
         Self::chain(DEATH_STUTTERS, DEATH_STUTTER_CYCLES, SHIP_DEATH_LEVEL)
     }
@@ -2707,80 +2503,60 @@ mod tests {
 
     /// ★ THE FOUR DEATHS MUST NOT SOUND THE SAME.
     ///
-    /// ⚠️ THIS REPLACES `the_explosion_is_ring_modulated_not_just_noise`,
-    /// which asserted `RING_MIX > 0.25` — a claim about a mechanism that
-    /// no longer exists. The old Boom was noise times a 62 Hz carrier on
-    /// the theory that ring modulation gave the 1981 explosions their
-    /// metallic quality. Brian went and listened to the actual machine
-    /// and the answer was a saw under a falling lowpass. The theory was
-    /// wrong, so the test defending it had to go rather than be renamed.
-    ///
-    /// What replaces it is the property the split actually buys: a
-    /// Lander, a Mutant, your ship and a shot Humanoid must be TELLABLE
-    /// APART. If a future edit collapses two of them onto the same
-    /// numbers, this fails.
+    /// A Lander, a Mutant, your ship and a shot Humanoid once shared one
+    /// boom, and the game said the same thing for "you scored" and "you
+    /// lost a life". Since W5 three of them are the original's (HBEV,
+    /// PDSND, LITE) and the Mutant's is Brian's; this pins the properties
+    /// the split buys, on the voices that actually play:
+    /// · your own death outlasts every other;
+    /// · a Mutant bites brighter than your death rumbles;
+    /// · ★ BRIAN'S RULE: shooting a person is QUIETER than killing a
+    ///   Lander or a Mutant — a mistake, not an achievement.
     #[test]
     fn the_four_deaths_are_distinguishable() {
-        let mut lander = Boom::new();
-        let mut mutant = MutantBoom::new();
-        let mut ship = ShipBoom::new();
-        let mut person = PersonBoom::new();
+        let ship_len = run_length(&mut SmartBomb::ship_death());
+        for (name, len) in [
+            ("lander", run_length(&mut lander_hit())),
+            ("mutant", run_length(&mut MutantBoom::new())),
+            ("person", run_length(&mut person_crackle())),
+        ] {
+            assert!(ship_len > len, "your own death ({ship_len:.2} s) must outlast a {name}'s ({len:.2} s)");
+        }
 
-        lander.retrigger(1.0, 1.0);
-        mutant.retrigger(1.0, 1.0);
-        ship.retrigger(1.0, 1.0);
-        person.retrigger(1.0, 1.0);
-
-        let l = render_all(&mut lander, BOOM_LEN);
-        let m = render_all(&mut mutant, MUTANT_BOOM_LEN);
-        let s = render_all(&mut ship, SHIP_BOOM_LEN);
-        let p = render_all(&mut person, PERSON_BOOM_LEN);
-
-        // Length: the ship's death outlasts everything, the Humanoid is
-        // the briefest. This is the loss/mistake ordering, in seconds.
-        assert!(
-            SHIP_BOOM_LEN > BOOM_LEN,
-            "your own death must outlast a Lander's"
-        );
-        assert!(
-            PERSON_BOOM_LEN < BOOM_LEN,
-            "shooting a person must be the briefest of them"
-        );
-
-        // Brightness: a Mutant bites, a ship rumbles. Measured, not
-        // asserted from the constants, so a broken filter is caught too.
-        let bright = |v: &[f32]| {
-            let n = v.len() / 3;
-            band_rms(&v[..n], 1200.0) / band_rms(&v[..n], 200.0).max(1e-9)
+        let render = |v: &mut dyn Voice, secs: f32| {
+            v.retrigger(1.0, 1.0);
+            render_all(v, secs)
         };
+        let l = render(&mut lander_hit(), 0.3);
+        let m = render(&mut MutantBoom::new(), 0.3);
+        let s = render(&mut SmartBomb::ship_death(), 1.5);
+        let p = render(&mut person_crackle(), 0.3);
+
+        // Brightness, over the explosion tail of the death (past the
+        // crackles), measured rather than read from constants.
+        let bright = |v: &[f32]| band_rms(v, 1200.0) / band_rms(v, 200.0).max(1e-9);
+        let tail = &s[(0.4 * SR) as usize..];
         assert!(
-            bright(&m) > bright(&s),
+            bright(&m) > bright(tail),
             "a Mutant must be brighter than your own death: {:.3} vs {:.3}",
             bright(&m),
-            bright(&s)
+            bright(tail)
         );
 
-        // Level: shooting a Humanoid must not be the most satisfying
-        // sound in the game. It is a mistake, not an achievement.
-        assert!(
-            peak(&p) < peak(&l),
-            "shooting a person must be quieter than killing a Lander"
-        );
-        assert!(
-            peak(&p) < peak(&m),
-            "shooting a person must be quieter than killing a Mutant"
-        );
+        let rms = |v: &[f32]| (v.iter().map(|x| x * x).sum::<f32>() / v.len() as f32).sqrt();
+        assert!(rms(&p) < rms(&l), "shooting a person ({:.3}) must be quieter than killing a Lander ({:.3})", rms(&p), rms(&l));
+        assert!(rms(&p) < rms(&m), "shooting a person ({:.3}) must be quieter than killing a Mutant ({:.3})", rms(&p), rms(&m));
     }
 
     /// ⚠️ NOTHING MAY CLIP. ★ THIS TEST EXISTS BECAUSE IT HAPPENED:
-    /// ShipBoom shipped at LEVEL 0.42 and rendered a peak of 1.03,
+    /// a placeholder ship death (since replaced) shipped at LEVEL 0.42 and rendered a peak of 1.03,
     /// because a resonant lowpass at Q 6.4 adds gain the level constant
     /// says nothing about. The WAV writer clamps, so the rendered file
     /// sounded plausible while the real mixer would have hard-clipped.
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 22] = [
+        let cases: [(&str, &mut dyn Voice, f32); 20] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
             ("bomber hit", &mut bomber_hit(), 1.4),
             ("swarmer shot", &mut swarmer_shot(), 0.8),
@@ -2800,8 +2576,6 @@ mod tests {
             ("mutant shot", &mut mutant_shot(), 0.9),
             ("lander", &mut Boom::new(), BOOM_LEN),
             ("mutant", &mut MutantBoom::new(), MUTANT_BOOM_LEN),
-            ("ship", &mut ShipBoom::new(), SHIP_BOOM_LEN),
-            ("person", &mut PersonBoom::new(), PERSON_BOOM_LEN),
             ("warp", &mut Warp::new(), WARP_LEN),
         ];
         for (name, v, len) in cases {
@@ -2820,8 +2594,8 @@ mod tests {
         let cases: [(&str, &mut dyn Voice, f32); 4] = [
             ("lander", &mut Boom::new(), BOOM_LEN),
             ("mutant", &mut MutantBoom::new(), MUTANT_BOOM_LEN),
-            ("ship", &mut ShipBoom::new(), SHIP_BOOM_LEN),
-            ("person", &mut PersonBoom::new(), PERSON_BOOM_LEN),
+            ("ship", &mut SmartBomb::ship_death(), 2.2),
+            ("person", &mut person_crackle(), 0.55),
         ];
         for (name, v, len) in cases {
             v.retrigger(1.0, 1.0);

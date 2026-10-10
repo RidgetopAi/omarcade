@@ -1474,7 +1474,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         lander_shot: audio.register_sound(Box::new(sound::lander_shot())),
         mutant_shot: audio.register_sound(Box::new(sound::mutant_shot())),
         swarmer_shot: audio.register_sound(Box::new(sound::swarmer_shot())),
-        extra_life: audio.register_sound(Box::new(sound::extra_life())),
+        extra_life: audio.register_sound(Box::new(sound::extra_life_short())),
         scream: audio.register(Box::new(sound::Scream::new())),
     };
     let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
@@ -1518,7 +1518,7 @@ mod tests {
             lander_shot: audio.register_sound(Box::new(sound::lander_shot())),
             mutant_shot: audio.register_sound(Box::new(sound::mutant_shot())),
         swarmer_shot: audio.register_sound(Box::new(sound::swarmer_shot())),
-        extra_life: audio.register_sound(Box::new(sound::extra_life())),
+        extra_life: audio.register_sound(Box::new(sound::extra_life_short())),
             scream: audio.register(Box::new(sound::Scream::new())),
         };
         // ⚠️ AN IN-MEMORY SCORE FILE, never loaded or saved: a test that

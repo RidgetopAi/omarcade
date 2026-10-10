@@ -2379,14 +2379,15 @@ pub fn set_down() -> BoardVoice<VariOnce> {
     BoardVoice::with(VariOnce { spec: SET_DOWN, run: None, cut: f32::MAX }, SET_DOWN_LEVEL)
 }
 
-/// The extra ship (FOSHIT), run out in full.
+/// The extra ship (FOSHIT), run out in full — the A/B alternative Brian
+/// did not pick (2026-10-09); kept for laser_check and the length test.
+#[allow(dead_code)]
 pub fn extra_life() -> BoardVoice<VariOnce> {
     BoardVoice::with(VariOnce { spec: EXTRA_LIFE, run: None, cut: f32::MAX }, EXTRA_LIFE_LEVEL)
 }
 
-/// The extra ship (FOSHIT), cut after [`EXTRA_LIFE_SHORT`] — the A/B
-/// alternative, for a fanfare that does not sit over the next fight.
-#[allow(dead_code)]
+/// The extra ship (FOSHIT), cut after [`EXTRA_LIFE_SHORT`] so it does
+/// not sit over the next fight. ★ Brian's pick: "short version def."
 pub fn extra_life_short() -> BoardVoice<VariOnce> {
     BoardVoice::with(VariOnce { spec: EXTRA_LIFE, run: None, cut: EXTRA_LIFE_SHORT }, EXTRA_LIFE_LEVEL)
 }

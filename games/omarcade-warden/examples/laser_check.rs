@@ -84,7 +84,7 @@ fn main() {
 
     // ★ THE PEOPLE'S SOUNDS AND THE ENEMY'S GUNS — each A/B'd against
     // the emulated ROM render named in sound.rs.
-    let events: [(&str, &mut dyn Voice, f32); 10] = [
+    let events: [(&str, &mut dyn Voice, f32); 13] = [
         ("grab", &mut sound::grab(), 1.2),
         ("catch", &mut sound::catch(), 0.8),
         ("setdown", &mut sound::set_down(), 3.0),
@@ -93,6 +93,9 @@ fn main() {
         ("mutant-shot", &mut sound::mutant_shot(), 1.0),
         // ★ W5: every enemy dies its own way. The Lander's is HBEV, Brian's
         // pick over his Boom (boom-lander.wav, kept as the reference).
+        ("swarmer-shot", &mut sound::swarmer_shot(), 0.8),
+        ("extra-life", &mut sound::extra_life(), 5.6),
+        ("extra-life-short", &mut sound::extra_life_short(), 1.7),
         ("hit-bomber", &mut sound::bomber_hit(), 1.4),
         ("hit-pod", &mut sound::pod_hit(), 1.0),
         ("hit-baiter-swarmer", &mut sound::baiter_hit(), 1.3),

@@ -2167,6 +2167,24 @@ fn lander_hit_spec() -> GwaveSpec {
     }
 }
 
+/// ★ A SWARMER FIRES (ED12): the 8-step sine at periods 23 … 28 —
+/// so few samples, so slowly (~5.5k a second), that it is all stair-
+/// steps — six falling notes 658 → 559 Hz, ten passes each, six echoes
+/// at 1/16. A gritty falling chirp. 0.6 s. ROM render
+/// 0c_G12_ED12_swarmshoot.wav.
+fn swarmer_shot_spec() -> GwaveSpec {
+    GwaveSpec {
+        wave: WaveTable::sine(8),
+        cycles: 10,
+        echoes: 6,
+        echo_decay: 1,
+        predecay: 2,
+        freq_inc: 0,
+        freq_count: 2,
+        pattern: &[23, 24, 25, 26, 27, 28],
+    }
+}
+
 /// ★ SET DOWN SAFE (QUASAR): rising sweeps, 378 → 1530 Hz, each ~0.26 s,
 /// ten of them, each a little higher. Brian: "that classic phaser sound
 /// when dropped to ground".
@@ -2180,6 +2198,27 @@ const SET_DOWN: VariSpec = VariSpec {
     lo_mod: 0xFC,
     amp: 0xFF,
 };
+
+/// ★ AN EXTRA SHIP (FOSHIT, "free ship"): QUASAR run the other way — a
+/// square whose high half GROWS 1 → 129 by 8 counts every 512, so each
+/// sweep FALLS ~1530 → 378 Hz in ~128 ms; then the low half shortens by
+/// one and it sweeps again, forty times, each higher and quicker. 5.3 s.
+/// The game held it 512 ms at top priority. ROM render
+/// 1e_FOSHIT_freeship.wav.
+const EXTRA_LIFE: VariSpec = VariSpec {
+    lo: 40,
+    hi: 1,
+    lo_step: 0,
+    hi_step: 8,
+    hi_end: 129,
+    sweep: 512,
+    lo_mod: 0xFF,
+    amp: 0xFF,
+};
+
+/// The short version's cut: about a dozen sweeps (research-sound.md:
+/// "a shorter 10–12-sweep version also reads well").
+const EXTRA_LIFE_SHORT: f32 = 1.5;
 
 /// ★ A LANDER BECOMES A MUTANT (SP1): a buzz whose low half shortens by
 /// 14 counts every 16 ms for ten steps (254 → 128), so it rises in steps
@@ -2220,7 +2259,9 @@ const GRAB_LEVEL: f32 = 0.34;
 const CATCH_LEVEL: f32 = 0.40;
 const LANDER_SHOT_LEVEL: f32 = 0.26;
 const MUTANT_SHOT_LEVEL: f32 = 0.24;
+const SWARMER_SHOT_LEVEL: f32 = 0.24;
 const SET_DOWN_LEVEL: f32 = 0.30;
+const EXTRA_LIFE_LEVEL: f32 = 0.30;
 const FUSION_LEVEL: f32 = 0.26;
 const SCREAM_LEVEL: f32 = 0.30;
 const BOMBER_HIT_LEVEL: f32 = 0.30;
@@ -2261,6 +2302,11 @@ pub fn lander_shot() -> BoardVoice<GwaveOnce> {
 /// A Mutant's shot (CLDWN), cut where the game cuts it.
 pub fn mutant_shot() -> BoardVoice<GwaveOnce> {
     gwave_once(mutant_shot_spec(), MUTANT_SHOT_CUT, MUTANT_SHOT_LEVEL)
+}
+
+/// A Swarmer's shot (ED12).
+pub fn swarmer_shot() -> BoardVoice<GwaveOnce> {
+    gwave_once(swarmer_shot_spec(), f32::MAX, SWARMER_SHOT_LEVEL)
 }
 
 /// A Bomber's death (HBDV).
@@ -2314,20 +2360,35 @@ pub fn catch() -> BoardVoice<CatchScript> {
 pub struct VariOnce {
     spec: VariSpec,
     run: Option<Vari>,
+    /// Seconds after which the sound is cut, as the game's next sound
+    /// would cut it. `f32::MAX` runs it out.
+    cut: f32,
 }
 
 impl Script for VariOnce {
     fn begin(&mut self, b: &mut Board) {
         self.run = Some(Vari::new(self.spec, b));
     }
-    fn write(&mut self, b: &mut Board, _t: f32) -> bool {
-        self.run.as_mut().is_some_and(|v| v.write(b))
+    fn write(&mut self, b: &mut Board, t: f32) -> bool {
+        t < self.cut && self.run.as_mut().is_some_and(|v| v.write(b))
     }
 }
 
 /// The set-down (QUASAR).
 pub fn set_down() -> BoardVoice<VariOnce> {
-    BoardVoice::with(VariOnce { spec: SET_DOWN, run: None }, SET_DOWN_LEVEL)
+    BoardVoice::with(VariOnce { spec: SET_DOWN, run: None, cut: f32::MAX }, SET_DOWN_LEVEL)
+}
+
+/// The extra ship (FOSHIT), run out in full.
+pub fn extra_life() -> BoardVoice<VariOnce> {
+    BoardVoice::with(VariOnce { spec: EXTRA_LIFE, run: None, cut: f32::MAX }, EXTRA_LIFE_LEVEL)
+}
+
+/// The extra ship (FOSHIT), cut after [`EXTRA_LIFE_SHORT`] — the A/B
+/// alternative, for a fanfare that does not sit over the next fight.
+#[allow(dead_code)]
+pub fn extra_life_short() -> BoardVoice<VariOnce> {
+    BoardVoice::with(VariOnce { spec: EXTRA_LIFE, run: None, cut: EXTRA_LIFE_SHORT }, EXTRA_LIFE_LEVEL)
 }
 
 /// The fusion (SP1): ten stepped restarts, then the drone, then a fade.
@@ -2655,9 +2716,11 @@ mod tests {
     /// ⇒ A `_LEVEL` CONSTANT IS NOT THE PEAK. Measure the render.
     #[test]
     fn no_voice_clips_at_full_gain() {
-        let cases: [(&str, &mut dyn Voice, f32); 18] = [
+        let cases: [(&str, &mut dyn Voice, f32); 20] = [
             ("laser", &mut Laser::new(), ZAP_LEN),
             ("bomber hit", &mut bomber_hit(), 1.4),
+            ("swarmer shot", &mut swarmer_shot(), 0.8),
+            ("extra life", &mut extra_life(), 5.6),
             ("pod hit", &mut pod_hit(), 1.0),
             ("baiter hit", &mut baiter_hit(), 1.3),
             ("lander hit", &mut lander_hit(), 0.8),
@@ -2734,6 +2797,23 @@ mod tests {
             let t = run_length(v);
             assert!((lo..=hi).contains(&t), "{name} hit ran {t:.3} s, want {lo}..{hi}");
         }
+    }
+
+    /// ★ THE EXTRA SHIP RUNS AS LONG AS FOSHIT (5.32 s by the emulator):
+    /// forty sweeps, each a count shorter. The short A/B cuts at 1.5 s.
+    #[test]
+    fn the_extra_life_runs_as_long_as_the_original() {
+        let t = run_length(&mut extra_life());
+        assert!((5.1..=5.5).contains(&t), "extra life ran {t:.3} s");
+        let t = run_length(&mut extra_life_short());
+        assert!((1.49..=1.52).contains(&t), "short extra life ran {t:.3} s");
+    }
+
+    /// ★ THE SWARMER'S SHOT RUNS AS LONG AS ED12 (0.60 s by the emulator).
+    #[test]
+    fn the_swarmer_shot_runs_as_long_as_the_original() {
+        let t = run_length(&mut swarmer_shot());
+        assert!((0.55..=0.65).contains(&t), "swarmer shot ran {t:.3} s");
     }
 
     #[test]

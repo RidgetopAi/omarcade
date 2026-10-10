@@ -259,6 +259,8 @@ struct Warden {
     fusion_sound: SoundId,
     lander_shot_sound: SoundId,
     mutant_shot_sound: SoundId,
+    swarmer_shot_sound: SoundId,
+    extra_life_sound: SoundId,
     scream: VoiceId,
     /// Falls begun so far — the scream restarts when this moves.
     falls: u32,
@@ -311,8 +313,22 @@ struct Warden {
     set_down_this_frame: bool,
     lander_fired_this_frame: bool,
     mutant_fired_this_frame: bool,
+    swarmer_fired_this_frame: bool,
+    /// ★ W5: a ship (and a bomb) awarded at 10,000.
+    awarded_this_frame: bool,
     died_this_frame: bool,
     world_ended_this_frame: bool,
+}
+
+/// Which enemy gun fired — each has its own voice.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Gun {
+    /// A Lander's or a Baiter's (DP1V).
+    Lander,
+    /// A Mutant's (CLDWN).
+    Mutant,
+    /// A Swarmer's (ED12).
+    Swarmer,
 }
 
 /// The event voices — the four deaths, the smart bomb, the hyperspace
@@ -345,6 +361,9 @@ struct Voices {
     /// ★ The enemy's guns: a Lander's or Baiter's, and a Mutant's.
     lander_shot: SoundId,
     mutant_shot: SoundId,
+    swarmer_shot: SoundId,
+    /// ★ An extra ship, every 10,000.
+    extra_life: SoundId,
     /// ★ The scream of someone falling — CONTINUOUS, so it can stop the
     /// moment they are caught or land (see `sound::Scream`).
     scream: VoiceId,
@@ -412,6 +431,8 @@ impl Warden {
             fusion_sound: voices.fusion,
             lander_shot_sound: voices.lander_shot,
             mutant_shot_sound: voices.mutant_shot,
+            swarmer_shot_sound: voices.swarmer_shot,
+            extra_life_sound: voices.extra_life,
             scream: voices.scream,
             falls: 0,
             falling: 0,
@@ -433,6 +454,8 @@ impl Warden {
             set_down_this_frame: false,
             lander_fired_this_frame: false,
             mutant_fired_this_frame: false,
+            swarmer_fired_this_frame: false,
+            awarded_this_frame: false,
             died_this_frame: false,
             world_ended_this_frame: false,
         };
@@ -499,6 +522,11 @@ impl Warden {
         // the game — can cross two thresholds at once.
         while self.score >= self.next_award {
             self.next_award += AWARD_EVERY;
+            // ★ W5: the original's "free ship" (FOSHIT). Not for a game
+            // that is already over — `award` grants nothing then either.
+            if !self.lives.is_game_over() {
+                self.awarded_this_frame = true;
+            }
             self.lives.award();
             self.smart_bombs += 1;
         }
@@ -834,30 +862,30 @@ impl Warden {
         if let Some((sx, sy)) = ship_pos {
             for (index, mx, my) in wants {
                 let mut noise = self.enemies.next_noise();
-                let (dx, dy, speed, mutant) = match self.enemies.get(index) {
+                let (dx, dy, speed, gun) = match self.enemies.get(index) {
                     // ⚠️ A MUTANT NEVER SHOOTS STRAIGHT (Brian's rule,
                     // enforced in `aim_at`); a Lander's slow shot may.
                     // ★ W4: a Swarmer shoots FORWARD, not at you.
                     Some(s) if s.kind == enemy::Kind::Swarmer => {
                         let (dx, dy) = s.swarmer_aim(sy);
-                        (dx, dy, s.shot_speed(), false)
+                        (dx, dy, s.shot_speed(), Gun::Swarmer)
                     }
                     Some(m) if m.is_mutant() => {
                         let (dx, dy) = m.aim_at(sx, sy, &mut noise);
-                        (dx, dy, m.shot_speed(), true)
+                        (dx, dy, m.shot_speed(), Gun::Mutant)
                     }
                     Some(l) => {
                         let (dx, dy) = l.lander_aim(sx, sy, ship_vx, ship_vy, &mut noise);
-                        (dx, dy, l.shot_speed(), false)
+                        (dx, dy, l.shot_speed(), Gun::Lander)
                     }
                     None => continue,
                 };
                 self.shots.fire_enemy_at(mx, my, dx, dy, speed);
                 // ★ Brian: "there is a different sound when they shoot".
-                if mutant {
-                    self.mutant_fired_this_frame = true;
-                } else {
-                    self.lander_fired_this_frame = true;
+                match gun {
+                    Gun::Lander => self.lander_fired_this_frame = true,
+                    Gun::Mutant => self.mutant_fired_this_frame = true,
+                    Gun::Swarmer => self.swarmer_fired_this_frame = true,
                 }
             }
         }
@@ -1240,6 +1268,8 @@ impl Game for Warden {
         self.set_down_this_frame = false;
         self.lander_fired_this_frame = false;
         self.mutant_fired_this_frame = false;
+        self.swarmer_fired_this_frame = false;
+        self.awarded_this_frame = false;
         self.died_this_frame = false;
         self.world_ended_this_frame = false;
 
@@ -1294,6 +1324,15 @@ impl Game for Warden {
         }
         if self.mutant_fired_this_frame {
             audio.play(self.mutant_shot_sound);
+        }
+        // ★ W5: a Swarmer's is its own (ED12), a gritty falling chirp —
+        // it borrowed the Lander's until now.
+        if self.swarmer_fired_this_frame {
+            audio.play(self.swarmer_shot_sound);
+        }
+        // ★ W5: AN EXTRA SHIP — the original's falling-sweep fanfare.
+        if self.awarded_this_frame {
+            audio.play(self.extra_life_sound);
         }
         // ★ THE PEOPLE'S SOUNDS. A Lander takes someone; the ship catches
         // them; it sets them down.
@@ -1434,6 +1473,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fusion: audio.register_sound(Box::new(sound::fusion())),
         lander_shot: audio.register_sound(Box::new(sound::lander_shot())),
         mutant_shot: audio.register_sound(Box::new(sound::mutant_shot())),
+        swarmer_shot: audio.register_sound(Box::new(sound::swarmer_shot())),
+        extra_life: audio.register_sound(Box::new(sound::extra_life())),
         scream: audio.register(Box::new(sound::Scream::new())),
     };
     let scores = ScoreFile::load_or_new(GAME_ID, GAME_NAME);
@@ -1476,6 +1517,8 @@ mod tests {
             fusion: audio.register_sound(Box::new(sound::fusion())),
             lander_shot: audio.register_sound(Box::new(sound::lander_shot())),
             mutant_shot: audio.register_sound(Box::new(sound::mutant_shot())),
+        swarmer_shot: audio.register_sound(Box::new(sound::swarmer_shot())),
+        extra_life: audio.register_sound(Box::new(sound::extra_life())),
             scream: audio.register(Box::new(sound::Scream::new())),
         };
         // ⚠️ AN IN-MEMORY SCORE FILE, never loaded or saved: a test that
@@ -1611,6 +1654,39 @@ mod tests {
                 assert_eq!(set, k == want, "{kind:?} died: the {k:?} voice flag was {set}");
             }
         }
+    }
+
+    /// ★★ W5: A SWARMER'S SHOT IS ITS OWN VOICE, through the real loop.
+    /// A Swarmer flies at the ship until it fires; every Lander is killed
+    /// as it arrives so no other gun can be heard. Before this, a
+    /// Swarmer's shot raised the Lander's flag.
+    #[test]
+    fn a_swarmer_shot_has_its_own_voice() {
+        use enemy::{Enemy, Kind, Phase};
+        let mut g = game();
+        immortal(&mut g);
+        let mut audio = AudioSystem::new();
+        let (mut swarmer, mut lander) = (false, false);
+        for f in 0..(8 * 60) {
+            if f % 60 == 0 && g.enemies.count(Kind::Swarmer) == 0 {
+                let mut e = Enemy::swarmer(world::wrap(g.ship.x + 500.0), g.ship.y, -250.0, 0.0, 0.0, 0.0);
+                e.phase = Phase::Hovering;
+                g.enemies.spawn(e);
+            }
+            for i in 0..g.enemies.len() {
+                if g.enemies.get(i).is_some_and(|e| e.kind == Kind::Lander && e.is_target()) {
+                    g.enemies.kill(i);
+                }
+            }
+            {
+                let mut a = audio.handle();
+                g.update(1.0 / 60.0, &mut a);
+            }
+            swarmer |= g.swarmer_fired_this_frame;
+            lander |= g.lander_fired_this_frame;
+        }
+        assert!(swarmer, "no Swarmer shot was heard in 8 s");
+        assert!(!lander, "a Swarmer's shot raised the Lander's flag");
     }
 
     /// A ship that cannot run out — the wave tests are about waves, and a
@@ -1764,8 +1840,11 @@ mod tests {
         let (ships, bombs) = (g.lives.remaining, g.smart_bombs);
         g.add_score(9_990, None);
         assert_eq!((g.lives.remaining, g.smart_bombs), (ships, bombs));
+        assert!(!g.awarded_this_frame, "the fanfare played before 10,000");
         g.add_score(10, None);
         assert_eq!((g.lives.remaining, g.smart_bombs), (ships + 1, bombs + 1));
+        // ★ W5: and the award is heard.
+        assert!(g.awarded_this_frame, "10,000 crossed in silence");
         g.add_score(20_000, None);
         assert_eq!((g.lives.remaining, g.smart_bombs), (ships + 3, bombs + 3));
     }
